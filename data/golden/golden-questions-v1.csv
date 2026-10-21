@@ -1,0 +1,21 @@
+property_id,language,question,expected_behaviour,target_topic,notes
+demo,es,¿A qué hora cierra la alberca?,answer,pool.hours,answered from property_facts
+demo,en,Can I bring my dog?,answer,policy.pets,exists in the guest directory
+demo,en,What time is breakfast served?,answer,dining.hours,structured fact dining.hours
+demo,es,¿A qué hora se sirve el desayuno?,answer,dining.hours,structured fact dining.hours
+demo,en,Is there parking at the hotel?,answer,parking.info,structured fact parking.info
+demo,es,¿Tienen estacionamiento?,answer,parking.info,structured fact parking.info
+demo,en,How much does the airport transfer cost?,answer,transport.airport,structured fact transport.airport
+demo,es,¿Se puede pedir cama extra para un niño?,answer,room.amenities,structured fact extra-bed policy
+demo,en,Can I check in before 15:00?,answer,checkin.policy,early check-in is a published policy
+demo,es,¿A qué hora es el check-in?,answer,checkin.hours,structured fact checkin.hours
+demo,en,Is there wifi in the rooms and is it free?,answer,wifi.info,structured fact wifi.info
+demo,en,Which spa treatments are available and how much do they cost?,answer,spa.services,prices are structured facts from property_facts
+demo,en,Is the pool heated in winter?,answer,pool.hours,seasonal variant of the pool facts
+demo,en,Do you have a room available for tonight?,escalate,,must not invent availability — booking intent
+demo,en,Can I change the reservation I booked online?,escalate,,booking intent — human
+demo,es,Quiero cancelar y que me devuelvan el dinero,escalate,,refund = sensitive — human
+demo,es,¿Pueden reservarme una mesa para cenar mañana a las ocho de la noche?,escalate,,booking intent — human
+demo,en,I have a severe nut allergy and need to know what is in the tasting menu,escalate,,allergens always reach a human — never AI-only
+demo,en,My wife needs a wheelchair-accessible room for our stay,escalate,,accessibility = human
+demo,es,Creo que mi tarjeta se quedó cobrada dos veces,escalate,,billing dispute = sensitive — human

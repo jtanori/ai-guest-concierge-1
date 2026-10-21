@@ -101,3 +101,22 @@ Smoke command for staging once Sentry is wired (route arrives with the first web
 curl -X POST https://<staging-host>/debug/throw `
   -H "x-org-id: org-smoke-1" -H "x-property-id: prop-smoke" -H "x-conversation-id: conv-smoke"
 ```
+
+## W00-15 — Golden set v1: format + 20 starter questions (0.50d)
+
+**AC (verbatim):** File format agreed; 20 questions in the repo.
+
+**Status: DONE to the extent of its AC — format enforced by test, 20 questions committed.** (Content grows to v2 — 40-50 — in S03 before G1 freezes it.)
+
+- [x] Format = plan Appendix A CSV verbatim: `property_id,language,question,expected_behaviour,target_topic,notes` — `expected_behaviour ∈ {answer | escalate | refuse}`, never an expected string.
+- [x] `src/golden/validate.ts` — RFC-4180 parser + rule validator (typed module, no new deps).
+- [x] Rules with teeth: answer rows must name a topic; escalate rows must NOT (they are the questions the KB does not answer); escalate/refuse rows need a hand-written rationale note; language must be one of the property's languages; 20-row minimum; **escalation share ≥25% floor** — a golden set biased toward what the KB answers would defeat the false-answer gate.
+- [x] `data/golden/golden-questions-v1.csv` — 20 questions: 13 answer-expected (aligned to the plan's content-section topics: pool.hours, dining.hours, parking, checkin, spa, transport, wifi) + **7 escalation cases hand-written** (booking intent ×3, refund/cancel, dispute, allergy/dining, accessibility — per plan §4 this third is authored by humans, never generated).
+- [x] 13 tests including the malformed-set rejections.
+
+**Evidence (committed, verified):**
+```text
+$ npm test   # 30 passed (30) — 13 of them the golden-set format tests
+```
+
+Items the AC does NOT cover (and are therefore not invented here): the golden set v2 (40-50 questions) freezes at G1 (S03) with real hotel content; scoring (answer/escalate/false/needless) is the S06 eval harness.

@@ -120,3 +120,22 @@ $ npm test   # 30 passed (30) — 13 of them the golden-set format tests
 ```
 
 Items the AC does NOT cover (and are therefore not invented here): the golden set v2 (40-50 questions) freezes at G1 (S03) with real hotel content; scoring (answer/escalate/false/needless) is the S06 eval harness.
+
+## W00-19 — Event taxonomy written (0.50d)
+
+**AC (verbatim):** 18 events merged as a typed module; contract test passes; no dashboard before this exists.
+
+**Status: DONE — 18-event typed module, contract test holds it against Appendix C verbatim.**
+
+- [x] `src/events/taxonomy.ts` — `EVENT_NAMES` (18, Appendix C order), `Event`/`EventContext` types carrying the seven mandatory fields: `org_id`, `property_id`, `conversation_id`, `channel`, `language`, `topic`, `created_at`.
+- [x] `staff_message_sent` shipped as the 18th event per the v1.2.1 ruling — containment = conversations with zero staff messages, and staff can reply without a takeover (and repeatedly). `answer_overridden` deliberately absent (declined in v1.2.1 as derivable).
+- [x] `createEvent(type, ctx, data)` — fail-fast factory: throws on empty tenant fields, non-ISO `created_at`, or unknown channel. An event that a rollup would silently drop is not emitted.
+- [x] Contract test copies Appendix C verbatim into the test and asserts equality — if the module ever drifts from the plan, the build fails. Plus 18-name uniqueness, snake_case, context-field assertions.
+- [x] The `events` table itself is S01 schema (RLS-gated) — zero table code written this week, honoring Rule 1.
+- [x] No dashboard tile, query or rollup exists — nothing can precede this contract.
+
+**Evidence (committed, verified):**
+```text
+$ npm test   # 39 passed (39) — 10 taxonomy contract tests
+$ npm run typecheck && npm run lint   # both clean
+```

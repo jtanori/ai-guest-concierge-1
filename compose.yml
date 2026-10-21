@@ -1,0 +1,30 @@
+# W00-13 — LOCAL DEVELOPMENT ONLY. Staging and prod databases are managed
+# cloud instances (neon/supabase) created in Phase B — never local containers.
+#
+# pgvector/pgvector:pg17 ships the pgvector extension on top of stock Postgres
+# because D2/D3 require embeddings populated from day one; pg_trgm is core.
+#
+#   docker compose up -d
+#   docker compose down                 (keeps volume)
+#   docker compose down -v              (drops the volume)
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: concierge-local-postgres
+    environment:
+      POSTGRES_USER: concierge
+      POSTGRES_PASSWORD: concierge
+      POSTGRES_DB: concierge_local
+    ports:
+      # 54329 on the host so real machines' 5432 stays untouched
+      - "127.0.0.1:54329:5432"
+    volumes:
+      - concierge_local_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U concierge -d concierge_local"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  concierge_local_pgdata:

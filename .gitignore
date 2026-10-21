@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+.next/
+*.tsbuildinfo
+
+# Test / coverage
+coverage/
+
+# Environment — never commit real credentials
+.env
+.env.*
+!.env.example
+
+# Logs / OS noise
+*.log
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/
+!.vscode/launch.json

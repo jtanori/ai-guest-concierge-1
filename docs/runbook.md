@@ -217,3 +217,115 @@ $ npm run typecheck && npm run lint   # clean
 $ npm test   # 39 passed (39) — 10 taxonomy contract tests
 $ npm run typecheck && npm run lint   # both clean
 ```
+
+## S01-01 — Schema and migrations (3.00d)
+
+**AC (verbatim):** Runs clean from an empty database; ERD committed.
+
+**Status: DONE — three ordered SQL migrations + pooled runner + committed ERD.**
+
+- [x] `db/migrations/0001_init.sql` — all 25 plan §2 tables (D1) created with
+  `CREATE EXTENSION vector` / `pg_trgm` up front: organizations, properties,
+  users, memberships, roles, channel_connections, channel_identities,
+  conversations, messages, message_delivery_events, service_requests,
+  assignments, internal_notes, knowledge_sources, knowledge_articles,
+  article_versions, property_facts, ai_runs, citations, handoff_reasons,
+  knowledge_gaps, events, rollups, audit_log, outbox.
+- [x] D2/D3 retrieval columns ship day one: `embedding vector(1536)` + GIN
+  `tsv` (generated tsvector, `english` config) + trigram indexes on
+  `article_versions` and `property_facts`; HNSW (`vector_cosine_ops`) on the
+  two embeddings.
+- [x] D5 FK: `citations.ai_run_id → ai_runs` and `citations.article_version_id
+  → article_versions` (verifying citations to a *version*, never an article).
+- [x] D7 outbox: statuses `pending/sending/sent/failed/dead` — DLQ is the
+  `dead` state (exhausted retries), partial index keeps the active queue hot.
+- [x] D10: `events` CHECK list textually equals `src/events/taxonomy.ts`
+  (18 names, Appendix C order); `event_type` for a staff message is
+  `staff_message_sent` with no `taken_over` precondition (mid-conversation
+  replies stay legal); `audit_log`/`events`/`article_versions`/are
+  append-only via triggers (0003) — an UPDATE/DELETE raises `append-only`.
+- [x] `schema_migrations` bookkeeping table; runner records sha256 checksum
+  and re-runs are no-ops (idempotent).
+- [x] `src/db/migrate.ts` — pooled runner (one client per file + tx-per-file
+  rollback on error), `scripts/migrate.ts` CLI (`npm run db:migrate`). The
+  earlier single-Client implementation hit "Client has already been
+  connected" on scratch reuse — Pool-based runner fixes it.
+- [x] `db/erd.mmd` committed; the suite's drift test re-derives the entity
+  list from the live database and fails if it diverges from the ERD.
+- [x] Empty-database proof: every db suite runs against `scratch_<pid>` —
+  a database created by `CREATE DATABASE` from nothing, then all three
+  migrations applied by the real runner (`recreateScratch` erases it after).
+
+**Evidence (local, verified):**
+```text
+$ npm run db:test   # 18 passed (18) — incl. clean-from-empty on scratch_<pid>
+$ npm run typecheck && npm run lint && npm run build   # all clean
+```
+
+## S01-02 — Row-level security (2.00d)
+
+**AC (verbatim):** A query without tenant context returns zero rows.
+
+**Status: DONE — FORCE RLS everywhere + app-layer `withTenant` guard.**
+
+- [x] `db/migrations/0002_rls.sql` — FORCE ROW LEVEL SECURITY + named
+  `tenant` policies on all 21 tenant tables (the 25 minus
+  organizations/users/roles/memberships); property-scoped tables require
+  BOTH `app.current_org_id` and `app.current_property_id` to match the
+  row, so an org/property mismatch pair yields zero rows too; `with check`
+  mirrors `using`, so cross-tenant inserts are rejected, not silently
+  dropped.
+- [x] Tenant context rides GUCs (`app.current_org_id` /
+  `app.current_property_id`, empty string → NULL) — per-transaction LOCAL,
+  never per-session global.
+- [x] `concierge_app` NOLOGIN role created with grants + ALTER DEFAULT
+  PRIVILEGES; superusers/owners bypass RLS by design, so the suites run
+  under `SET LOCAL ROLE concierge_app` to behave like the deployed app.
+- [x] `src/db/tenant.ts` — `withTenant(client, {orgId, propertyId}, fn)`:
+  validates UUIDs up front (throws `TenantContextError` on empty/malformed),
+  binds via `set_config(...$1...)` (SET cannot take parameters), resets
+  cleanly after COMMIT and rolls back on callback throw.
+- [x] The AC is proven for every tenant table, not one: with NO context at
+  all, `SELECT count(*)` on all 21 tables returns zero.
+
+**Evidence (local, verified):**
+```text
+$ npm run db:test   # 18 passed (18) — AC asserted across all 21 tables
+```
+
+## S01-03 — Cross-tenant isolation test harness (0.75d)
+
+**AC (verbatim):** Suite runs in CI and fails the build on a leak.
+
+**Status: DONE — policy-derived enumeration + owner-ground-truth leak sweep + `db-test` CI job.**
+
+- [x] `tests/db/isolation.db.test.ts` enumerates tenant tables FROM the
+  database (`pg_policies` rows with policyname `tenant`) and asserts the set
+  equals the 21 expected tables — a schema change that adds a tenant table
+  without a policy (or forgets RLS entirely) fails the suite.
+- [x] The sweep seeds two full tenant graphs, then for every tenant table
+  asserts: context A sees exactly the owner-side count of org-A rows,
+  context B sees exactly org-B rows, both counts > 0 — a visible-count that
+  exceeds its org's real row count IS a leak, in either direction.
+  (An earlier naive "foreign context sees zero rows" assertion was
+  red-flagged by properties — an org legitimately sees its own row — the
+  ground-truth comparison is the correct invariant.)
+- [x] Write-direction checks: org-B context cannot INSERT into org-A rows on
+  `properties` (org-scoped) nor `messages` (property-scoped) — `with check`
+  rejects.
+- [x] `tests/db/helpers.db.ts` maintains the scratch database lifecycle
+  (`scratch_<pid>`, created empty, dropped after) exercising the real
+  migration runner; `asTenantApp` drops the session into `concierge_app`.
+- [x] `npm test` excludes `tests/db/**` (new root `vitest.config.ts`) so the
+  unit job stays hermetic; the dedicated `tests/db/vitest.db.config.ts`
+  gives 60s hooks and single-worker runs.
+- [x] CI: new `db-test` job in `.github/workflows/ci.yml` — `pgvector:pg17`
+  service container (ports 54329), `TEST_DATABASE_URL` env, `npm run
+  db:test`. `db-test` added to main's required status checks, so any leak
+  blocks the merge.
+
+**Evidence (local, verified):**
+```text
+$ npm run db:test   # 18 passed (18)
+$ npm test          # 48 passed (48) — unit job unaffected
+```

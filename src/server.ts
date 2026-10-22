@@ -5,10 +5,17 @@
  * carry the future staging smoke checks.
  *
  * Run: npm start   (= node --env-file=.env.local --experimental-strip-types)
+ *
+ * Deployed targets are tolerated, not required: on hosts that inject no
+ * env file (e.g. Vercel preview runtimes) the server boots DEGRADED —
+ * /healthz reports which services are unconfigured instead of crashing,
+ * and every dependent route degrades to 503 with a useful detail line.
+ * Bind address/port follow the hosting convention: PORT and HOST env
+ * (Vercel-style) win, defaulting to 127.0.0.1:3000 for local dev.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createLogger, isLogLevel, type LogLevel } from "./logging/index.ts";
-import { loadConfig } from "./config/env.ts";
+import { loadConfig, type AppConfig } from "./config/env.ts";
 import { postgresStatus, closePool } from "./neon/postgres.ts";
 import { authStatus } from "./neon/auth.ts";
 import {
@@ -21,19 +28,38 @@ import {
 } from "./neon/storage.ts";
 import { invokeHello } from "./neon/functions.ts";
 
-const cfg = loadConfig(process.env);
-const log = createLogger((isLogLevel(cfg.logLevel) ? cfg.logLevel : "info") as LogLevel);
+/** Boot without a full config: hosting without env files must not crash. */
+function loadConfigGracefully(source: NodeJS.ProcessEnv): [AppConfig | null, string | null] {
+  try {
+    return [loadConfig(source), null];
+  } catch (error) {
+    return [null, (error as Error).message];
+  }
+}
+
+const [cfg, cfgError] = loadConfigGracefully(process.env);
+const configuredLevel = cfg?.logLevel ?? "info";
+const log = createLogger((isLogLevel(configuredLevel) ? configuredLevel : "info") as LogLevel);
 const startedAt = new Date().toISOString();
 
 type Handler = () => Promise<Record<string, unknown> | string>;
 
+/** Route guard: a degraded-config host answers 503 with the reason. */
+function withConfig(route: (cfg: AppConfig) => Promise<Record<string, unknown> | string>): Handler {
+  return async () => {
+    if (!cfg) throw new Error(`config unavailable in this hosted environment: ${cfgError}`);
+    return route(cfg);
+  };
+}
+
 const routes: Record<string, Handler> = {
   "/healthz": async () => ({
     status: "ok",
-    env: cfg.env,
+    env: cfg?.env ?? "unknown",
+    config: cfgError ? `degraded: ${cfgError}` : "resolved",
     startedAt,
   }),
-  "/healthz/postgres": async () => {
+  "/healthz/postgres": withConfig(async () => {
     const status = await postgresStatus();
     const version = /PostgreSQL (\S+)/.exec(status.serverVersion)?.[1] ?? "unknown";
     return {
@@ -42,7 +68,7 @@ const routes: Record<string, Handler> = {
       server: version,
       availableExtensions: status.availableExtensions,
     };
-  },
+  }),
   "/healthz/auth": async () => {
     const status = await authStatus();
     return {
@@ -55,7 +81,7 @@ const routes: Record<string, Handler> = {
     const res = await invokeHello();
     return { status: res.status === 200 ? "ok" : "degraded", http: res.status, body: res.body };
   },
-  "/healthz/storage": async () => {
+  "/healthz/storage": withConfig(async () => {
     const client = getS3Client();
     const key = `${NEON_SMOKE_PREFIX}healthz-${Date.now()}.txt`;
     const body = `healthz ${new Date().toISOString()}`;
@@ -67,7 +93,7 @@ const routes: Record<string, Handler> = {
       bucket: NEON_BUCKET_ASSETS,
       putGetIdentical: roundTrip === body,
     };
-  },
+  }),
 };
 
 function send(res: ServerResponse, status: number, body: unknown): void {
@@ -90,12 +116,16 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     });
 });
 
-server.listen(3000, "127.0.0.1", () => {
+const port = Number(process.env["PORT"] ?? 3000);
+const host = process.env["HOST"] ?? "127.0.0.1";
+
+server.listen(port, host, () => {
   log.info(
     {
-      env: cfg.env,
+      env: cfg?.env ?? "unknown",
+      config: cfgError ? "degraded" : "resolved",
       routes: Object.keys(routes),
-      addr: "http://127.0.0.1:3000",
+      addr: `http://${host}:${port}`,
     },
     "health server listening",
   );

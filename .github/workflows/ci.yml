@@ -8,9 +8,11 @@ on:
 # W00-12 — "A PR produces a preview URL and a green check."
 # lint/typecheck/test run immediately. preview deploys the PR to the linked
 # Vercel project (repo secrets VERCEL_TOKEN / VERCEL_ORG_ID / VERCEL_PROJECT_ID)
-# and probes the deployed /api/health endpoint — the proof is a green check
-# AND a reachable URL printed in the log. The deployed surface is the
-# CI probe in api/health.ts until S01 ships real routes.
+# and probes the deployed endpoint — the proof is a green check AND a
+# reachable URL printed in the log. The deployed surface is the CI probe in
+# api/health.ts (vercel.json pins @vercel/node on api/** — the zero-config
+# root-entrypoint pipeline dead-ends on our noEmit tsconfig) until S01 ships
+# real routes.
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -67,9 +69,9 @@ jobs:
           URL="$(npx -y vercel@latest deploy --yes --token "$VERCEL_TOKEN")"
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           echo "PREVIEW URL: $URL"
-      - name: Probe preview /api/health
+      - name: Probe preview /api/health.ts
         run: |
           URL="${{ steps.deploy.outputs.url }}"
-          CODE="$(curl -s -o /dev/null -w '%{http_code}' "$URL/api/health")"
-          echo "preview /api/health -> HTTP $CODE"
+          CODE="$(curl -s -o /dev/null -w '%{http_code}' "$URL/api/health.ts")"
+          echo "preview /api/health.ts -> HTTP $CODE"
           test "$CODE" = "200"

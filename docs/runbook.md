@@ -2,6 +2,20 @@
 
 Written as items are worked, not at the end. One entry per backlog item.
 
+## Neon backend (beyond-board infra, founder-directed) — wired and verified
+
+The founder provisioned a Neon project (`concierge-prod`, branch `production`,
+br-young-poetry-b4vbkbje) with services **postgres, auth, object-storage,
+functions** via `neon init` + `neon deploy` (`neon.ts` is the policy of record).
+
+- **Driver choice (per the Neon agent skill):** `node-postgres` (`pg`) on the **pooled** `DATABASE_URL` for app traffic; the direct `DATABASE_URL_UNPOOLED` is reserved for S01 migrations. `@neondatabase/serverless` was deliberately NOT used — it is for edge/serverless runtimes, not our long-running Node server.
+- **Wired modules:** `src/neon/postgres.ts` (pool, tenant-safe later via RLS), `src/neon/storage.ts` (S3 path-style SigV4 client for the branch-scoped private bucket `assets`), `src/neon/auth.ts` (Managed Better Auth probe; client wiring lands in S02-01), `src/neon/functions.ts`.
+- **Proof:** `npm run smoke:neon` → `PASS postgres v18.6 · pg_trgm + vector available · neon_auth schema present`, `PASS auth · JWKS keys 1`, `PASS storage · put→get identical → delete`, `PASS functions · HTTP 200 "Hello from Neon Functions"`.
+- **App server:** `npm start` (pino JSON logs, tenant-context logger reused) serves `/healthz/{,postgres,auth,storage,function}` — all HTTP 200 with `ok` statuses; unknown paths 404.
+- **Env:** `.env.local` (gitignored) holds 10 Neon variables; `.env.example` documents them.
+- **Branch policy in neon.ts:** new non-default branches auto-expire (7d TTL) — staging/preview branches are therefore disposable by design; W00-13's "staging ≠ prod" closes via two branches with distinct credentials, checked by `npm run check:env`.
+
+
 ## W00-11 — Repo, branch protection, org setup (0.50d)
 
 **AC (verbatim):** A direct push to main is rejected.

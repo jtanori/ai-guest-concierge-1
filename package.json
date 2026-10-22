@@ -10,6 +10,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check:env": "node scripts/check-env.ts",
+    "smoke:neon": "node --env-file=.env.local scripts/smoke-neon.ts",
+    "start": "node --env-file=.env.local src/server.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",
@@ -17,14 +19,20 @@
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
+    "@types/pg": "^8.23.1",
     "eslint": "^9.39.5",
     "exceljs": "^4.4.0",
+    "globals": "^15.15.0",
     "prettier": "^3.9.10",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.72.0",
     "vitest": "^3.2.7"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1155.0",
+    "@neon/config": "^1.9.3",
+    "@neon/env": "^1.6.4",
+    "pg": "^8.23.1",
     "pino": "^9.14.0"
   }
 }

@@ -14,8 +14,7 @@
     "allowImportingTsExtensions": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "declaration": true,
-    "outDir": "dist",
+    "noEmit": true,
     "skipLibCheck": true
   },
   "include": ["src/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts"],

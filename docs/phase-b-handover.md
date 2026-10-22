@@ -33,7 +33,7 @@ gh pr create --title "ci probe" --body "W00-12 AC: PR → green check + preview 
 gh pr checks
 ```
 
-**Preview URL:** Vercel account + project link are **done** and re-linked under the repo owner account: `vercel login` → **jtanori**; `vercel link` → `ai-guest-concierge-1`; org `team_MyTwcVzABQrWXY7JvB8qqhlS`, project `prj_3Ir8unz07uhUxzicUi5uHfMGhdx5` (earlier notes naming `bretudev` are superseded — do NOT configure secrets with those). The repo already exists (B1, above), so at next wiring EITHER import it in vercel.com (Git integration) OR keep CLI-based CI by adding `VERCEL_TOKEN` (+ the two jtanori ids above) to GH repo secrets — then say so, and I replace the `preview` stub in `.github/workflows/ci.yml` with the Vercel deploy step so the PR carries the URL; the AC closes when the probe PR shows both.
+**Preview URL:** done — account + project + repo are connected (jtanori). Implementation: repo secrets `VERCEL_TOKEN` / `VERCEL_ORG_ID` (`team_MyTwcVzABQrWXY7JvB8qqhlS`) / `VERCEL_PROJECT_ID` (`prj_3Ir8unz07uhUxzicUi5uHfMGhdx5`) + `vercel deploy` step in `ci.yml` that probes the deployment (see W00-12 runbook entry for the full debug trail, including why `vercel.json` pins `@vercel/node`). Every PR now ships a preview URL automatically; Deployment Protection (SSO) is off so URLs are publicly reachable. Earlier notes naming `bretudev` ids are superseded.
 
 **Evidence to keep:** the `gh pr checks` output + the preview URL.
 

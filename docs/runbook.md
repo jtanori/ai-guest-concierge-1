@@ -83,16 +83,18 @@ bd14424 W00-11: repo governance — gitignore, PR template, branch-protection sc
 
 **AC (verbatim):** A PR produces a preview URL and a green check.
 
-**Status: IN PROGRESS — remote half partially closed (PR #1 carries green lint/typecheck/test/preview); preview URL pending.**
+**Status: DONE (evidence below — PR #3 wire-up + this PR's own green preview run).**
 
 - [x] Toolchain: TypeScript 5 (strict, NodeNext), vitest 3, eslint 9 (flat config), prettier 3 — npm scripts `lint`, `typecheck`, `test` under Node 24.
 - [x] First module ships with its tests and obeys D14: `src/i18n/catalog.ts` — ES/EN string catalogue, key parity enforced by type + runtime test.
-- [x] CI workflow `.github/workflows/ci.yml`: three required contexts (`lint`, `typecheck`, `test`) on every PR; `preview` job stubbed and explicitly marked as a Phase B step.
-- [x] Local evidence (below): lint + typecheck + test all green.
-- [x] Remote half: Actions run on the real repo — PR #1 shows `lint`/`typecheck`/`test` green (plus `preview` stub pass and GitGuardian).
-- [x] Vercel account + project link exist (re-linked under **jtanori**, org `team_MyTwcVzABQrWXY7JvB8qqhlS`, project `prj_3Ir8unz07uhUxzicUi5uHfMGhdx5` — see the §B2 entry above).
-- [ ] **REMAINING (Phase B):** connect the existing repo to the existing Vercel project (dashboard import or `VERCEL_TOKEN` + the two jtanori ids in GH secrets), then replace the `preview` stub in `ci.yml` with the Vercel deploy step so the job returns a real preview URL.
-- [ ] **Evidence (AC test):** a PR shows a green check AND a reachable preview URL. Only then mark Done in the workbook.
+- [x] CI workflow `.github/workflows/ci.yml`: three required contexts (`lint`, `typecheck`, `test`) on every PR.
+- [x] Local evidence: lint + typecheck + test all green.
+- [x] Remote half: Actions run on the real repo — green `lint`/`typecheck`/`test` on PR #1 and every PR since.
+- [x] Vercel wired via repo secrets: `vercel login` → **jtanori**, `vercel link` → `ai-guest-concierge-1`; org `team_MyTwcVzABQrWXY7JvB8qqhlS`, project `prj_3Ir8unz07uhUxzicUi5uHfMGhdx5`; secrets `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` set with `gh secret set` (token read from the founder's local `.env.local`, never displayed). Deployment Protection (SSO) disabled via `PATCH /v9/projects/{id} {"ssoProtection": null}` so previews are publicly reachable.
+- [x] `preview` job is real: `vercel deploy` of the branch → prints the unique deployment URL → curl probe on `/api/health.ts` → job fails unless HTTP 200.
+- [x] **AC evidence:** PR #3's own run — `PREVIEW URL: https://ai-guest-concierge-1-grdvpdmt7-jaime-tanoris-projects.vercel.app`, probe HTTP 200 `{"status":"ok","service":"ai-guest-concierge","surface":"ci-preview-probe"}`, all four contexts green.
+
+**Debug trail (kept deliberately):** the zero-config Node "backends" pipeline auto-detected `src/server.ts` as root entrypoint and expected `npm run build` to emit `src/server.js`; our `noEmit` tsconfig (Node strip-types is the local runtime) produced a function bundle with no code → `FUNCTION_INVOCATION_FAILED`. Resolved by pinning `@vercel/node` on `api/**` in `vercel.json` (classic functions mode; the function serves at `/api/health.ts` — the `.func` dir keeps the source extension; `rewrites` are ignored in legacy-builds mode, so the probe targets the canonical served path). Two serverless-safety fixes rode along in `src/server.ts`: bind `PORT`/`HOST` env (Vercel convention) instead of hardcoded `127.0.0.1:3000`, and boot DEGRADED without an env file (routes without their config answer 503 with the reason instead of crashing at import).
 
 **Evidence (local half, verified):**
 ```text

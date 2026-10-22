@@ -23,9 +23,16 @@ functions** via `neon init` + `neon deploy` (`neon.ts` is the policy of record).
 - Same `smoke-neon.ts` run against `.env.staging`: all four services PASS on staging too.
 - *Note:* staging env values are quote-wrapped by the CLI; `node --env-file` strips them, but hand-rolled PowerShell parsing must `.Trim('"')`.
 
-## Vercel (Phase B §B2) — account + project linked
+## GitHub repo + branch protection (Phase B §B1, W00-11) — done
 
-- `vercel login` (device flow) → **bretudev**; `vercel link` → project `ai-guest-concierge-1` (`bretudev/ai-guest-concierge-1`, prj_TpEZGM0RCvd0mf9HPDiRkbH0Io6a).
+- gh accounts: switched active account to **jtanori** (has `workflow` scope; Bretudev kept in keyring). Login was already done via `gh auth login`.
+- `gh repo create ai-guest-concierge-1 --private --source . --remote origin --push` → **https://github.com/jtanori/ai-guest-concierge-1**, `main` pushed with tracking.
+- Branch protection on a **private** repo required GitHub Pro → founder chose to make the repo **public** (`gh repo edit --visibility public --accept-visibility-change-consequences`); no secrets in git (`docs/` plan files + references to private plan URLs only, per the plan library).
+- `protect-main.sh` logic applied via `gh api` (bash not available on this box): PRs required, 1 approving review, stale reviews dismissed, admins bound, linear history, no force-push/deletions.
+- **AC evidence (W00-11 — "A direct push to main is rejected"):** see the GH006 rejection captured in the next runbook entry; the doc-update commit that follows is delivered correctly **via PR** instead.
+
+## Vercel (Phase B §B2) — account + project re-linked to jtanori
+
 - The linked-project CLI deploy flow requires either Git integration (once the GitHub repo exists → B1) or a scope token in GH secrets (`amondnet/vercel-action`); the CI `preview` job stays a stub until then. Deploying `src/server.ts` as a Vercel Node function is a later PR — W00 scope is only the link.
 
 
@@ -33,23 +40,37 @@ functions** via `neon init` + `neon deploy` (`neon.ts` is the policy of record).
 
 **AC (verbatim):** A direct push to main is rejected.
 
-**Status: NOT DONE — local half complete, remote half pending (Phase B).**
+**Status: DONE (pending workbook tick) — both halves complete.**
 
 - [x] Local: `git init -b main` in project root (was not a repo).
-- [x] Local: `.gitignore` — rejects `.env*` (except `.env.example`), node_modules, dist, coverage.
+- [x] Local: `.gitignore` — rejects `.env` and `.env.*` (except `!.env.example`), node_modules, dist, coverage.
 - [x] Local: PR template `.github/pull_request_template.md` — item ID + verbatim AC + evidence checklist + isolation/i18n notes.
 - [x] Local: `.editorconfig` (LF, utf-8, 2-space), `.gitattributes` (LF)
 - [x] Local: project scaffold — package.json, tsconfig (strict), eslint flat config.
 - [x] Local: `scripts/protect-main.sh` — the exact `gh` call that applies branch protection once the remote exists.
-- [ ] **YOU (Phase B):** create the `ai-guest-concierge` repo on GitHub, add the remote:
-  ```powershell
-  git remote add origin git@github.com:<ORG>/ai-guest-concierge.git
-  git push -u origin main
+- [x] **Remote:** repo created + pushed as `jtanori/ai-guest-concierge-1` (private at creation, made public after — see below):
+  ```text
+  gh auth switch --user jtanori
+  gh repo create jtanori/ai-guest-concierge-1 --private --source . --remote origin --push
+  gh repo edit jtanori/ai-guest-concierge-1 --visibility public --accept-visibility-change-consequences
   ```
-  then run `ORG=<org> REPO=ai-guest-concierge ./scripts/protect-main.sh` (needs Git Bash or WSL; requires `gh` authenticated as admin).
-- [ ] **Evidence (AC test):** `git push origin main` from a working tree with no open PR → refused with `GH006` / `remote: error: gh006: Protected branch update failed`.
+- [x] **Protection:** `scripts/protect-main.sh` semantics applied via `gh api` (bash/WSL unavailable on this box):
+  `gh api -X PUT repos/jtanori/ai-guest-concierge-1/branches/main/protection --input protect.json`
+  → PRs required, 1 approving review, stale reviews dismissed, admins bound, linear history, no force-push/deletions.
+- [x] **Evidence (AC test):** `git push origin main` rejected with
+  `GH006: Protected branch update failed for refs/heads/main. - Changes must be made through a pull request.`
 
-**Notes.** No CI contexts are attached until W00-12's workflow exists (the script prints the follow-up command). Admins are bound (`enforce_admins: true`) so the rule applies to the founder too.
+**Notes.** Private-repo branch protection requires GitHub Pro; the founder chose to publish the repo instead (repo contains only docs/tooling — secrets live in gitignored `.env.*` and were never committed). Admins are bound (`enforce_admins: true`) so the rule applies to the founder too. CI check contexts (lint/typecheck/test) can now be attached — job names exist in the W00-12 workflow.
+
+**Protection softened for solo development (founder decision):** the founder is the only
+collaborator and reviews via an AI agent commenting under their own login — which can
+never approve its own PRs, so the "1 approving review" requirement deadlocked merging.
+Current rule set on `main` (still friendly to a future team: everything but the review
+counter survived):
+- PRs still required (no direct pushes — GH006 probe still applies);
+- required status checks: `lint`, `typecheck`, `test`, `preview` (non-strict, no branch staleness);
+- linear history, no force-pushes, no deletions, admins bound;
+- `required_pull_request_reviews` **removed** (self-merge allowed once checks pass).
 
 **Evidence (local half, verified):**
 ```text
@@ -62,15 +83,16 @@ bd14424 W00-11: repo governance — gitignore, PR template, branch-protection sc
 
 **AC (verbatim):** A PR produces a preview URL and a green check.
 
-**Status: NOT DONE — remote half pending (Phase B). Local equivalents verified green.**
+**Status: IN PROGRESS — remote half partially closed (PR #1 carries green lint/typecheck/test/preview); preview URL pending.**
 
 - [x] Toolchain: TypeScript 5 (strict, NodeNext), vitest 3, eslint 9 (flat config), prettier 3 — npm scripts `lint`, `typecheck`, `test` under Node 24.
 - [x] First module ships with its tests and obeys D14: `src/i18n/catalog.ts` — ES/EN string catalogue, key parity enforced by type + runtime test.
 - [x] CI workflow `.github/workflows/ci.yml`: three required contexts (`lint`, `typecheck`, `test`) on every PR; `preview` job stubbed and explicitly marked as a Phase B step.
 - [x] Local evidence (below): lint + typecheck + test all green.
-- [ ] **YOU (Phase B):** push to GitHub (Actions work when the repo exists); open one throwaway PR → `lint`/`typecheck`/`test` green check.
-- [ ] **YOU (Phase B):** create a Vercel account, connect the repo, then replace the `preview` stub in `ci.yml` with the Vercel deploy action so the job returns a real preview URL.
-- [ ] **Evidence (AC test):** the throwaway PR shows a green check AND a reachable preview URL. Only then mark Done in the workbook.
+- [x] Remote half: Actions run on the real repo — PR #1 shows `lint`/`typecheck`/`test` green (plus `preview` stub pass and GitGuardian).
+- [x] Vercel account + project link exist (re-linked under **jtanori**, org `team_MyTwcVzABQrWXY7JvB8qqhlS`, project `prj_3Ir8unz07uhUxzicUi5uHfMGhdx5` — see the §B2 entry above).
+- [ ] **REMAINING (Phase B):** connect the existing repo to the existing Vercel project (dashboard import or `VERCEL_TOKEN` + the two jtanori ids in GH secrets), then replace the `preview` stub in `ci.yml` with the Vercel deploy step so the job returns a real preview URL.
+- [ ] **Evidence (AC test):** a PR shows a green check AND a reachable preview URL. Only then mark Done in the workbook.
 
 **Evidence (local half, verified):**
 ```text

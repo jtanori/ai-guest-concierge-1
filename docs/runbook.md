@@ -121,6 +121,31 @@ $ npm test   # 30 passed (30) — 13 of them the golden-set format tests
 
 Items the AC does NOT cover (and are therefore not invented here): the golden set v2 (40-50 questions) freezes at G1 (S03) with real hotel content; scoring (answer/escalate/false/needless) is the S06 eval harness.
 
+## W00-17 — Adversarial fixture hotel (0.50d)
+
+**AC (verbatim):** Seeded in staging; every messy case reproducible.
+
+**Status: NOT DONE — staging seed pending (Phase B; needs the staging DB from W00-13 and the S02 seed machinery). Data pack + per-case reproducibility tests verified locally.**
+
+- [x] `src/fixtures/fixture-hotel.ts` — the demo property ("demo") with all six messy cases from plan §4, as immutable article **versions** (D5 UUIDs) + structured facts:
+  1. `menu-flattened-two-column` — two-column PDF menu flattened to one-column dish+price pairs
+  2. `ocr-noise-scan` — scanned policy with digit-for-letter OCR noise
+  3. `contradiction-pool-hours` — two `pool.hours` facts, one topic_key, different values (21:00 vs 20:00) **and both unverified** — the case contradiction detection must refuse to resolve silently
+  4. `spa-prices-foreign-language` — article body `es`, price facts arrive in `fr`
+  5. `marketing-fact-buried-paragraph-11` — ≥3,000-paragraph-worthy marketing article (~3,200 words, deterministic) whose sole useful fact (`gym.hours` = 24/7) sits in paragraph 11 once
+  6. `noticeboard-picture-only` — `body: null`; the version stays citable while nothing can be chunked/embedded
+- [x] `MESSY_CASES` — machine-readable case registry (id, what breaks, which version).
+- [x] Tests: one explicit reproducibility assertion per case + D5 integrity (every fact resolves to an existing article **version**, never an article row).
+- [x] noUncheckedIndexedAccess/strict type settings apply to the fixture itself.
+- [ ] **YOU (Phase B):** once staging exists (W00-13) and the S02 seed builder lands, run the fixture seed against staging (`docker compose exec` equivalent) — the six cases must each be present and the two `pool.hours` rows must be flagged unresolved.
+- [ ] **Evidence (AC test):** the staging seed run logs each of the six case ids.
+
+**Evidence (local, verified):**
+```text
+$ npm test   # 48 passed (48) — 9 fixture-reproducibility tests
+$ npm run typecheck && npm run lint   # clean
+```
+
 ## W00-19 — Event taxonomy written (0.50d)
 
 **AC (verbatim):** 18 events merged as a typed module; contract test passes; no dashboard before this exists.

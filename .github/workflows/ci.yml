@@ -48,11 +48,19 @@ jobs:
       - run: npm test
 
   # Vercel preview — the AC closes here: every PR gets a unique deployment
-  # URL (not an alias) from the linked jtanori project, then /api/health is
+  # URL (not an alias) from the linked jtanori project, then /api/health.ts is
   # probed over HTTPS; the job fails unless the probe is HTTP 200.
+  # Fork PRs are skipped: the pull_request token carries no repo secrets
+  # (GitHub withholds VERCEL_TOKEN), so a fork run could never deploy — that
+  # limitation is documented in the W00-12 runbook note. `preview` is
+  # deliberately NOT in branch protection's required contexts so a skipped
+  # fork preview cannot dead-end a merge; it remains the welcome gate for
+  # internal PRs.
   preview:
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

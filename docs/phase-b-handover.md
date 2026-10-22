@@ -28,6 +28,8 @@ git reset --hard origin/main
 
 ## B2 — CI green check + preview URL (W00-12)
 
+Vercel re-linked under **jtanori**: org `team_MyTwcVzABQrWXY7JvB8qqhlS`, project `prj_3Ir8unz07uhUxzicUi5uHfMGhdx5` (supersedes the bretudev ids in the runbook entry). Preview URL path unchanged below.
+
 ```powershell
 # 1. Open the throwaway PR (their first run exercises Actions):
 git checkout -b ci-probe; git push -u origin ci-probe

@@ -28,3 +28,6 @@ Thumbs.db
 # Tool state (linked project ids — secrets live in env files)
 .neon/
 .vercel/
+
+.vercel
+.env*

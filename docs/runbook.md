@@ -23,9 +23,16 @@ functions** via `neon init` + `neon deploy` (`neon.ts` is the policy of record).
 - Same `smoke-neon.ts` run against `.env.staging`: all four services PASS on staging too.
 - *Note:* staging env values are quote-wrapped by the CLI; `node --env-file` strips them, but hand-rolled PowerShell parsing must `.Trim('"')`.
 
-## Vercel (Phase B §B2) — account + project linked
+## GitHub repo + branch protection (Phase B §B1, W00-11) — done
 
-- `vercel login` (device flow) → **bretudev**; `vercel link` → project `ai-guest-concierge-1` (`bretudev/ai-guest-concierge-1`, prj_TpEZGM0RCvd0mf9HPDiRkbH0Io6a).
+- gh accounts: switched active account to **jtanori** (has `workflow` scope; Bretudev kept in keyring). Login was already done via `gh auth login`.
+- `gh repo create ai-guest-concierge-1 --private --source . --remote origin --push` → **https://github.com/jtanori/ai-guest-concierge-1**, `main` pushed with tracking.
+- Branch protection on a **private** repo required GitHub Pro → founder chose to make the repo **public** (`gh repo edit --visibility public --accept-visibility-change-consequences`); no secrets in git (`docs/` plan files + references to private plan URLs only, per the plan library).
+- `protect-main.sh` logic applied via `gh api` (bash not available on this box): PRs required, 1 approving review, stale reviews dismissed, admins bound, linear history, no force-push/deletions.
+- **AC evidence (W00-11 — "A direct push to main is rejected"):** see the GH006 rejection captured in the next runbook entry; the doc-update commit that follows is delivered correctly **via PR** instead.
+
+## Vercel (Phase B §B2) — account + project re-linked to jtanori
+
 - The linked-project CLI deploy flow requires either Git integration (once the GitHub repo exists → B1) or a scope token in GH secrets (`amondnet/vercel-action`); the CI `preview` job stays a stub until then. Deploying `src/server.ts` as a Vercel Node function is a later PR — W00 scope is only the link.
 
 

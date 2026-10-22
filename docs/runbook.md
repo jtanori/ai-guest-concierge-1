@@ -62,6 +62,16 @@ functions** via `neon init` + `neon deploy` (`neon.ts` is the policy of record).
 
 **Notes.** Private-repo branch protection requires GitHub Pro; the founder chose to publish the repo instead (repo contains only docs/tooling — secrets live in gitignored `.env.*` and were never committed). Admins are bound (`enforce_admins: true`) so the rule applies to the founder too. CI check contexts (lint/typecheck/test) can now be attached — job names exist in the W00-12 workflow.
 
+**Protection softened for solo development (founder decision):** the founder is the only
+collaborator and reviews via an AI agent commenting under their own login — which can
+never approve its own PRs, so the "1 approving review" requirement deadlocked merging.
+Current rule set on `main` (still friendly to a future team: everything but the review
+counter survived):
+- PRs still required (no direct pushes — GH006 probe still applies);
+- required status checks: `lint`, `typecheck`, `test`, `preview` (non-strict, no branch staleness);
+- linear history, no force-pushes, no deletions, admins bound;
+- `required_pull_request_reviews` **removed** (self-merge allowed once checks pass).
+
 **Evidence (local half, verified):**
 ```text
 $ git log --oneline

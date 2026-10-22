@@ -40,23 +40,27 @@ functions** via `neon init` + `neon deploy` (`neon.ts` is the policy of record).
 
 **AC (verbatim):** A direct push to main is rejected.
 
-**Status: NOT DONE — local half complete, remote half pending (Phase B).**
+**Status: DONE (pending workbook tick) — both halves complete.**
 
 - [x] Local: `git init -b main` in project root (was not a repo).
-- [x] Local: `.gitignore` — rejects `.env*` (except `.env.example`), node_modules, dist, coverage.
+- [x] Local: `.gitignore` — rejects `.env` and `.env.*` (except `!.env.example`), node_modules, dist, coverage.
 - [x] Local: PR template `.github/pull_request_template.md` — item ID + verbatim AC + evidence checklist + isolation/i18n notes.
 - [x] Local: `.editorconfig` (LF, utf-8, 2-space), `.gitattributes` (LF)
 - [x] Local: project scaffold — package.json, tsconfig (strict), eslint flat config.
 - [x] Local: `scripts/protect-main.sh` — the exact `gh` call that applies branch protection once the remote exists.
-- [ ] **YOU (Phase B):** create the `ai-guest-concierge` repo on GitHub, add the remote:
-  ```powershell
-  git remote add origin git@github.com:<ORG>/ai-guest-concierge.git
-  git push -u origin main
+- [x] **Remote:** repo created + pushed as `jtanori/ai-guest-concierge-1` (private at creation, made public after — see below):
+  ```text
+  gh auth switch --user jtanori
+  gh repo create jtanori/ai-guest-concierge-1 --private --source . --remote origin --push
+  gh repo edit jtanori/ai-guest-concierge-1 --visibility public --accept-visibility-change-consequences
   ```
-  then run `ORG=<org> REPO=ai-guest-concierge ./scripts/protect-main.sh` (needs Git Bash or WSL; requires `gh` authenticated as admin).
-- [ ] **Evidence (AC test):** `git push origin main` from a working tree with no open PR → refused with `GH006` / `remote: error: gh006: Protected branch update failed`.
+- [x] **Protection:** `scripts/protect-main.sh` semantics applied via `gh api` (bash/WSL unavailable on this box):
+  `gh api -X PUT repos/jtanori/ai-guest-concierge-1/branches/main/protection --input protect.json`
+  → PRs required, 1 approving review, stale reviews dismissed, admins bound, linear history, no force-push/deletions.
+- [x] **Evidence (AC test):** `git push origin main` rejected with
+  `GH006: Protected branch update failed for refs/heads/main. - Changes must be made through a pull request.`
 
-**Notes.** No CI contexts are attached until W00-12's workflow exists (the script prints the follow-up command). Admins are bound (`enforce_admins: true`) so the rule applies to the founder too.
+**Notes.** Private-repo branch protection requires GitHub Pro; the founder chose to publish the repo instead (repo contains only docs/tooling — secrets live in gitignored `.env.*` and were never committed). Admins are bound (`enforce_admins: true`) so the rule applies to the founder too. CI check contexts (lint/typecheck/test) can now be attached — job names exist in the W00-12 workflow.
 
 **Evidence (local half, verified):**
 ```text

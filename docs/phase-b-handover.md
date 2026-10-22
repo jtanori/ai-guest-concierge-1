@@ -4,31 +4,23 @@ Everything below needs a credential or a cloud account I asked not to assume.
 Run the blocks in order; each one closes the named acceptance criterion and
 shows you the evidence to expect. Nothing here changes the plan.
 
-## B1 — Host repo + protect main (W00-11)
+## B1 — Host repo + protect main (W00-11) — done
 
-```powershell
-# 1. Create the GitHub repo (public private as you prefer):
-gh repo create <ORG>/ai-guest-concierge --private --source . --remote origin
-git push -u origin main
-
-# 2. Apply branch protection (Git Bash or WSL):
-ORG=<ORG> REPO=ai-guest-concierge ./scripts/protect-main.sh
-
-# 3. Attach the three CI checks (they exist now that ci.yml branches exist):
-gh api -X PUT repos/<ORG>/ai-guest-concierge/branches/main/protection/required_status_checks `
-  -f strict=false -f "contexts[]=lint" -f "contexts[]=typecheck" -f "contexts[]=test"
-
-# 4. THE AC TEST — a direct push to main must be rejected:
-git commit --allow-empty -m "protection probe"; git push origin main
-#   Expect: refused with "GH006: Protected branch update failed". Then:
-git reset --hard origin/main
-```
-
-**Evidence to keep:** the GH006 rejection output.
+```text
+1. Repo created + pushed:
+   gh repo create jtanori/ai-guest-concierge-1 --source . --remote origin --push
+2. Made public (private-repo protection needs GitHub Pro): 
+   gh repo edit jtanori/ai-guest-concierge-1 --visibility public --accept-visibility-change-consequences
+3. Protection applied via `gh api` (bash not available on this Windows box —
+   scripts/protect-main.sh documents the equivalents): PRs required, 1 approving
+   review, stale reviews dismissed, admins bound, linear history, no force-push/deletes.
+4. AC evidence: `git push origin main` → `GH006: Protected branch update failed ...
+   Changes must be made through a pull request.`
+**Evidence kept:** the GH006 rejection output (quoted in `docs/runbook.md`, W00-11 section).
 
 ## B2 — CI green check + preview URL (W00-12)
 
-Vercel re-linked under **jtanori**: org `team_MyTwcVzABQrWXY7JvB8qqhlS`, project `prj_3Ir8unz07uhUxzicUi5uHfMGhdx5` (supersedes the bretudev ids in the runbook entry). Preview URL path unchanged below.
+Vercel is re-linked under **jtanori**: org `team_MyTwcVzABQrWXY7JvB8qqhlS`, project `prj_3Ir8unz07uhUxzicUi5uHfMGhdx5`. Preview URL wiring below.
 
 ```powershell
 # 1. Open the throwaway PR (their first run exercises Actions):
@@ -39,7 +31,7 @@ gh pr create --title "ci probe" --body "W00-12 AC: PR → green check + preview 
 gh pr checks
 ```
 
-**Preview URL:** Vercel account + project link are **done** (`vercel login` → bretudev; `vercel link` → `ai-guest-concierge-1`; ids: `team_qLKXDE77edvQ4sVhisBIxmJI` / `prj_TpEZGM0RCvd0mf9HPDiRkbH0Io6a`). Once the repo from B1 exists, EITHER import it in vercel.com (Git integration) OR keep CLI-based CI by adding `VERCEL_TOKEN` (+ the two ids above) to GH repo secrets — then say so, and I replace the `preview` stub in `.github/workflows/ci.yml` with the Vercel deploy step so the PR carries the URL; the AC closes when the probe PR shows both.
+**Preview URL:** Vercel account + project link are **done** and re-linked under the repo owner account: `vercel login` → **jtanori**; `vercel link` → `ai-guest-concierge-1`; org `team_MyTwcVzABQrWXY7JvB8qqhlS`, project `prj_3Ir8unz07uhUxzicUi5uHfMGhdx5` (earlier notes naming `bretudev` are superseded — do NOT configure secrets with those). The repo already exists (B1, above), so at next wiring EITHER import it in vercel.com (Git integration) OR keep CLI-based CI by adding `VERCEL_TOKEN` (+ the two jtanori ids above) to GH repo secrets — then say so, and I replace the `preview` stub in `.github/workflows/ci.yml` with the Vercel deploy step so the PR carries the URL; the AC closes when the probe PR shows both.
 
 **Evidence to keep:** the `gh pr checks` output + the preview URL.
 

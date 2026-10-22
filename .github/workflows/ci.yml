@@ -6,11 +6,11 @@ on:
     branches: [main]
 
 # W00-12 — "A PR produces a preview URL and a green check."
-# The lint/typecheck/test checks run immediately. The `preview` job is the
-# PR preview phase: it is wired as a no-op until the Phase B hosting
-# account exists, then replaced with the Vercel deploy action so the job
-# emits the preview URL. Kept in the tree now so branch protection (W00-11)
-# can require the head context from day one.
+# lint/typecheck/test run immediately. preview deploys the PR to the linked
+# Vercel project (repo secrets VERCEL_TOKEN / VERCEL_ORG_ID / VERCEL_PROJECT_ID)
+# and probes the deployed /api/health endpoint — the proof is a green check
+# AND a reachable URL printed in the log. The deployed surface is the
+# CI probe in api/health.ts until S01 ships real routes.
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -45,15 +45,31 @@ jobs:
       - run: npm ci
       - run: npm test
 
-  # Placeholder — implementation is a Phase B step (needs a Vercel account).
-  # Replace the echo with amondnet/vercel-action (or vercel CLI) and surface
-  # the returned URL; the AC is only marked Done once a real PR shows both a
-  # green check and a reachable preview URL.
+  # Vercel preview — the AC closes here: every PR gets a unique deployment
+  # URL (not an alias) from the linked jtanori project, then /api/health is
+  # probed over HTTPS; the job fails unless the probe is HTTP 200.
   preview:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
-      - name: preview (stub until hosting account exists)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Deploy PR preview to Vercel
+        id: deploy
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
-          echo "PREVIEW STUB: configure Vercel in Phase B (ai-guest-concierge docs/runbook.md → W00-12)"
+          URL="$(npx -y vercel@latest deploy --yes --token "$VERCEL_TOKEN")"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "PREVIEW URL: $URL"
+      - name: Probe preview /api/health
+        run: |
+          URL="${{ steps.deploy.outputs.url }}"
+          CODE="$(curl -s -o /dev/null -w '%{http_code}' "$URL/api/health")"
+          echo "preview /api/health -> HTTP $CODE"
+          test "$CODE" = "200"

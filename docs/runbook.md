@@ -15,6 +15,19 @@ functions** via `neon init` + `neon deploy` (`neon.ts` is the policy of record).
 - **Env:** `.env.local` (gitignored) holds 10 Neon variables; `.env.example` documents them.
 - **Branch policy in neon.ts:** new non-default branches auto-expire (7d TTL) — staging/preview branches are therefore disposable by design; W00-13's "staging ≠ prod" closes via two branches with distinct credentials, checked by `npm run check:env`.
 
+## Neon staging branch + two-environment gate (beyond-board infra) — wired and verified
+
+- `neon checkout staging --create` → branch `br-red-recipe-b42k56zk` (7d-Expiring policy applies); `neon deploy` provisioned its own bucket/function/auth and pulled 10 vars into `.env.staging` (gitignored, alongside prod's `.env.local`; neither file's values may ever be printed or committed).
+- `npm run check:env` now passes on real cloud values:
+  `staging -> ep-wispy-math-b4ir6xpv-pooler...` · `prod -> ep-solitary-hill-b49xrkad-pooler...` (distinct hosts ⇒ no shared DB possible).
+- Same `smoke-neon.ts` run against `.env.staging`: all four services PASS on staging too.
+- *Note:* staging env values are quote-wrapped by the CLI; `node --env-file` strips them, but hand-rolled PowerShell parsing must `.Trim('"')`.
+
+## Vercel (Phase B §B2) — account + project linked
+
+- `vercel login` (device flow) → **bretudev**; `vercel link` → project `ai-guest-concierge-1` (`bretudev/ai-guest-concierge-1`, prj_TpEZGM0RCvd0mf9HPDiRkbH0Io6a).
+- The linked-project CLI deploy flow requires either Git integration (once the GitHub repo exists → B1) or a scope token in GH secrets (`amondnet/vercel-action`); the CI `preview` job stays a stub until then. Deploying `src/server.ts` as a Vercel Node function is a later PR — W00 scope is only the link.
+
 
 ## W00-11 — Repo, branch protection, org setup (0.50d)
 

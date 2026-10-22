@@ -24,4 +24,7 @@ Thumbs.db
 .idea/
 .vscode/
 !.vscode/launch.json
-.neon
+
+# Tool state (linked project ids — secrets live in env files)
+.neon/
+.vercel/

@@ -37,7 +37,7 @@ gh pr create --title "ci probe" --body "W00-12 AC: PR → green check + preview 
 gh pr checks
 ```
 
-**Preview URL:** needs a Vercel account → vercel.com → "Add New Project" → import the repo (Next/auto-detect). Then tell me, and I replace the `preview` stub in `.github/workflows/ci.yml` with the Vercel deploy step so the PR carries the URL; the AC closes when the probe PR shows both.
+**Preview URL:** Vercel account + project link are **done** (`vercel login` → bretudev; `vercel link` → `ai-guest-concierge-1`; ids: `team_qLKXDE77edvQ4sVhisBIxmJI` / `prj_TpEZGM0RCvd0mf9HPDiRkbH0Io6a`). Once the repo from B1 exists, EITHER import it in vercel.com (Git integration) OR keep CLI-based CI by adding `VERCEL_TOKEN` (+ the two ids above) to GH repo secrets — then say so, and I replace the `preview` stub in `.github/workflows/ci.yml` with the Vercel deploy step so the PR carries the URL; the AC closes when the probe PR shows both.
 
 **Evidence to keep:** the `gh pr checks` output + the preview URL.
 

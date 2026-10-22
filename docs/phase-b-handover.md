@@ -9,13 +9,15 @@ shows you the evidence to expect. Nothing here changes the plan.
 ```text
 1. Repo created + pushed:
    gh repo create jtanori/ai-guest-concierge-1 --source . --remote origin --push
-2. Made public (private-repo protection needs GitHub Pro): 
+2. Made public (private-repo protection needs GitHub Pro):
    gh repo edit jtanori/ai-guest-concierge-1 --visibility public --accept-visibility-change-consequences
 3. Protection applied via `gh api` (bash not available on this Windows box —
    scripts/protect-main.sh documents the equivalents): PRs required, 1 approving
    review, stale reviews dismissed, admins bound, linear history, no force-push/deletes.
 4. AC evidence: `git push origin main` → `GH006: Protected branch update failed ...
    Changes must be made through a pull request.`
+```
+
 **Evidence kept:** the GH006 rejection output (quoted in `docs/runbook.md`, W00-11 section).
 
 ## B2 — CI green check + preview URL (W00-12)

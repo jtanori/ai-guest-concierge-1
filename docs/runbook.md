@@ -73,15 +73,16 @@ bd14424 W00-11: repo governance — gitignore, PR template, branch-protection sc
 
 **AC (verbatim):** A PR produces a preview URL and a green check.
 
-**Status: NOT DONE — remote half pending (Phase B). Local equivalents verified green.**
+**Status: IN PROGRESS — remote half partially closed (PR #1 carries green lint/typecheck/test/preview); preview URL pending.**
 
 - [x] Toolchain: TypeScript 5 (strict, NodeNext), vitest 3, eslint 9 (flat config), prettier 3 — npm scripts `lint`, `typecheck`, `test` under Node 24.
 - [x] First module ships with its tests and obeys D14: `src/i18n/catalog.ts` — ES/EN string catalogue, key parity enforced by type + runtime test.
 - [x] CI workflow `.github/workflows/ci.yml`: three required contexts (`lint`, `typecheck`, `test`) on every PR; `preview` job stubbed and explicitly marked as a Phase B step.
 - [x] Local evidence (below): lint + typecheck + test all green.
-- [ ] **YOU (Phase B):** push to GitHub (Actions work when the repo exists); open one throwaway PR → `lint`/`typecheck`/`test` green check.
-- [ ] **YOU (Phase B):** create a Vercel account, connect the repo, then replace the `preview` stub in `ci.yml` with the Vercel deploy action so the job returns a real preview URL.
-- [ ] **Evidence (AC test):** the throwaway PR shows a green check AND a reachable preview URL. Only then mark Done in the workbook.
+- [x] Remote half: Actions run on the real repo — PR #1 shows `lint`/`typecheck`/`test` green (plus `preview` stub pass and GitGuardian).
+- [x] Vercel account + project link exist (re-linked under **jtanori**, org `team_MyTwcVzABQrWXY7JvB8qqhlS`, project `prj_3Ir8unz07uhUxzicUi5uHfMGhdx5` — see the §B2 entry above).
+- [ ] **REMAINING (Phase B):** connect the existing repo to the existing Vercel project (dashboard import or `VERCEL_TOKEN` + the two jtanori ids in GH secrets), then replace the `preview` stub in `ci.yml` with the Vercel deploy step so the job returns a real preview URL.
+- [ ] **Evidence (AC test):** a PR shows a green check AND a reachable preview URL. Only then mark Done in the workbook.
 
 **Evidence (local half, verified):**
 ```text

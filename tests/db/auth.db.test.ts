@@ -109,9 +109,11 @@ describe("staff identity + four roles under RLS (db)", () => {
   });
 
   afterAll(async () => {
-    await dropScratch();
+    // Graceful disconnect BEFORE the scratch drop so no connection notices
+    // the database vanishing underneath it.
     await owner.end();
     await client.end();
+    await dropScratch();
   });
 
   it("resolves the DB-side role for every one of the four roles", async () => {

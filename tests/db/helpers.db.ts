@@ -51,6 +51,10 @@ export async function dropScratch(): Promise<void> {
 
 export function connectScratch(): Promise<pg.Client> {
   const client = new pg.Client({ connectionString: scratchUrl() });
+  // Scratch lifecycle kills connections out from under suites (the next
+  // file's beforeAll DROPs the db): the socket 'error' must never become an
+  // unhandled event on the test process.
+  client.on("error", () => undefined);
   return client.connect().then(() => client);
 }
 

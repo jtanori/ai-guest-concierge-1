@@ -198,12 +198,22 @@ describe("schema (db)", () => {
       [ORG_ID, PROPERTY_ID, articleId],
     );
     const v1Id = v1.rows[0]!.article_version_id;
-    // New versions insert RETIRED; the embed-first flow promotes explicitly.
+    // New versions insert RETIRED; the embed-first flow promotes explicitly —
+    // and promotion REFUSES to publish an unindexed version.
     const state = await client.query<{ is_current: boolean }>(
       "SELECT is_current FROM article_versions WHERE article_version_id = $1",
       [v1Id],
     );
     expect(state.rows[0]!.is_current).toBe(false);
+    await expect(
+      client.query("SELECT promote_article_version($1)", [v1Id]),
+    ).rejects.toThrow(/embedding/);
+
+    // Embed first — then one atomic step demotes nothing and raises v1.
+    await client.query(
+      "UPDATE article_versions SET embedding = $2 WHERE article_version_id = $1",
+      [v1Id, `[${Array.from({ length: 1536 }, () => 0).join(",")}]`],
+    );
     await client.query("SELECT promote_article_version($1)", [v1Id]);
     let current = await client.query<{ version_no: number }>(
       "SELECT version_no FROM article_versions WHERE article_id = $1 AND is_current",
@@ -239,10 +249,17 @@ describe("schema (db)", () => {
     expect(current.rows).toHaveLength(1);
     expect(current.rows[0]!.version_no).toBe(2);
 
-    // A retired version can never be re-raised by a plain UPDATE.
+    // A retired version can never be re-raised by a plain UPDATE — the
+    // trusted context is a ROLE membership, not a settable GUC.
     await expect(
       client.query("UPDATE article_versions SET is_current = true WHERE article_version_id = $1", [v1Id]),
-    ).rejects.toThrow(/append-only/);
+    ).rejects.toThrow(/moves only inside promote_article_version/);
+    // The historical bypass attempt (set the no-longer-used GUC) changes
+    // nothing.
+    await client.query("SELECT set_config('app.article_version_promotion', 'atomic', false)");
+    await expect(
+      client.query("UPDATE article_versions SET is_current = true WHERE article_version_id = $1", [v1Id]),
+    ).rejects.toThrow(/promote_article_version/);
     // And a body rewrite stays forbidden on any version.
     await expect(
       client.query("UPDATE article_versions SET body = 'edited after the fact' WHERE article_version_id = $1", [v2Id]),
@@ -264,14 +281,14 @@ describe("schema (db)", () => {
     );
     const v1Id = v1.rows[0]!.article_version_id;
 
-    // The version goes live first (promotion), the asynchronous backfill
-    // follows — an update of ONLY the embedding must never hit the wall.
-    await client.query("SELECT promote_article_version($1)", [v1Id]);
     const vector = `[${Array.from({ length: 1536 }, () => 0).join(",")}]`;
+    // The backfill may come before OR after a legitimate promotion — only
+    // the update of an embedding must never hit the wall.
     await client.query(
       "UPDATE article_versions SET embedding = $2 WHERE article_version_id = $1",
       [v1Id, vector],
     );
+    await client.query("SELECT promote_article_version($1)", [v1Id]);
     const reread = await client.query<{ embedding: string }>(
       "SELECT embedding::text AS embedding FROM article_versions WHERE article_version_id = $1",
       [v1Id],
@@ -282,21 +299,15 @@ describe("schema (db)", () => {
     await expect(
       client.query("UPDATE article_versions SET body = 'rewrite' WHERE article_version_id = $1", [v1Id]),
     ).rejects.toThrow(/append-only/);
-    // ...and after v2 (ready) is promoted, a re-promotion of the retired
-    // version is still impossible.
-    await client.query(
-      `INSERT INTO article_versions (org_id, property_id, article_id, version_no, body)
-       VALUES ($1, $2, $3, 2, 'The pool schedule changed for fall.')`,
-      [ORG_ID, PROPERTY_ID, articleId],
-    );
-    const v2 = await client.query<{ article_version_id: string }>(
-      "SELECT article_version_id FROM article_versions WHERE article_id = $1 AND version_no = 2",
-      [articleId],
-    );
-    await client.query("SELECT promote_article_version($1)", [v2.rows[0]!.article_version_id]);
+    // ...and an attempt to declare a NEW version current via INSERT is
+    // impossible as well: rows are born retired.
     await expect(
-      client.query("UPDATE article_versions SET is_current = true WHERE article_version_id = $1", [v1Id]),
-    ).rejects.toThrow(/append-only/);
+      client.query(
+        `INSERT INTO article_versions (org_id, property_id, article_id, version_no, body, is_current)
+         VALUES ($1, $2, $3, 2, 'The pool schedule changed for fall.', true)`,
+        [ORG_ID, PROPERTY_ID, articleId],
+      ),
+    ).rejects.toThrow(/born retired|insert retired/);
   });
 
   it("protects D10 evidence: events and audit_log are append-only", async () => {

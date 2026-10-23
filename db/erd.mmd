@@ -1,0 +1,290 @@
+erDiagram
+    %% S01-01 — ERD of the 25-table baseline (db/migrations/0001_init.sql).
+    %% The parity test (tests/db/schema-parity.test.ts) parses entity names from
+    %% this file and compares them with the live database's table set: they must
+    %% match exactly, so this diagram cannot drift from reality.
+
+    organizations ||--o{ properties : "has"
+    properties ||--o{ memberships : "scopes"
+    users ||--o{ memberships : "joins via"
+    roles ||--o{ memberships : "grants"
+    properties ||--o{ channel_connections : "exposes"
+    channel_connections ||--o{ channel_identities : "carries"
+    properties ||--o{ conversations : "hosts"
+    channel_connections ||--o{ conversations : "originates"
+    channel_identities |o--o{ conversations : "speaks as"
+    conversations ||--o{ messages : "contains"
+    messages ||--o{ message_delivery_events : "travels via"
+    conversations |o--o{ service_requests : "creates"
+    properties ||--o{ service_requests : "serves"
+    service_requests ||--o{ assignments : "is worked by"
+    users ||--o{ assignments : "assigned to"
+    conversations |o--o{ internal_notes : "annotated"
+    service_requests |o--o{ internal_notes : "annotated"
+    properties ||--o{ knowledge_sources : "ingests"
+    properties ||--o{ knowledge_articles : "documents"
+    knowledge_sources |o--o{ knowledge_articles : "extracts"
+    knowledge_articles ||--o{ article_versions : "immutable history"
+    properties ||--o{ property_facts : "declares"
+    knowledge_sources |o--o{ property_facts : "sourced"
+    conversations ||--o{ ai_runs : "answered by"
+    messages |o--o{ ai_runs : "responds to"
+    ai_runs ||--o{ citations : "grounded in"
+    article_versions ||--o{ citations : "cited via"
+    conversations ||--o{ handoff_reasons : "escaped for"
+    conversations |o--o{ knowledge_gaps : "surfaced from"
+    conversations ||--o{ events : "emits"
+    properties ||--o{ events : "scopes"
+    properties ||--o{ rollups : "summarizes"
+    properties ||--o{ audit_log : "audits"
+    properties ||--o{ outbox : "ships via"
+
+    organizations {
+        uuid org_id PK
+        text name
+        text slug UK
+        timestamptz created_at
+    }
+    properties {
+        uuid property_id PK
+        uuid org_id FK
+        text name
+        text slug UK
+        text time_zone
+        text ai_mode
+        text_array languages
+        jsonb settings
+        timestamptz created_at
+    }
+    users {
+        uuid user_id PK
+        text neon_auth_user_id UK
+        text email UK
+        text display_name
+        timestamptz created_at
+    }
+    roles {
+        smallint role_id PK
+        text name UK
+    }
+    memberships {
+        uuid membership_id PK
+        uuid user_id FK
+        uuid property_id FK
+        smallint role_id FK
+        timestamptz joined_at
+    }
+    channel_connections {
+        uuid channel_connection_id PK
+        uuid org_id FK
+        uuid property_id FK
+        text channel
+        text status
+        jsonb config
+        timestamptz created_at
+    }
+    channel_identities {
+        uuid identity_id PK
+        uuid org_id FK
+        uuid property_id FK
+        uuid connection_id FK
+        text external_id
+        text display_name
+        text language
+        timestamptz created_at
+    }
+    conversations {
+        uuid conversation_id PK
+        uuid org_id FK
+        uuid property_id FK
+        uuid connection_id FK
+        uuid identity_id FK
+        text language
+        text status
+        timestamptz created_at
+        timestamptz last_activity_at
+    }
+    messages {
+        uuid message_id PK
+        uuid org_id FK
+        uuid property_id FK
+        uuid conversation_id FK
+        text direction
+        text author_role
+        text body
+        text language
+        timestamptz created_at
+    }
+    message_delivery_events {
+        uuid delivery_event_id PK
+        uuid org_id FK
+        uuid property_id FK
+        uuid message_id FK
+        text stage
+        text provider_message_id
+        timestamptz occurred_at
+    }
+    service_requests {
+        uuid request_id PK
+        uuid org_id FK
+        uuid property_id FK
+        uuid conversation_id FK
+        text topic
+        text status
+        timestamptz created_at
+        timestamptz acknowledged_at
+        timestamptz resolved_at
+    }
+    assignments {
+        uuid assignment_id PK
+        uuid org_id FK
+        uuid property_id FK
+        uuid request_id FK
+        uuid assigned_to FK
+        timestamptz created_at
+    }
+    internal_notes {
+        uuid note_id PK
+        uuid org_id FK
+        uuid property_id FK
+        uuid conversation_id FK
+        uuid request_id FK
+        uuid author_user_id FK
+        text body
+        timestamptz created_at
+    }
+    knowledge_sources {
+        uuid source_id PK
+        uuid org_id FK
+        uuid property_id FK
+        text kind
+        text title
+        text url
+        timestamptz created_at
+    }
+    knowledge_articles {
+        uuid article_id PK
+        uuid org_id FK
+        uuid property_id FK
+        uuid source_id FK
+        text scope
+        text topic_key
+        text title
+        text language
+        timestamptz created_at
+    }
+    article_versions {
+        uuid article_version_id PK
+        uuid org_id FK
+        uuid property_id FK
+        uuid article_id FK
+        integer version_no
+        boolean is_current "promote after embedding backfill; exactly one per article"
+        timestamptz promoted_at "first promotion; retired history once demoted"
+        text body
+        vector_1536 embedding
+        tsvector tsv
+        timestamptz created_at
+    }
+    property_facts {
+        uuid fact_id PK
+        uuid org_id FK
+        uuid property_id FK
+        text topic_key
+        text fact_key
+        text fact_value
+        text language
+        uuid source_id FK
+        boolean verified
+        vector_1536 embedding
+        tsvector tsv
+        timestamptz created_at
+    }
+    ai_runs {
+        uuid ai_run_id PK
+        uuid org_id FK
+        uuid property_id FK
+        uuid conversation_id FK
+        uuid message_id FK
+        text model_id
+        text prompt_version
+        text decision
+        text reason_code
+        numeric_3_2 confidence
+        integer latency_ms
+        jsonb usage
+        timestamptz created_at
+    }
+    citations {
+        uuid citation_id PK
+        uuid org_id FK
+        uuid property_id FK
+        uuid ai_run_id FK
+        uuid article_version_id FK
+    }
+    handoff_reasons {
+        uuid handoff_id PK
+        uuid org_id FK
+        uuid property_id FK
+        uuid conversation_id FK
+        text reason_code
+        text detail
+        timestamptz created_at
+    }
+    knowledge_gaps {
+        uuid gap_id PK
+        uuid org_id FK
+        uuid property_id FK
+        uuid conversation_id FK
+        text question
+        text language
+        text status
+        timestamptz created_at
+        timestamptz resolved_at
+    }
+    events {
+        bigint event_id PK
+        uuid org_id FK
+        uuid property_id FK
+        uuid conversation_id FK
+        text channel
+        text language
+        text topic
+        text event_type
+        jsonb payload
+        timestamptz created_at
+    }
+    rollups {
+        bigint rollup_id PK
+        uuid org_id FK
+        uuid property_id FK
+        text metric
+        text granularity
+        date window_start
+        numeric value
+        timestamptz generated_at
+    }
+    audit_log {
+        bigint audit_id PK
+        uuid org_id FK
+        uuid property_id FK
+        uuid actor_user_id FK
+        text action
+        text entity_type
+        text entity_id
+        jsonb detail
+        timestamptz created_at
+    }
+    outbox {
+        bigint outbox_id PK
+        uuid org_id FK
+        uuid property_id FK
+        text kind
+        jsonb payload
+        text status
+        integer attempts
+        timestamptz next_attempt_at
+        text last_error
+        timestamptz created_at
+        timestamptz processed_at
+    }

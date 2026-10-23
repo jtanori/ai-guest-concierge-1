@@ -47,6 +47,37 @@ jobs:
       - run: npm ci
       - run: npm test
 
+  # S01-01/02/03 — schema + RLS + isolation suite. `npm test` deliberately
+  # excludes tests/db (its own config, long hooks, single worker); this job
+  # provides the database and runs `npm run db:test`, which fails the build
+  # on any RLS leak (S01-03 AC).
+  db-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: concierge
+          POSTGRES_PASSWORD: concierge
+          POSTGRES_DB: concierge_local
+        ports:
+          - 54329:5432
+        options: >-
+          --health-cmd "pg_isready -U concierge"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://concierge:concierge@localhost:54329/concierge_local
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run db:test
+
   # Vercel preview — the AC closes here: every PR gets a unique deployment
   # URL (not an alias) from the linked jtanori project, then /api/health.ts is
   # probed over HTTPS; the job fails unless the probe is HTTP 200.

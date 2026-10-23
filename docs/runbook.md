@@ -1,4 +1,4 @@
-# Runbook — W00 and beyond
+﻿# Runbook — W00 and beyond
 
 Written as items are worked, not at the end. One entry per backlog item.
 
@@ -216,4 +216,161 @@ $ npm run typecheck && npm run lint   # clean
 ```text
 $ npm test   # 39 passed (39) — 10 taxonomy contract tests
 $ npm run typecheck && npm run lint   # both clean
+```
+
+## S01-01 — Schema and migrations (3.00d)
+
+**AC (verbatim):** Runs clean from an empty database; ERD committed.
+
+**Status: DONE — three ordered SQL migrations + pooled runner + committed ERD.**
+
+- [x] `db/migrations/0001_init.sql` — all 25 plan §2 tables (D1) created with
+  `CREATE EXTENSION vector` / `pg_trgm` up front: organizations, properties,
+  users, memberships, roles, channel_connections, channel_identities,
+  conversations, messages, message_delivery_events, service_requests,
+  assignments, internal_notes, knowledge_sources, knowledge_articles,
+  article_versions, property_facts, ai_runs, citations, handoff_reasons,
+  knowledge_gaps, events, rollups, audit_log, outbox.
+- [x] D2/D3 retrieval columns ship day one: `embedding vector(1536)` + GIN
+  `tsv` (generated tsvector, `english` config) + trigram indexes on
+  `article_versions` and `property_facts`; HNSW (`vector_cosine_ops`) on the
+  two embeddings.
+- [x] D5 FK: `citations.ai_run_id → ai_runs` and `citations.article_version_id
+  → article_versions` (verifying citations to a *version*, never an article).
+- [x] D7 outbox: statuses `pending/sending/sent/failed/dead` — DLQ is the
+  `dead` state (exhausted retries), partial index keeps the active queue hot.
+- [x] D10: `events` CHECK list textually equals `src/events/taxonomy.ts`
+  (18 names, Appendix C order); `event_type` for a staff message is
+  `staff_message_sent` with no `taken_over` precondition (mid-conversation
+  replies stay legal); `audit_log`/`events`/`article_versions`/are
+  append-only via triggers (0003) — an UPDATE/DELETE raises `append-only`.
+- [x] `schema_migrations` bookkeeping table; runner records sha256 checksum
+  and re-runs are no-ops (idempotent).
+- [x] `src/db/migrate.ts` — pooled runner (one client per file + tx-per-file
+  rollback on error), `scripts/migrate.ts` CLI (`npm run db:migrate`). The
+  earlier single-Client implementation hit "Client has already been
+  connected" on scratch reuse — Pool-based runner fixes it.
+- [x] `db/erd.mmd` committed; the suite's drift test re-derives the entity
+  list from the live database and fails if it diverges from the ERD.
+- [x] Empty-database proof: every db suite runs against `scratch_<pid>` —
+  a database created by `CREATE DATABASE` from nothing, then all three
+  migrations applied by the real runner (`recreateScratch` erases it after).
+- [x] Review round (PR #5): composite tenant-aware FKs added — every tenant
+  table now carries `FK (org_id, property_id) → properties (org_id,
+  property_id)` and every tenant-child reference is a triples-composite FK
+  `(org_id, property_id, parent_id) → parent`, so a tenant B context can no
+  longer smuggle known tenant A IDs into single-column FKs; nullable
+  composite refs use PG15+ `ON DELETE SET NULL (child_col)` so the NOT NULL
+  tenant columns stay intact. The runner now verifies stored checksums and
+  fails loudly (not silently) when an applied migration file is edited.
+  D3 current-version marker landed: `article_versions.is_current` with a
+  partial unique index (one current row per article). Second review round
+  refined the flow to embed-FIRST: versions insert retired
+  (`is_current DEFAULT false`); promotion is the controlled atomic
+  promoted via the controlled `promote_article_version()`, which refuses
+  to publish before the embedding exists and whose trusted context is a
+  dedicated NOLOGIN role (`concierge_promoter`, function-OWNER-carried and
+  column-scoped), not a settable GUC — raw `is_current` UPDATEs and the
+  INSERT-true route are both trigger-blocked and tested; 0003's
+  append-only guard otherwise permits only demotion-in-promotion and
+  embedding backfill — so the previous version stays live until its
+  replacement is ready. Third round closed the definer's gaps: the
+  promotion function verifies the CALLER's tenant context
+  (`app.current_org_id`/`app.current_property_id` must match the target
+  version — no-context and known-foreign-version calls are refused), public
+  EXECUTE is revoked after the ownership transfer (ALTER resets the ACLs to
+  the PUBLIC default, which is why the REVOKE post-ALTER), membership in
+  `concierge_promoter` is granted BEFORE the ownership transfer so a
+  non-superuser Neon role can run the ALTER, and the function's only
+  EXECUTE callers are the migration owner and `concierge_app`.
+  Fourth round made history strictly one-way: `promoted_at` is stamped at
+  the first promotion and can never be rewritten (a timestamp on an
+  already-promoted row raises), and the function itself refuses retired
+  targets — re-promoting v1 after v2 is live raises "was promoted once and
+  is retired history".
+
+**Evidence (local, verified):**
+```text
+$ npm run db:test   # 25 passed (25) — incl. clean-from-empty on scratch_<pid>
+$ npm run typecheck && npm run lint && npm run build   # all clean
+```
+
+## S01-02 — Row-level security (2.00d)
+
+**AC (verbatim):** A query without tenant context returns zero rows.
+
+**Status: DONE — FORCE RLS everywhere + app-layer `withTenant` guard.**
+
+- [x] `db/migrations/0002_rls.sql` — FORCE ROW LEVEL SECURITY + named
+  `tenant` policies on all 21 tenant tables (the 25 minus
+  organizations/users/roles/memberships); property-scoped tables require
+  BOTH `app.current_org_id` and `app.current_property_id` to match the
+  row, so an org/property mismatch pair yields zero rows too; `with check`
+  mirrors `using`, so cross-tenant inserts are rejected, not silently
+  dropped.
+- [x] Tenant context rides GUCs (`app.current_org_id` /
+  `app.current_property_id`, empty string → NULL) — per-transaction LOCAL,
+  never per-session global.
+- [x] `concierge_app` NOLOGIN role created with grants + ALTER DEFAULT
+  PRIVILEGES; superusers/owners bypass RLS by design, so the suites run
+  under `SET LOCAL ROLE concierge_app` to behave like the deployed app.
+- [x] `src/db/tenant.ts` — `withTenant(client, {orgId, propertyId}, fn)`:
+  validates UUIDs up front (throws `TenantContextError` on empty/malformed),
+  binds via `set_config(...$1...)` (SET cannot take parameters), resets
+  cleanly after COMMIT and rolls back on callback throw.
+- [x] The AC is proven for every tenant table, not one: with NO context at
+  all, `SELECT count(*)` on all 21 tables returns zero.
+- [x] Review round (PR #5): RLS is now the FIRST line of defense for
+  cross-tenant VALUES (with check rejects mispaired org/property inserts
+  before the FK), while the composite FKs (S01-01) are the structural
+  backstop once a bypassing session is involved — both behaviors are tested
+  (see S01-03).
+
+**Evidence (local, verified):**
+```text
+$ npm run db:test   # 25 passed (25) — AC asserted across all 21 tables
+```
+
+## S01-03 — Cross-tenant isolation test harness (0.75d)
+
+**AC (verbatim):** Suite runs in CI and fails the build on a leak.
+
+**Status: DONE — policy-derived enumeration + owner-ground-truth leak sweep + `db-test` CI job.**
+
+- [x] `tests/db/isolation.db.test.ts` enumerates tenant tables FROM the
+  database (`pg_policies` rows with policyname `tenant`) and asserts the set
+  equals the 21 expected tables — a schema change that adds a tenant table
+  without a policy (or forgets RLS entirely) fails the suite.
+- [x] The sweep seeds two full tenant graphs, then for every tenant table
+  asserts: context A sees exactly the owner-side count of org-A rows,
+  context B sees exactly org-B rows, both counts > 0 — a visible-count that
+  exceeds its org's real row count IS a leak, in either direction.
+  (An earlier naive "foreign context sees zero rows" assertion was
+  red-flagged by properties — an org legitimately sees its own row — the
+  ground-truth comparison is the correct invariant.)
+- [x] Write-direction checks: org-B context cannot INSERT into org-A rows on
+  `properties` (org-scoped) nor `messages` (property-scoped) — `with check`
+  rejects.
+- [x] `tests/db/helpers.db.ts` maintains the scratch database lifecycle
+  (`scratch_<pid>`, created empty, dropped after) exercising the real
+  migration runner; `asTenantApp` drops the session into `concierge_app`.
+- [x] `npm test` excludes `tests/db/**` (new root `vitest.config.ts`) so the
+  unit job stays hermetic; the dedicated `tests/db/vitest.db.config.ts`
+  gives 60s hooks and single-worker runs.
+- [x] CI: new `db-test` job in `.github/workflows/ci.yml` — `pgvector:pg17`
+  service container (ports 54329), `TEST_DATABASE_URL` env, `npm run
+  db:test`. `db-test` added to main's required status checks, so any leak
+  blocks the merge.
+- [x] Review round (PR #5): leak suite extended beyond row-visibility —
+  cross-tenant REFERENCES are asserted too (messages pointing at a foreign
+  conversation are impossible: RLS hides the referenced rows from
+  selecting, and the composite FK blocks a smuggled ID); mispaired
+  org/property values are rejected by `with check` under an app context and
+  by the pair FK under a bypassing session; the checksum-guard tamper test
+  proves a rewritten applied migration fails the build.
+
+**Evidence (local, verified):**
+```text
+$ npm run db:test   # 25 passed (25)
+$ npm test          # 48 passed (48) — unit job unaffected
 ```

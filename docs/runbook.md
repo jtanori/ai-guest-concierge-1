@@ -264,9 +264,13 @@ $ npm run typecheck && npm run lint   # both clean
   tenant columns stay intact. The runner now verifies stored checksums and
   fails loudly (not silently) when an applied migration file is edited.
   D3 current-version marker landed: `article_versions.is_current` with a
-  partial unique index (one current row per article); 0003's append-only
-  trigger for that table permits ONLY demotion (true → false) and
-  embedding backfill, and an insert trigger auto-demotes predecessors.
+  partial unique index (one current row per article). Second review round
+  refined the flow to embed-FIRST: versions insert retired
+  (`is_current DEFAULT false`); promotion is the controlled atomic
+  `promote_article_version()` (single demote+raise transaction, GUC-gated
+  so plain UPDATEs can never mark a version current); 0003's append-only
+  trigger otherwise permits ONLY demotion and embedding backfill — so the
+  previous version stays live until its replacement is ready.
 
 **Evidence (local, verified):**
 ```text

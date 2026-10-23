@@ -283,6 +283,11 @@ $ npm run typecheck && npm run lint   # both clean
   `concierge_promoter` is granted BEFORE the ownership transfer so a
   non-superuser Neon role can run the ALTER, and the function's only
   EXECUTE callers are the migration owner and `concierge_app`.
+  Fourth round made history strictly one-way: `promoted_at` is stamped at
+  the first promotion and can never be rewritten (a timestamp on an
+  already-promoted row raises), and the function itself refuses retired
+  targets — re-promoting v1 after v2 is live raises "was promoted once and
+  is retired history".
 
 **Evidence (local, verified):**
 ```text

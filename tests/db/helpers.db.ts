@@ -95,7 +95,7 @@ export async function seedTenant(client: pg.Client, name: string): Promise<Tenan
 /**
  * Non-superuser session emulating the deployed app: docker/CI service
  * superusers bypass RLS entirely, so suite queries drop into `concierge_app`
- * (created by 0002) â€” the role RLS actually constrains.
+ * (created by 0002) — the role RLS actually constrains.
  */
 export async function asTenantApp(client: pg.Client): Promise<void> {
   await client.query("BEGIN");

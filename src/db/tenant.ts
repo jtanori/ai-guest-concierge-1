@@ -17,6 +17,18 @@ export interface TenantContext {
   propertyId: string;
 }
 
+/** Shared shape validation used by withTenant and the staff session guard. */
+export function assertTenantShape(context: TenantContext): void {
+  if (typeof context.orgId !== "string" || context.orgId.length === 0) {
+    throw new TenantContextError("orgId is required — tenant work is never org-less");
+  }
+  if (typeof context.propertyId !== "string" || context.propertyId.length === 0) {
+    throw new TenantContextError("propertyId is required — tenant work is never property-less");
+  }
+  assertUuid(context.orgId, "orgId");
+  assertUuid(context.propertyId, "propertyId");
+}
+
 function assertUuid(value: string, field: string): void {
   const parsed = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (!parsed.test(value)) {

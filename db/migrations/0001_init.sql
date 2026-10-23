@@ -236,9 +236,11 @@ CREATE TABLE article_versions (
   article_id      uuid NOT NULL,
   version_no      integer NOT NULL,
   -- D3/reviewer finding: the retrievable generation. Exactly one per article
-  -- (partial unique index); append-only history rules in 0003 permit only
-  -- demotion (true -> false) and embedding backfill on this column.
-  is_current      boolean NOT NULL DEFAULT true,
+  -- (partial unique index); promotes happen ONLY through the atomic
+  -- promote_article_version() (0003) AFTER the asynchronous embedding
+  -- backfill, so a version never becomes current while still unindexed.
+  -- History is append-only: retired versions can never return to current.
+  is_current      boolean NOT NULL DEFAULT false,
   body            text NOT NULL,
   embedding       vector(1536),
   tsv             tsvector GENERATED ALWAYS AS (to_tsvector('simple', body)) STORED,

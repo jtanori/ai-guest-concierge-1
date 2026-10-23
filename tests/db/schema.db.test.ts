@@ -184,7 +184,7 @@ describe("schema (db)", () => {
     ).rejects.toThrow(/append-only/);
   });
 
-  it("keeps exactly one current article version and forbids history rewrites", async () => {
+  it("keeps exactly one current article version via atomic promotion", async () => {
     const { ORG_ID, PROPERTY_ID } = await seedControlRow(client);
     const article = await client.query<{ article_id: string }>(
       `INSERT INTO knowledge_articles (org_id, property_id, scope, topic_key, title)
@@ -198,32 +198,54 @@ describe("schema (db)", () => {
       [ORG_ID, PROPERTY_ID, articleId],
     );
     const v1Id = v1.rows[0]!.article_version_id;
-    let state = await client.query<{ version_no: number; is_current: boolean }>(
-      "SELECT version_no, is_current FROM article_versions WHERE article_id = $1 ORDER BY version_no",
+    // New versions insert RETIRED; the embed-first flow promotes explicitly.
+    const state = await client.query<{ is_current: boolean }>(
+      "SELECT is_current FROM article_versions WHERE article_version_id = $1",
+      [v1Id],
+    );
+    expect(state.rows[0]!.is_current).toBe(false);
+    await client.query("SELECT promote_article_version($1)", [v1Id]);
+    let current = await client.query<{ version_no: number }>(
+      "SELECT version_no FROM article_versions WHERE article_id = $1 AND is_current",
       [articleId],
     );
-    expect(state.rows[0]!.is_current).toBe(true);
+    expect(current.rows[0]!.version_no).toBe(1);
 
-    // A newer version automatically becomes THE current one.
-    await client.query(
+    // A replacement that is NOT yet ready (no embedding, no promotion) must
+    // not displace the live version: v2 stays retired while v1 serves.
+    const v2 = await client.query<{ article_version_id: string }>(
       `INSERT INTO article_versions (org_id, property_id, article_id, version_no, body)
-       VALUES ($1, $2, $3, 2, 'Network updated: GuestPlus.')`,
+       VALUES ($1, $2, $3, 2, 'Network updated: GuestPlus.') RETURNING article_version_id`,
       [ORG_ID, PROPERTY_ID, articleId],
     );
-    state = await client.query<{ version_no: number; is_current: boolean }>(
-      "SELECT version_no, is_current FROM article_versions WHERE article_id = $1 ORDER BY version_no",
+    const v2Id = v2.rows[0]!.article_version_id;
+    current = await client.query<{ version_no: number }>(
+      "SELECT version_no FROM article_versions WHERE article_id = $1 AND is_current",
       [articleId],
     );
-    expect(state.rows).toHaveLength(2);
-    expect(state.rows.map((r) => r.is_current)).toEqual([false, true]);
+    expect(current.rows).toHaveLength(1);
+    expect(current.rows[0]!.version_no).toBe(1);
 
-    // A demoted version cannot be re-raised: is_current only moves forward.
+    // Embed first — then one atomic statement demotes v1 and raises v2.
+    await client.query(
+      "UPDATE article_versions SET embedding = $2 WHERE article_version_id = $1",
+      [v2Id, `[${Array.from({ length: 1536 }, () => 0).join(",")}]`],
+    );
+    await client.query("SELECT promote_article_version($1)", [v2Id]);
+    current = await client.query<{ version_no: number }>(
+      "SELECT version_no FROM article_versions WHERE article_id = $1 AND is_current",
+      [articleId],
+    );
+    expect(current.rows).toHaveLength(1);
+    expect(current.rows[0]!.version_no).toBe(2);
+
+    // A retired version can never be re-raised by a plain UPDATE.
     await expect(
       client.query("UPDATE article_versions SET is_current = true WHERE article_version_id = $1", [v1Id]),
     ).rejects.toThrow(/append-only/);
-    // And a body rewrite stays forbidden on the current version too.
+    // And a body rewrite stays forbidden on any version.
     await expect(
-      client.query("UPDATE article_versions SET body = 'edited after the fact' WHERE article_id = $1 AND version_no = 2", [articleId]),
+      client.query("UPDATE article_versions SET body = 'edited after the fact' WHERE article_version_id = $1", [v2Id]),
     ).rejects.toThrow(/append-only/);
   });
 
@@ -242,7 +264,9 @@ describe("schema (db)", () => {
     );
     const v1Id = v1.rows[0]!.article_version_id;
 
-    // The asynchronous backfill: populate the embedding of a CURRENT row.
+    // The version goes live first (promotion), the asynchronous backfill
+    // follows — an update of ONLY the embedding must never hit the wall.
+    await client.query("SELECT promote_article_version($1)", [v1Id]);
     const vector = `[${Array.from({ length: 1536 }, () => 0).join(",")}]`;
     await client.query(
       "UPDATE article_versions SET embedding = $2 WHERE article_version_id = $1",
@@ -258,12 +282,18 @@ describe("schema (db)", () => {
     await expect(
       client.query("UPDATE article_versions SET body = 'rewrite' WHERE article_version_id = $1", [v1Id]),
     ).rejects.toThrow(/append-only/);
-    // ...and after demotion, a re-promotion is still impossible.
+    // ...and after v2 (ready) is promoted, a re-promotion of the retired
+    // version is still impossible.
     await client.query(
       `INSERT INTO article_versions (org_id, property_id, article_id, version_no, body)
        VALUES ($1, $2, $3, 2, 'The pool schedule changed for fall.')`,
       [ORG_ID, PROPERTY_ID, articleId],
     );
+    const v2 = await client.query<{ article_version_id: string }>(
+      "SELECT article_version_id FROM article_versions WHERE article_id = $1 AND version_no = 2",
+      [articleId],
+    );
+    await client.query("SELECT promote_article_version($1)", [v2.rows[0]!.article_version_id]);
     await expect(
       client.query("UPDATE article_versions SET is_current = true WHERE article_version_id = $1", [v1Id]),
     ).rejects.toThrow(/append-only/);

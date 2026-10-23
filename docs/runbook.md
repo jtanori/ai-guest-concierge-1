@@ -1,4 +1,4 @@
-# Runbook — W00 and beyond
+﻿# Runbook — W00 and beyond
 
 Written as items are worked, not at the end. One entry per backlog item.
 
@@ -270,7 +270,7 @@ $ npm run typecheck && npm run lint   # both clean
 
 **Evidence (local, verified):**
 ```text
-$ npm run db:test   # 22 passed (22) — incl. clean-from-empty on scratch_<pid>
+$ npm run db:test   # 23 passed (23) — incl. clean-from-empty on scratch_<pid>
 $ npm run typecheck && npm run lint && npm run build   # all clean
 ```
 
@@ -307,7 +307,7 @@ $ npm run typecheck && npm run lint && npm run build   # all clean
 
 **Evidence (local, verified):**
 ```text
-$ npm run db:test   # 22 passed (22) — AC asserted across all 21 tables
+$ npm run db:test   # 23 passed (23) — AC asserted across all 21 tables
 ```
 
 ## S01-03 — Cross-tenant isolation test harness (0.75d)
@@ -350,6 +350,6 @@ $ npm run db:test   # 22 passed (22) — AC asserted across all 21 tables
 
 **Evidence (local, verified):**
 ```text
-$ npm run db:test   # 22 passed (22)
+$ npm run db:test   # 23 passed (23)
 $ npm test          # 48 passed (48) — unit job unaffected
 ```

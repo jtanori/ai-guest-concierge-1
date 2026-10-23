@@ -255,6 +255,11 @@ describe("schema (db)", () => {
     await expect(
       client.query("UPDATE article_versions SET is_current = true WHERE article_version_id = $1", [v1Id]),
     ).rejects.toThrow(/moves only inside promote_article_version/);
+    // ...nor by the promotion function itself: v1 carries promoted_at, and a
+    // retired target is refused (one-way history).
+    await expect(
+      withTenant(client, { orgId: ORG_ID, propertyId: PROPERTY_ID }, (tx) => tx.query("SELECT promote_article_version($1)", [v1Id])),
+    ).rejects.toThrow(/retired history/);
     // The historical bypass attempt (set the no-longer-used GUC) changes
     // nothing.
     await client.query("SELECT set_config('app.article_version_promotion', 'atomic', false)");

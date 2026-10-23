@@ -241,6 +241,9 @@ CREATE TABLE article_versions (
   -- backfill, so a version never becomes current while still unindexed.
   -- History is append-only: retired versions can never return to current.
   is_current      boolean NOT NULL DEFAULT false,
+  -- recorded at the FIRST promotion; a row with a timestamp that loses
+  -- current status is retired history and can never return to current.
+  promoted_at     timestamptz,
   body            text NOT NULL,
   embedding       vector(1536),
   tsv             tsvector GENERATED ALWAYS AS (to_tsvector('simple', body)) STORED,

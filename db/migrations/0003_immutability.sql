@@ -16,7 +16,10 @@
 -- and public EXECUTE is revoked explicitly: only the owner and concierge_app
 -- may call the function, and the function itself refuses to promote outside
 -- the caller's tenant context (verified from the GUCs withTenant sets), so
--- known version ids of a foreign tenant stay useless.
+-- known version ids of a foreign tenant stay useless. A retired version can
+-- never be re-promoted: the first promotion stamps `promoted_at`, the
+-- trigger refuses any new timestamp on an already-promoted row, and the
+-- function refuses retired targets.
 
 CREATE OR REPLACE FUNCTION raise_immutable() RETURNS trigger
 LANGUAGE plpgsql
@@ -45,9 +48,19 @@ LANGUAGE plpgsql
 AS $$
 BEGIN
   IF NEW.is_current IS DISTINCT FROM OLD.is_current
-     AND current_user::text <> 'concierge_promoter'
+     OR NEW.promoted_at IS DISTINCT FROM OLD.promoted_at
   THEN
-    RAISE EXCEPTION 'article_versions.is_current moves only inside promote_article_version() (raw is_current updates are blocked by db/migrations/0003_immutability.sql)';
+    IF current_user::text <> 'concierge_promoter' THEN
+      RAISE EXCEPTION 'article_versions.is_current moves only inside promote_article_version() (raw is_current updates are blocked by db/migrations/0003_immutability.sql)';
+    END IF;
+    -- The promotion timestamp is written exactly once: a row already
+    -- promoted once is retired history once demoted, and timestamps never
+    -- get rewritten.
+    IF OLD.promoted_at IS NOT NULL
+       AND NEW.promoted_at IS DISTINCT FROM OLD.promoted_at
+    THEN
+      RAISE EXCEPTION 'retired article_versions are untouchable (promoted_at is recorded once; % blocked by db/migrations/0003_immutability.sql)', TG_OP;
+    END IF;
   END IF;
   IF NEW.article_version_id IS DISTINCT FROM OLD.article_version_id
      OR NEW.org_id          IS DISTINCT FROM OLD.org_id
@@ -112,9 +125,18 @@ BEGIN
   IF (SELECT embedding IS NULL FROM article_versions WHERE article_version_id = target) THEN
     RAISE EXCEPTION 'cannot promote article_version % before its embedding is backfilled', target;
   END IF;
+  -- One-way history: a version that was already promoted (promoted_at set)
+  -- and then demoted is retired forever — even this function cannot publish
+  -- it again.
+  IF (SELECT is_current = false AND promoted_at IS NOT NULL
+        FROM article_versions WHERE article_version_id = target) THEN
+    RAISE EXCEPTION 'article_version % was promoted once and is retired history; create a new version instead', target;
+  END IF;
   UPDATE article_versions SET is_current = false
    WHERE article_id = v_article AND is_current;
-  UPDATE article_versions SET is_current = true
+  UPDATE article_versions
+     SET is_current = true,
+         promoted_at = coalesce(promoted_at, now())
    WHERE article_version_id = target;
 END $$;
 
@@ -136,9 +158,9 @@ GRANT EXECUTE ON FUNCTION promote_article_version(uuid) TO concierge_app;
 CREATE POLICY promoter_swap ON article_versions
   FOR ALL TO concierge_promoter
   USING (true) WITH CHECK (true);
-GRANT SELECT (org_id, property_id, article_id, article_version_id, embedding, is_current)
+GRANT SELECT (org_id, property_id, article_id, article_version_id, embedding, is_current, promoted_at)
   ON article_versions TO concierge_promoter;
-GRANT UPDATE (is_current) ON article_versions TO concierge_promoter;
+GRANT UPDATE (is_current, promoted_at) ON article_versions TO concierge_promoter;
 
 DO $$
 DECLARE

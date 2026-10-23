@@ -180,6 +180,7 @@ erDiagram
         uuid article_id FK
         integer version_no
         boolean is_current "promote after embedding backfill; exactly one per article"
+        timestamptz promoted_at "first promotion; retired history once demoted"
         text body
         vector_1536 embedding
         tsvector tsv

@@ -30,7 +30,8 @@ BEGIN
      OR NEW.article_id      IS DISTINCT FROM OLD.article_id
      OR NEW.version_no      IS DISTINCT FROM OLD.version_no
      OR NEW.body            IS DISTINCT FROM OLD.body
-     OR NEW.is_current      IS NOT FALSE
+     OR NEW.created_at      IS DISTINCT FROM OLD.created_at
+     OR (NEW.is_current IS DISTINCT FROM OLD.is_current AND NEW.is_current IS TRUE)
   THEN
     RAISE EXCEPTION 'table article_versions is append-only (only is_current demotion and embedding backfill are permitted; % blocked by db/migrations/0003_immutability.sql)', TG_OP;
   END IF;

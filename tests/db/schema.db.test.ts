@@ -227,6 +227,48 @@ describe("schema (db)", () => {
     ).rejects.toThrow(/append-only/);
   });
 
+  it("permits embedding backfill on the current version (and nothing else)", async () => {
+    const { ORG_ID, PROPERTY_ID } = await seedControlRow(client);
+    const article = await client.query<{ article_id: string }>(
+      `INSERT INTO knowledge_articles (org_id, property_id, scope, topic_key, title)
+       VALUES ($1, $2, 'property', 'pool.hours', 'Pool schedule') RETURNING article_id`,
+      [ORG_ID, PROPERTY_ID],
+    );
+    const articleId = article.rows[0]!.article_id;
+    const v1 = await client.query<{ article_version_id: string }>(
+      `INSERT INTO article_versions (org_id, property_id, article_id, version_no, body)
+       VALUES ($1, $2, $3, 1, 'Pool closes at 20:00.') RETURNING article_version_id`,
+      [ORG_ID, PROPERTY_ID, articleId],
+    );
+    const v1Id = v1.rows[0]!.article_version_id;
+
+    // The asynchronous backfill: populate the embedding of a CURRENT row.
+    const vector = `[${Array.from({ length: 1536 }, () => 0).join(",")}]`;
+    await client.query(
+      "UPDATE article_versions SET embedding = $2 WHERE article_version_id = $1",
+      [v1Id, vector],
+    );
+    const reread = await client.query<{ embedding: string }>(
+      "SELECT embedding::text AS embedding FROM article_versions WHERE article_version_id = $1",
+      [v1Id],
+    );
+    expect(reread.rows[0]!.embedding).toBe(vector);
+
+    // While it is current, nothing else may move...
+    await expect(
+      client.query("UPDATE article_versions SET body = 'rewrite' WHERE article_version_id = $1", [v1Id]),
+    ).rejects.toThrow(/append-only/);
+    // ...and after demotion, a re-promotion is still impossible.
+    await client.query(
+      `INSERT INTO article_versions (org_id, property_id, article_id, version_no, body)
+       VALUES ($1, $2, $3, 2, 'The pool schedule changed for fall.')`,
+      [ORG_ID, PROPERTY_ID, articleId],
+    );
+    await expect(
+      client.query("UPDATE article_versions SET is_current = true WHERE article_version_id = $1", [v1Id]),
+    ).rejects.toThrow(/append-only/);
+  });
+
   it("protects D10 evidence: events and audit_log are append-only", async () => {
     const { ORG_ID, PROPERTY_ID, CONVERSATION_ID } = await seedControlRow(client);
     const ev = await client.query<{ event_id: string }>(

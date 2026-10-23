@@ -37,7 +37,7 @@ describe("row-level security (db)", () => {
   let owner: pg.Client;
   // swept session - dropped into concierge_app by asTenantApp below.
   let client: pg.Client;
-  let ORG_A = "", PROP_A = "";
+  let ORG_A = "", PROP_A = "", CONV_A = "";
   let ORG_B = "", PROP_B = "", CONV_B = "";
 
   beforeAll(async () => {
@@ -51,6 +51,7 @@ describe("row-level security (db)", () => {
     const tenantB = await seedOneTenant(owner, "b");
     ORG_A = tenantA.orgId;
     PROP_A = tenantA.propertyId;
+    CONV_A = tenantA.conversationId;
     ORG_B = tenantB.orgId;
     PROP_B = tenantB.propertyId;
     CONV_B = tenantB.conversationId;
@@ -138,6 +139,45 @@ describe("row-level security (db)", () => {
       const res = await client.query<{ n: string }>("SELECT count(*) AS n FROM conversations");
       expect(res.rows[0]!.n).toBe("0");
     });
+  });
+
+  it("composite FKs: B context cannot reference A's conversation (P1 review finding)", async () => {
+    // RLS hides A's rows from B, but a known ID could still be smuggled into a
+    // single-column FK — the composite tenant FK makes that impossible.
+    await asTenantApp(client, async () => {
+      await setTenantContext(client, ORG_B, PROP_B);
+      await expect(
+        client.query(
+          `INSERT INTO messages (org_id, property_id, conversation_id, direction, author_role, body)
+           VALUES ($1, $2, $3, 'inbound', 'guest', 'cross-tenant reference')`,
+          [ORG_B, PROP_B, CONV_A],
+        ),
+      ).rejects.toThrow(/violates foreign key/);
+    });
+  });
+
+  it("mispaired org/property values cannot be written even in a valid own context (pair FK)", async () => {
+    await asTenantApp(client, async () => {
+      await setTenantContext(client, ORG_B, PROP_B);
+      // B's org + A's property: RLS `with check` fires first — the row's
+      // tenant columns must match the context.
+      await expect(
+        client.query(
+          `INSERT INTO outbox (org_id, property_id, kind, payload)
+           VALUES ($1, $2, 'webhook', '{}')`,
+          [ORG_B, PROP_A],
+        ),
+      ).rejects.toThrow(/violates row-level security/);
+    });
+    // Without RLS context (bypassing session), the pair uniqueness still
+    // holds at the FK level: (org B, property A) is not a real pairing.
+    await expect(
+      owner.query(
+        `INSERT INTO outbox (org_id, property_id, kind, payload)
+         VALUES ($1, $2, 'webhook', '{}')`,
+        [ORG_B, PROP_A],
+      ),
+    ).rejects.toThrow(/violates foreign key/);
   });
 });
 

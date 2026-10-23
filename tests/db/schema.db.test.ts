@@ -76,6 +76,26 @@ describe("schema (db)", () => {
     expect(tables).toHaveLength(25);
   });
 
+  it("fails loudly when an applied migration's file content drifts (checksum guard)", async () => {
+    const stored = await client.query<{ checksum: string }>(
+      "SELECT checksum FROM schema_migrations WHERE filename = '0001_init.sql'",
+    );
+    const original = stored.rows[0]!.checksum;
+    try {
+      await client.query(
+        "UPDATE schema_migrations SET checksum = 'tampered' WHERE filename = '0001_init.sql'",
+      );
+      // The stored checksum no longer describes what was applied; the runner
+      // must refuse to continue rather than silently reuse the old schema.
+      await expect(migrateDatabase(scratchUrl())).rejects.toThrow(/checksum mismatch/);
+    } finally {
+      await client.query(
+        "UPDATE schema_migrations SET checksum = $1 WHERE filename = '0001_init.sql'",
+        [original],
+      );
+    }
+  });
+
   it("keeps the committed ERD in sync with reality (no drift)", async () => {
     const erd = await readFile(ERD_PATH, "utf8");
     const entityNames = [...erd.matchAll(/^\s{4}([a-z_]+) \{$/gm)].map((m) => m[1]);
@@ -106,15 +126,19 @@ describe("schema (db)", () => {
 
   it("cites article_version_id, not article_id (D5)", async () => {
     const fk = await client.query<{ foreign_table: string; foreign_column: string }>(
-      `SELECT ccu.table_name AS foreign_table, kcu.column_name AS foreign_column
+      `SELECT DISTINCT ccu.table_name AS foreign_table, kcu.column_name AS foreign_column
          FROM information_schema.table_constraints tc
          JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name
          JOIN information_schema.constraint_column_usage ccu ON tc.constraint_name = ccu.constraint_name
         WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_name = 'citations'`,
     );
-    const versionFk = fk.rows.find((r) => r.foreign_table === "article_versions");
-    expect(versionFk).toBeDefined();
-    expect(versionFk!.foreign_column).toBe("article_version_id");
+    // the FK is tenant-composite: (org_id, property_id, article_version_id) —
+    // so a citation can never point at another tenant's version either.
+    const versionFkCols = fk.rows
+      .filter((r) => r.foreign_table === "article_versions")
+      .map((r) => r.foreign_column)
+      .sort();
+    expect(versionFkCols).toEqual(["article_version_id", "org_id", "property_id"]);
     const articleFk = fk.rows.find((r) => r.foreign_table === "knowledge_articles");
     expect(articleFk).toBeUndefined();
   });
@@ -157,6 +181,49 @@ describe("schema (db)", () => {
     ).rejects.toThrow(/append-only/);
     await expect(
       client.query("DELETE FROM article_versions WHERE article_version_id = $1", [versionId]),
+    ).rejects.toThrow(/append-only/);
+  });
+
+  it("keeps exactly one current article version and forbids history rewrites", async () => {
+    const { ORG_ID, PROPERTY_ID } = await seedControlRow(client);
+    const article = await client.query<{ article_id: string }>(
+      `INSERT INTO knowledge_articles (org_id, property_id, scope, topic_key, title)
+       VALUES ($1, $2, 'property', 'wifi.access', 'Wi-Fi access') RETURNING article_id`,
+      [ORG_ID, PROPERTY_ID],
+    );
+    const articleId = article.rows[0]!.article_id;
+    const v1 = await client.query<{ article_version_id: string }>(
+      `INSERT INTO article_versions (org_id, property_id, article_id, version_no, body)
+       VALUES ($1, $2, $3, 1, 'Network: GuestWiFi, password on the room card.') RETURNING article_version_id`,
+      [ORG_ID, PROPERTY_ID, articleId],
+    );
+    const v1Id = v1.rows[0]!.article_version_id;
+    let state = await client.query<{ version_no: number; is_current: boolean }>(
+      "SELECT version_no, is_current FROM article_versions WHERE article_id = $1 ORDER BY version_no",
+      [articleId],
+    );
+    expect(state.rows[0]!.is_current).toBe(true);
+
+    // A newer version automatically becomes THE current one.
+    await client.query(
+      `INSERT INTO article_versions (org_id, property_id, article_id, version_no, body)
+       VALUES ($1, $2, $3, 2, 'Network updated: GuestPlus.')`,
+      [ORG_ID, PROPERTY_ID, articleId],
+    );
+    state = await client.query<{ version_no: number; is_current: boolean }>(
+      "SELECT version_no, is_current FROM article_versions WHERE article_id = $1 ORDER BY version_no",
+      [articleId],
+    );
+    expect(state.rows).toHaveLength(2);
+    expect(state.rows.map((r) => r.is_current)).toEqual([false, true]);
+
+    // A demoted version cannot be re-raised: is_current only moves forward.
+    await expect(
+      client.query("UPDATE article_versions SET is_current = true WHERE article_version_id = $1", [v1Id]),
+    ).rejects.toThrow(/append-only/);
+    // And a body rewrite stays forbidden on the current version too.
+    await expect(
+      client.query("UPDATE article_versions SET body = 'edited after the fact' WHERE article_id = $1 AND version_no = 2", [articleId]),
     ).rejects.toThrow(/append-only/);
   });
 

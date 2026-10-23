@@ -179,6 +179,7 @@ erDiagram
         uuid property_id FK
         uuid article_id FK
         integer version_no
+        boolean is_current "demoted-only; exactly one per article"
         text body
         vector_1536 embedding
         tsvector tsv

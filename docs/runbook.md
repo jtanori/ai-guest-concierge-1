@@ -255,10 +255,22 @@ $ npm run typecheck && npm run lint   # both clean
 - [x] Empty-database proof: every db suite runs against `scratch_<pid>` —
   a database created by `CREATE DATABASE` from nothing, then all three
   migrations applied by the real runner (`recreateScratch` erases it after).
+- [x] Review round (PR #5): composite tenant-aware FKs added — every tenant
+  table now carries `FK (org_id, property_id) → properties (org_id,
+  property_id)` and every tenant-child reference is a triples-composite FK
+  `(org_id, property_id, parent_id) → parent`, so a tenant B context can no
+  longer smuggle known tenant A IDs into single-column FKs; nullable
+  composite refs use PG15+ `ON DELETE SET NULL (child_col)` so the NOT NULL
+  tenant columns stay intact. The runner now verifies stored checksums and
+  fails loudly (not silently) when an applied migration file is edited.
+  D3 current-version marker landed: `article_versions.is_current` with a
+  partial unique index (one current row per article); 0003's append-only
+  trigger for that table permits ONLY demotion (true → false) and
+  embedding backfill, and an insert trigger auto-demotes predecessors.
 
 **Evidence (local, verified):**
 ```text
-$ npm run db:test   # 18 passed (18) — incl. clean-from-empty on scratch_<pid>
+$ npm run db:test   # 22 passed (22) — incl. clean-from-empty on scratch_<pid>
 $ npm run typecheck && npm run lint && npm run build   # all clean
 ```
 
@@ -287,10 +299,15 @@ $ npm run typecheck && npm run lint && npm run build   # all clean
   cleanly after COMMIT and rolls back on callback throw.
 - [x] The AC is proven for every tenant table, not one: with NO context at
   all, `SELECT count(*)` on all 21 tables returns zero.
+- [x] Review round (PR #5): RLS is now the FIRST line of defense for
+  cross-tenant VALUES (with check rejects mispaired org/property inserts
+  before the FK), while the composite FKs (S01-01) are the structural
+  backstop once a bypassing session is involved — both behaviors are tested
+  (see S01-03).
 
 **Evidence (local, verified):**
 ```text
-$ npm run db:test   # 18 passed (18) — AC asserted across all 21 tables
+$ npm run db:test   # 22 passed (22) — AC asserted across all 21 tables
 ```
 
 ## S01-03 — Cross-tenant isolation test harness (0.75d)
@@ -323,9 +340,16 @@ $ npm run db:test   # 18 passed (18) — AC asserted across all 21 tables
   service container (ports 54329), `TEST_DATABASE_URL` env, `npm run
   db:test`. `db-test` added to main's required status checks, so any leak
   blocks the merge.
+- [x] Review round (PR #5): leak suite extended beyond row-visibility —
+  cross-tenant REFERENCES are asserted too (messages pointing at a foreign
+  conversation are impossible: RLS hides the referenced rows from
+  selecting, and the composite FK blocks a smuggled ID); mispaired
+  org/property values are rejected by `with check` under an app context and
+  by the pair FK under a bypassing session; the checksum-guard tamper test
+  proves a rewritten applied migration fails the build.
 
 **Evidence (local, verified):**
 ```text
-$ npm run db:test   # 18 passed (18)
+$ npm run db:test   # 22 passed (22)
 $ npm test          # 48 passed (48) — unit job unaffected
 ```

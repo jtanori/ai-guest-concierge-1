@@ -48,11 +48,23 @@ export async function migrateDatabase(connectionString: string): Promise<number>
     for (const file of files) {
       const sql = await readFile(join(MIGRATIONS_DIR, file), "utf8");
       const checksum = createHash("sha256").update(sql).digest("hex");
-      const prior = await book.query<{ filename: string }>(
-        "SELECT filename FROM schema_migrations WHERE filename = $1",
+      const prior = await book.query<{ filename: string; checksum: string }>(
+        "SELECT filename, checksum FROM schema_migrations WHERE filename = $1",
         [file],
       );
-      if (prior.rows.length > 0) continue;
+      if (prior.rows.length > 0) {
+        // An applied file must still be the file that was applied: a hash
+        // mismatch means the schema is NOT what the file describes and the
+        // run must stop loudly instead of silently continuing.
+        if (prior.rows[0]!.checksum !== checksum) {
+          throw new Error(
+            `migration ${file} has changed since it was applied — checksum mismatch ` +
+              `(stored ${prior.rows[0]!.checksum.slice(0, 12)}, file ${checksum.slice(0, 12)}). ` +
+              `Revert the file or write a new forward migration.`,
+          );
+        }
+        continue;
+      }
       const tx = await pool.connect();
       try {
         await tx.query("BEGIN");

@@ -274,11 +274,19 @@ $ npm run typecheck && npm run lint   # both clean
   INSERT-true route are both trigger-blocked and tested; 0003's
   append-only guard otherwise permits only demotion-in-promotion and
   embedding backfill — so the previous version stays live until its
-  replacement is ready.
+  replacement is ready. Third round closed the definer's gaps: the
+  promotion function verifies the CALLER's tenant context
+  (`app.current_org_id`/`app.current_property_id` must match the target
+  version — no-context and known-foreign-version calls are refused), public
+  EXECUTE is revoked after the ownership transfer (ALTER resets the ACLs to
+  the PUBLIC default, which is why the REVOKE post-ALTER), membership in
+  `concierge_promoter` is granted BEFORE the ownership transfer so a
+  non-superuser Neon role can run the ALTER, and the function's only
+  EXECUTE callers are the migration owner and `concierge_app`.
 
 **Evidence (local, verified):**
 ```text
-$ npm run db:test   # 23 passed (23) — incl. clean-from-empty on scratch_<pid>
+$ npm run db:test   # 25 passed (25) — incl. clean-from-empty on scratch_<pid>
 $ npm run typecheck && npm run lint && npm run build   # all clean
 ```
 
@@ -315,7 +323,7 @@ $ npm run typecheck && npm run lint && npm run build   # all clean
 
 **Evidence (local, verified):**
 ```text
-$ npm run db:test   # 23 passed (23) — AC asserted across all 21 tables
+$ npm run db:test   # 25 passed (25) — AC asserted across all 21 tables
 ```
 
 ## S01-03 — Cross-tenant isolation test harness (0.75d)
@@ -358,6 +366,6 @@ $ npm run db:test   # 23 passed (23) — AC asserted across all 21 tables
 
 **Evidence (local, verified):**
 ```text
-$ npm run db:test   # 23 passed (23)
+$ npm run db:test   # 25 passed (25)
 $ npm test          # 48 passed (48) — unit job unaffected
 ```

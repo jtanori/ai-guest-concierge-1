@@ -267,10 +267,14 @@ $ npm run typecheck && npm run lint   # both clean
   partial unique index (one current row per article). Second review round
   refined the flow to embed-FIRST: versions insert retired
   (`is_current DEFAULT false`); promotion is the controlled atomic
-  `promote_article_version()` (single demote+raise transaction, GUC-gated
-  so plain UPDATEs can never mark a version current); 0003's append-only
-  trigger otherwise permits ONLY demotion and embedding backfill — so the
-  previous version stays live until its replacement is ready.
+  promoted via the controlled `promote_article_version()`, which refuses
+  to publish before the embedding exists and whose trusted context is a
+  dedicated NOLOGIN role (`concierge_promoter`, function-OWNER-carried and
+  column-scoped), not a settable GUC — raw `is_current` UPDATEs and the
+  INSERT-true route are both trigger-blocked and tested; 0003's
+  append-only guard otherwise permits only demotion-in-promotion and
+  embedding backfill — so the previous version stays live until its
+  replacement is ready.
 
 **Evidence (local, verified):**
 ```text

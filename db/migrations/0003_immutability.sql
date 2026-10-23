@@ -7,13 +7,16 @@
 -- article_versions carries the one mutation exemption required by the
 -- retrieval design: the embeddings of `article_versions` are backfilled
 -- asynchronously after a row is created, and is_current is moved ONLY by the
--- controlled, atomic promote_article_version() step (embed FIRST, then
--- promote) — the trusted path is enforced with a dedicated NOLOGIN role:
+-- controlled, atomic promote_article_version(target) step (embed FIRST, then
+-- promote). The trusted path is enforced with a dedicated NOLOGIN role:
 -- the trigger only honors is_current UPDATEs issued under
--- concierge_promoter, whose membership is granted solely to the migration
--- owner by this file — the app role from 0002 is deliberately not a member.
+-- concierge_promoter, whose membership goes solely to the migration owner
+-- by this file — the app role from 0002 is deliberately not a member.
 -- A custom GUC is NOT a capability — anything can set_config any string —
--- so no session variable gates this code path.
+-- and public EXECUTE is revoked explicitly: only the owner and concierge_app
+-- may call the function, and the function itself refuses to promote outside
+-- the caller's tenant context (verified from the GUCs withTenant sets), so
+-- known version ids of a foreign tenant stay useless.
 
 CREATE OR REPLACE FUNCTION raise_immutable() RETURNS trigger
 LANGUAGE plpgsql
@@ -32,6 +35,10 @@ BEGIN
     CREATE ROLE concierge_promoter NOLOGIN;
   END IF;
 END $$;
+
+-- The ownership transfer below requires the migrating role to be able to
+-- SET ROLE to the new owner — the membership grant MUST precede it.
+GRANT concierge_promoter TO CURRENT_USER;
 
 CREATE OR REPLACE FUNCTION article_versions_block_rewrite() RETURNS trigger
 LANGUAGE plpgsql
@@ -67,9 +74,13 @@ BEGIN
   RETURN NEW;
 END $$;
 
--- The controlled promotion: refuses to publish an unindexed version, then
--- demotes the current version and raises the target in ONE transaction so
--- retrieval never observes a half-swapped state.
+-- The controlled promotion: tenant-scoped first, refuses to publish an
+-- unindexed version, then demotes the current version and raises the target
+-- in ONE transaction so retrieval never observes a half-swapped state.
+-- The caller's org/property context (the withTenant GUCs) MUST match the
+-- target version — RLS cannot filter inside the definer context, so the
+-- function checks explicitly and a foreign tenant version id stays
+-- unusable.
 CREATE OR REPLACE FUNCTION promote_article_version(target uuid) RETURNS void
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -77,13 +88,27 @@ SET search_path = pg_catalog, public
 AS $$
 DECLARE
   v_article uuid;
+  v_org     uuid;
+  v_prop    uuid;
+  ctx_org   uuid;
+  ctx_prop  uuid;
 BEGIN
-  SELECT article_id INTO v_article
+  SELECT article_id, org_id, property_id INTO v_article, v_org, v_prop
     FROM article_versions
    WHERE article_version_id = target;
   IF v_article IS NULL THEN
     RAISE EXCEPTION 'promote_article_version: unknown article_version_id %', target;
   END IF;
+
+  ctx_org  := nullif(current_setting('app.current_org_id', true), '')::uuid;
+  ctx_prop := nullif(current_setting('app.current_property_id', true), '')::uuid;
+  IF ctx_org IS NULL OR ctx_prop IS NULL THEN
+    RAISE EXCEPTION 'promote_article_version requires the tenant context (app.current_org_id / app.current_property_id) — use the tenant-scoped data access layer';
+  END IF;
+  IF v_org IS DISTINCT FROM ctx_org OR v_prop IS DISTINCT FROM ctx_prop THEN
+    RAISE EXCEPTION 'promote_article_version: % belongs to another tenant', target;
+  END IF;
+
   IF (SELECT embedding IS NULL FROM article_versions WHERE article_version_id = target) THEN
     RAISE EXCEPTION 'cannot promote article_version % before its embedding is backfilled', target;
   END IF;
@@ -98,21 +123,22 @@ END $$;
 -- concierge_promoter, whose identity the trigger verifies.
 ALTER FUNCTION promote_article_version(uuid) OWNER TO concierge_promoter;
 
--- One narrow capability seam: the migration owner may promote (via the
--- function), and the app surface gets a controlled entry point. Direct
--- table UPDATE on is_current is trigger-blocked for everyone else.
-GRANT concierge_promoter TO CURRENT_USER;
+-- ALTER FUNCTION OWNER discards previous ACLs and the default is EXECUTE
+-- FOR PUBLIC, so establish the narrow surface ONLY now.
+REVOKE EXECUTE ON FUNCTION promote_article_version(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION promote_article_version(uuid) TO CURRENT_USER;
+GRANT EXECUTE ON FUNCTION promote_article_version(uuid) TO concierge_app;
+
 -- FORCE RLS on article_versions (0002) filters by tenant context, which the
--- promotion step deliberately runs without — so the promoter gets an
--- explicit all-rows policy scoped ONLY to that NOLOGIN role.
+-- definer lookup deliberately runs without — so the promoter gets an
+-- explicit all-rows policy scoped ONLY to that NOLOGIN role; the tenant
+-- scoping itself is the context check inside the function.
 CREATE POLICY promoter_swap ON article_versions
   FOR ALL TO concierge_promoter
   USING (true) WITH CHECK (true);
 GRANT SELECT (org_id, property_id, article_id, article_version_id, embedding, is_current)
   ON article_versions TO concierge_promoter;
 GRANT UPDATE (is_current) ON article_versions TO concierge_promoter;
-GRANT EXECUTE ON FUNCTION promote_article_version(uuid) TO concierge_app;
-GRANT EXECUTE ON FUNCTION promote_article_version(uuid) TO CURRENT_USER;
 
 DO $$
 DECLARE

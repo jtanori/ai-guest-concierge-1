@@ -179,6 +179,48 @@ describe("row-level security (db)", () => {
       ),
     ).rejects.toThrow(/violates foreign key/);
   });
+
+  it("promote_article_version is scoped to the CALLER's tenant", async () => {
+    const aVersion = await owner.query<{ article_version_id: string }>(
+      "SELECT article_version_id FROM article_versions WHERE org_id = $1 ORDER BY article_version_id LIMIT 1",
+      [ORG_A],
+    );
+    const bVersion = await owner.query<{ article_version_id: string }>(
+      "SELECT article_version_id FROM article_versions WHERE org_id = $1 ORDER BY article_version_id LIMIT 1",
+      [ORG_B],
+    );
+    const bId = bVersion.rows[0]!.article_version_id;
+    const aId = aVersion.rows[0]!.article_version_id;
+    const vector = `[${Array.from({ length: 1536 }, () => 0).join(",")}]`;
+
+    // No context = no promotion (fresh transaction, no tenant context set).
+    await asTenantApp(client, async () => {
+      await expect(
+        client.query("SELECT promote_article_version($1)", [bId]),
+      ).rejects.toThrow(/tenant context/);
+    });
+
+    await asTenantApp(client, async () => {
+      await setTenantContext(client, ORG_B, PROP_B);
+      // With the caller's own context: embed first, then promote works.
+      await client.query(
+        "UPDATE article_versions SET embedding = $2 WHERE article_version_id = $1",
+        [bId, vector],
+      );
+      await client.query("SELECT promote_article_version($1)", [bId]);
+      const current = await client.query<{ version_no: number }>(
+        "SELECT version_no FROM article_versions WHERE property_id = $1 AND is_current",
+        [PROP_B],
+      );
+      expect(current.rows).toHaveLength(1);
+      // The whole point: a KNOWN foreign version id cannot be promoted —
+      // the definer lookup is not filtered by RLS, so the function checks
+      // the caller context explicitly.
+      await expect(
+        client.query("SELECT promote_article_version($1)", [aId]),
+      ).rejects.toThrow(/another tenant/);
+    });
+  });
 });
 
 /* ---------- helpers ---------- */

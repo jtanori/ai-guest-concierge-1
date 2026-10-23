@@ -13,6 +13,7 @@ import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { migrateDatabase } from "../../src/db/migrate.ts";
 import { dropScratch, recreateScratch, scratchUrl } from "./helpers.db.ts";
+import { withTenant } from "../../src/db/tenant.ts";
 
 const ERD_PATH = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -206,7 +207,7 @@ describe("schema (db)", () => {
     );
     expect(state.rows[0]!.is_current).toBe(false);
     await expect(
-      client.query("SELECT promote_article_version($1)", [v1Id]),
+      withTenant(client, { orgId: ORG_ID, propertyId: PROPERTY_ID }, (tx) => tx.query("SELECT promote_article_version($1)", [v1Id])),
     ).rejects.toThrow(/embedding/);
 
     // Embed first — then one atomic step demotes nothing and raises v1.
@@ -214,7 +215,7 @@ describe("schema (db)", () => {
       "UPDATE article_versions SET embedding = $2 WHERE article_version_id = $1",
       [v1Id, `[${Array.from({ length: 1536 }, () => 0).join(",")}]`],
     );
-    await client.query("SELECT promote_article_version($1)", [v1Id]);
+    await withTenant(client, { orgId: ORG_ID, propertyId: PROPERTY_ID }, (tx) => tx.query("SELECT promote_article_version($1)", [v1Id]));
     let current = await client.query<{ version_no: number }>(
       "SELECT version_no FROM article_versions WHERE article_id = $1 AND is_current",
       [articleId],
@@ -241,7 +242,7 @@ describe("schema (db)", () => {
       "UPDATE article_versions SET embedding = $2 WHERE article_version_id = $1",
       [v2Id, `[${Array.from({ length: 1536 }, () => 0).join(",")}]`],
     );
-    await client.query("SELECT promote_article_version($1)", [v2Id]);
+    await withTenant(client, { orgId: ORG_ID, propertyId: PROPERTY_ID }, (tx) => tx.query("SELECT promote_article_version($1)", [v2Id]));
     current = await client.query<{ version_no: number }>(
       "SELECT version_no FROM article_versions WHERE article_id = $1 AND is_current",
       [articleId],
@@ -266,6 +267,17 @@ describe("schema (db)", () => {
     ).rejects.toThrow(/append-only/);
   });
 
+  it("exposes the promotion only to the owner and the app role (public EXECUTE revoked)", async () => {
+    const pub = await client.query<{ ok: boolean }>(
+      "SELECT has_function_privilege('public', 'promote_article_version(uuid)', 'EXECUTE') AS ok",
+    );
+    expect(pub.rows[0]!.ok).toBe(false);
+    const app = await client.query<{ ok: boolean }>(
+      "SELECT has_function_privilege('concierge_app', 'promote_article_version(uuid)', 'EXECUTE') AS ok",
+    );
+    expect(app.rows[0]!.ok).toBe(true);
+  });
+
   it("permits embedding backfill on the current version (and nothing else)", async () => {
     const { ORG_ID, PROPERTY_ID } = await seedControlRow(client);
     const article = await client.query<{ article_id: string }>(
@@ -288,7 +300,7 @@ describe("schema (db)", () => {
       "UPDATE article_versions SET embedding = $2 WHERE article_version_id = $1",
       [v1Id, vector],
     );
-    await client.query("SELECT promote_article_version($1)", [v1Id]);
+    await withTenant(client, { orgId: ORG_ID, propertyId: PROPERTY_ID }, (tx) => tx.query("SELECT promote_article_version($1)", [v1Id]));
     const reread = await client.query<{ embedding: string }>(
       "SELECT embedding::text AS embedding FROM article_versions WHERE article_version_id = $1",
       [v1Id],

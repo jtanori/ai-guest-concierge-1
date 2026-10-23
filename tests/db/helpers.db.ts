@@ -51,6 +51,10 @@ export async function dropScratch(): Promise<void> {
 
 export function connectScratch(): Promise<pg.Client> {
   const client = new pg.Client({ connectionString: scratchUrl() });
+  // Scratch lifecycle kills connections out from under suites (the next
+  // file's beforeAll DROPs the db): the socket 'error' must never become an
+  // unhandled event on the test process.
+  client.on("error", () => undefined);
   return client.connect().then(() => client);
 }
 
@@ -95,7 +99,7 @@ export async function seedTenant(client: pg.Client, name: string): Promise<Tenan
 /**
  * Non-superuser session emulating the deployed app: docker/CI service
  * superusers bypass RLS entirely, so suite queries drop into `concierge_app`
- * (created by 0002) â€” the role RLS actually constrains.
+ * (created by 0002) — the role RLS actually constrains.
  */
 export async function asTenantApp(client: pg.Client): Promise<void> {
   await client.query("BEGIN");

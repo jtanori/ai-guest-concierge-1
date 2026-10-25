@@ -7,10 +7,9 @@ validation rules, tenancy, tests, evidence and open questions. S02-01 was
 delivered without one and review found three gaps that a charter would have
 caught; this directory closes that gap.
 
-Status: **S02 approved (2026-10-24); S03 draft (2026-10-24), awaiting
-approval.** No item starts until its charter is approved. The remaining
-sprints are chartered sprint-by-sprint (each sprint's charters land as one PR)
-rather than all 80 items at once.
+Status: **S02 and S03 approved (2026-10-24).** No item starts until its
+charter is approved. The remaining sprints are chartered sprint-by-sprint
+(each sprint's charters land as one PR) rather than all 80 items at once.
 
 S02-01 shipped as **PARTIAL** (PR #7): its primitives are merged, but the
 verbatim AC ("each role can only reach its own surface") has no production

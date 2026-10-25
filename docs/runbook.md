@@ -374,3 +374,40 @@ $ npm run db:test   # 25 passed (25) — AC asserted across all 21 tables
 $ npm run db:test   # 25 passed (25)
 $ npm test          # 48 passed (48) — unit job unaffected
 ```
+
+## S02-01 - Auth + four roles (2.00d)
+
+**AC (verbatim):** Each role can only reach its own surface.
+
+**Status: PARTIAL (2026-10-24) — primitives landed; the verbatim AC ("each role can only reach its own surface") is enforced by `requireRole` only once the first staff route calls it. That route lands in S02-02/S04; the AC is carried by follow-up item S02-06 (guard wiring + denial test against a live route), per review round 2 finding 4369257038. Do not tick the workbook until S02-06 closes.**
+
+- [x] Neon Auth (managed Better Auth) is the identity provider. `src/auth/session.ts` verifies bearer JWTs against the branch JWKS (ES256 / RS256 / PS256 / EdDSA via node:crypto; kid-based key resolution with one refresh on rotation). Review round 2 hardened it: the JWK must bind to the token header (same kid/alg, kty/crv per alg, no private `d`, no conflicting `use`/`key_ops` — real Neon keys omit both, so absence is allowed); ES256 accepts ONLY the 64-byte JOSE r||s form (DER is rejected, no canonicalization); `iss`/`aud`/`nbf`/`iat`/finite `exp` and a verified email (`email_verified` or Better Auth's `emailVerified`) are enforced; `StaffIdentity` is branded with a module-private symbol and `fakeIdentity` is gone, so only the verifier can mint a session identity. Token claims never carry authority — roles never come from them.
+- [x] `db/migrations/0004_auth.sql` stops treating users/memberships as global: `staff_select`/`staff_update_name` show each staff member only their own users row, and the app role's table-wide DML on users is revoked — only `UPDATE (display_name)` remains (no email takeover, no inserts/deletes). Memberships carry command-split policies: `membership_select` (own row or same-property staff), `membership_insert`/`membership_update` owner-ONLY via the `with check` clause role_id=1, `membership_delete` owner-only plus the caller's own row. `provision_user` is a race-safe single-statement upsert that NEVER rewrites an existing identity (email and display_name immutable; display_name only fills a NULL); an email bound to another Neon user surfaces as `EmailCollisionError` (23505) and rolls the login back.
+- [x] Role resolution happens IN the database: `current_membership_role(property_id)` is a SECURITY DEFINER that reads the caller's membership for `app.current_user_id`. The definer context belongs to the cluster-scoped NOLOGIN role `concierge_membership`, and the migration owner's membership is REVOKED before COMMIT (0004) — otherwise the deployed Neon login role (which is the migration owner) could `SET ROLE` into the definer's `USING(true)` policy and bypass RLS (review round 2, 4369257029). `0005_auth_hardening.sql` applies the same revoke to 0003's `concierge_promoter`, grants both definer roles CREATE on the schema (required by `ALTER FUNCTION ... OWNER` under a non-superuser migrator), and grants `concierge_app` to the login role. `0003` was amended pre-deployment to grant CREATE before its ownership transfer; any database that applied the earlier checksums (local `concierge_local`) must be recreated.
+- [x] Runtime sessions actually run as `concierge_app`: the pool is built with the startup option `-c role=concierge_app` (`src/neon/postgres.ts:appPoolConfig`), and `withStaffSession` additionally issues `SET LOCAL ROLE concierge_app` so tests/scripts/misconfigured pools cannot run tenant work as the table-owning login role (review round 2, 4369257062). `tests/db/non-superuser.db.test.ts` creates a plain LOGIN owner, runs all five migrations as it, and proves function ownership, no usable (inherit/SET) access to either definer role, effective FORCE RLS, and the pool's role.
+- [x] `src/auth/guard.ts` is the single surface matrix: owner/manager/front_desk/observer x org/knowledge/settings/queue/analytics x read/write. Manager authors knowledge + settings but never admin (org); front_desk works the queue, reads knowledge; observer is read-only everywhere; grants are monotone under the owner. `requireRole` throws a named `RoleNotOnSurfaceError`. Exhaustively tested in `tests/auth/guard.test.ts`; S02-06 wires it into the first route.
+
+**Product sign-off (2026-10-24):** the five surfaces and their per-role grants are the contract approved with the S02-02 and S02-03 charters (`docs/charters/`); they are recorded here so the matrix is not an invented feature. This is sign-off for the contract only - enforcement still lands with S02-06.
+- [x] `src/auth/context.ts` mirrors withTenant: one transaction drops to `concierge_app`, sets tenant GUCs, provisions the identity, sets `app.current_user_id`, resolves the role through the DB helper, refuses before any tenant work (no membership -> `NoMembershipError`), and yields a session whose `requireRole` is bound to the resolved role. `tests/db/context.db.test.ts` proves the production shape end to end: role from memberships (a forged `role: owner` token claim is ignored), no-membership rollback, email collision, forged-identity refusal, a denied settings write leaving the property untouched, GUC locality, concurrent first-login idempotency, and immutable identity fields.
+- [x] CI: `tests/db/auth.db.test.ts` proves the DB-anchored half — all four roles resolve to their role_id under RLS; a property-A staff member holding a property-B context gets no membership; membership rows of property B are invisible from A; manager inserts/updates are rejected by policy, while the GM's legitimate grant on their own property lands and extending it to another property is refused; users/memberships are invisible without context; provisioning is idempotent and rejects an email collision.
+
+**Evidence (local, verified):**
+```text
+$ npm run db:test   # 54 passed (54) - includes context/non-superuser/runtime-role suites
+$ npm test          # 70 passed (70) — units include the JWKS verify surface
+$ npm run typecheck && npm run lint && npm run build   # all clean
+$ npm run db:migrate -- --url .../concierge_local      # 5 applied (0005 lands)
+```
+
+**Review round 2 residual (documented, not silently dropped):** PostgreSQL
+records the CREATEROLE creator's automatic grant to a role it created as an
+inert membership (`MEMBER=true`, but `inherit_option=false`,
+`set_option=false`; verified in `tests/db/non-superuser.db.test.ts`). The
+migrations revoke the *active* grant they add, so the deployed login role
+cannot inherit or `SET ROLE` into either definer role. The inert row also
+carries ADMIN OPTION, so an attacker who already has arbitrary SQL as the
+login role could re-grant it to themselves - the same "the process holds the
+DB credential" boundary as `RESET ROLE`, not the accidental-bypass bug this
+round fixes. Closing that fully needs a definer role not created by the
+login (superuser-provisioned), which Neon does not expose to migrations; the
+runtime pool additionally pins every session to `concierge_app`.

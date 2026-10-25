@@ -29,7 +29,9 @@ const EXPECTED_TENANT_TABLES = [
   "ai_runs", "citations", "handoff_reasons", "knowledge_gaps",
   "events", "rollups", "audit_log", "outbox",
 ];
-/** The other four carry no `tenant` policy in S01 (role-scoped later, S02). */
+/** users/memberships carry S02-01's own surfaces (staff_select/staff_update_name
+ *  and membership_select/insert/update/delete);
+ *  organizations/roles are deliberately global (no policy at all). */
 const EXPECTED_GLOBAL_TABLES = ["organizations", "users", "roles", "memberships"];
 
 describe("row-level security (db)", () => {
@@ -80,6 +82,15 @@ describe("row-level security (db)", () => {
   it("S01-02 AC: a query without tenant context returns zero rows - EVERY tenant table", async () => {
     await asTenantApp(client, async () => {
       for (const table of EXPECTED_TENANT_TABLES) {
+        const res = await client.query<{ n: string }>(`SELECT count(*) AS n FROM ${table}`);
+        expect(res.rows[0]!.n).toBe("0");
+      }
+    });
+  });
+
+  it("S02-01: users and memberships are invisible without context too", async () => {
+    await asTenantApp(client, async () => {
+      for (const table of ["users", "memberships"]) {
         const res = await client.query<{ n: string }>(`SELECT count(*) AS n FROM ${table}`);
         expect(res.rows[0]!.n).toBe("0");
       }

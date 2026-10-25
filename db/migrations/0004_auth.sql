@@ -61,19 +61,17 @@ DECLARE
   v_user_id uuid;
 BEGIN
   -- Called ONLY with facts from a JWKS-verified JWT (see src/auth/session.ts).
-  -- Idempotent in every path, so the verified identity always maps to the
-  -- same users row: an existing identity is updated in place (returning its
-  -- id even when the display name did not change), and only a genuinely new
-  -- identity inserts.
-  UPDATE users
-     SET display_name = COALESCE(p_display_name, users.display_name)
-   WHERE neon_auth_user_id = p_neon_auth_user_id
-    RETURNING user_id INTO v_user_id;
-  IF v_user_id IS NOT NULL THEN
-    RETURN v_user_id;
-  END IF;
+  -- Idempotent AND race-safe: the single-statement upsert resolves both the
+  -- first insert of an unseen identity and concurrent callers for the same
+  -- identity (the DO UPDATE action fires for the conflict loser and
+  -- RETURNING emits that row; no separate UPDATE-then-INSERT window). A
+  -- genuinely-new identity that collides on ANOTHER identity's email
+  -- (uniqueness there) still surfaces the constraint to the route layer —
+  -- that attempt belongs to a different person, not a retry.
   INSERT INTO users (neon_auth_user_id, email, display_name)
        VALUES (p_neon_auth_user_id, p_email, p_display_name)
+  ON CONFLICT (neon_auth_user_id) DO UPDATE
+         SET display_name = COALESCE(p_display_name, users.display_name)
       RETURNING user_id INTO v_user_id;
   RETURN v_user_id;
 END $$;
@@ -112,16 +110,31 @@ CREATE POLICY staff_self ON users
   USING (user_id = uuid(nullif(current_setting('app.current_user_id', true), '')))
   WITH CHECK (user_id = uuid(nullif(current_setting('app.current_user_id', true), '')));
 
--- 6. Memberships: the tenant-scoped staff surface.
---    Visible: your own row, or any membership of a property you belong to.
---    Writable: owner-only, enforced here rather than in the route, so no
---    endpoint bug can grant a role.
+-- 6. Memberships: the tenant-scoped staff surface — split per command
+--    (FOR ALL policies authorize DELETE off USING alone, which would let any
+--    member erase coworkers; only select-and-write need the distinct rules).
+--    Reads: your own row, or any membership of a property you belong to.
+--    Writes: owner-only, enforced here rather than in the route, so no
+--    endpoint bug can grant a role. Deletes: owner-only plus your own row
+--    (self-leave is safe; revoking someone else is not).
 ALTER TABLE memberships ENABLE ROW LEVEL SECURITY;
 ALTER TABLE memberships FORCE ROW LEVEL SECURITY;
-CREATE POLICY membership_surface ON memberships
-  FOR ALL TO concierge_app
+CREATE POLICY membership_select ON memberships
+  FOR SELECT TO concierge_app
   USING (
     user_id = uuid(nullif(current_setting('app.current_user_id', true), ''))
     OR current_membership_role(property_id) IS NOT NULL
-  )
+  );
+CREATE POLICY membership_insert ON memberships
+  FOR INSERT TO concierge_app
   WITH CHECK (current_membership_role(property_id) = 1);
+CREATE POLICY membership_update ON memberships
+  FOR UPDATE TO concierge_app
+  USING (current_membership_role(property_id) = 1)
+  WITH CHECK (current_membership_role(property_id) = 1);
+CREATE POLICY membership_delete ON memberships
+  FOR DELETE TO concierge_app
+  USING (
+    user_id = uuid(nullif(current_setting('app.current_user_id', true), ''))
+    OR current_membership_role(property_id) = 1
+  );

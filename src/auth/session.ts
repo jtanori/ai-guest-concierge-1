@@ -112,18 +112,33 @@ function verifySignature(
   }
 }
 
-/** JOSE-style r||s hex → the DER form node:crypto expects. */
+/** JOSE r||s (64 bytes) → canonical DER, as node:crypto/OpenSSL requires. */
 function paddedEcSignature(sig: Buffer): Buffer {
+  // Test-fixture signers hand node's own DER over; real JWTs are always the
+  // fixed-width JOSE form.
   if (sig.length !== 64) return sig;
-  const r = sig.subarray(0, 32);
-  const s = sig.subarray(32);
-  const der = (part: Buffer): Buffer => {
-    const body = (part[0] ?? 0) & 0x80 ? Buffer.concat([Buffer.from([0x00]), part]) : part;
-    return Buffer.concat([Buffer.from([0x02, body.length]), body]);
+  // Each half is a big-endian integer in exactly 32 bytes; strip the
+  // redundant leading zeros JOSE's fixed-width encoding allows, prepend 0x00
+  // only when a one then appears (or the integer would read as negative),
+  // and wrap both in an ASN.1 SEQUENCE.
+  const part = (raw: Buffer): Buffer => {
+    let first = 0;
+    while (first < raw.length - 1 && raw[first] === 0) first++;
+    const integer = raw.subarray(first);
+    const padded =
+      (integer[0] ?? 0) & 0x80
+        ? Buffer.concat([Buffer.from([0x00]), integer])
+        : integer;
+    return Buffer.concat([Buffer.from([0x02, padded.length]), padded]);
   };
-  const rDer = der(r);
-  const sDer = der(s);
+  const rDer = part(sig.subarray(0, 32));
+  const sDer = part(sig.subarray(32, 64));
   return Buffer.concat([Buffer.from([0x30, rDer.length + sDer.length]), rDer, sDer]);
+}
+
+/** Test/interop seam: canonical DER for a JOSE (fixed-width) signature. */
+export function derEncodeJose(sig: Buffer): Buffer {
+  return paddedEcSignature(sig);
 }
 
 /** Extracts the raw key of the matching kid — tests hand it over directly. */

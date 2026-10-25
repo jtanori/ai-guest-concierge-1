@@ -152,7 +152,25 @@ describe("staff identity + four roles under RLS (db)", () => {
     });
   });
 
-  it("rejects role-grant writes from a manager (RLS, not route enforcement)", async () => {
+  it("rejects role-grant writes from a manager (RLS filters the rows, not route checks)", async () => {
+    // The manager's own row fails the write policy's role_id=1 check, so the
+    // UPDATE is RLS-filtered into a silent no-op — never an escalation.
+    await asStaffApp(async () => {
+      await setTenant(ORG_A, PROP_A);
+      await setStaff(MANAGER_A);
+      const self = await client.query(
+        "UPDATE memberships SET role_id = 1 WHERE user_id = $1",
+        [MANAGER_A.userUuid],
+      );
+      expect(self.rowCount).toBe(0);
+    });
+    // Ground truth: the manager is still a manager.
+    const stillManager = await owner.query<{ role: number }>(
+      "SELECT role_id AS role FROM memberships WHERE user_id = $1",
+      [MANAGER_A.userUuid],
+    );
+    expect(stillManager.rows[0]!.role).toBe(2);
+    // Inserts for another person are refused outright by the with check.
     await asStaffApp(async () => {
       await setTenant(ORG_A, PROP_A);
       await setStaff(MANAGER_A);
@@ -161,13 +179,6 @@ describe("staff identity + four roles under RLS (db)", () => {
           "INSERT INTO memberships (user_id, property_id, role_id) VALUES ($1, $2, 2)",
           [WATCHER_A.userUuid, PROP_A],
         ),
-      ).rejects.toThrow(/policy|permission denied/);
-    });
-    await asStaffApp(async () => {
-      await setTenant(ORG_A, PROP_A);
-      await setStaff(MANAGER_A);
-      await expect(
-        client.query("UPDATE memberships SET role_id = 1 WHERE user_id = $1", [MANAGER_A.userUuid]),
       ).rejects.toThrow(/policy|permission denied/);
     });
   });
@@ -196,6 +207,53 @@ describe("staff identity + four roles under RLS (db)", () => {
         ),
       ).rejects.toThrow(/policy|permission denied/);
     });
+  });
+
+  it("rejects membership DELETEs from non-owner staff (kill-the-team test)", async () => {
+    // The reviewer's attack: desk/observer staff erasing coworkers, possibly
+    // the owner. The DELETE policy only admits the owner — everyone else's
+    // DELETE is RLS-filtered into a silent no-op (rowCount 0), even though
+    // the row itself is visible to them for reads.
+    await asStaffApp(async () => {
+      await setTenant(ORG_A, PROP_A);
+      await setStaff(DESK_A);
+      const gone = await client.query("DELETE FROM memberships WHERE user_id = $1", [
+        OWNER_A.userUuid,
+      ]);
+      expect(gone.rowCount).toBe(0);
+    });
+    await asStaffApp(async () => {
+      await setTenant(ORG_A, PROP_A);
+      await setStaff(WATCHER_A);
+      const gone = await client.query("DELETE FROM memberships WHERE user_id = $1", [
+        MANAGER_A.userUuid,
+      ]);
+      expect(gone.rowCount).toBe(0);
+    });
+    // Ground truth via the owner session: nobody else's membership vanished.
+    const sessions = await owner.query<{ n: string }>("SELECT count(*) AS n FROM memberships");
+    expect(sessions.rows[0]!.n).toBe("6");
+  });
+
+  it("permits a staff member to delete ONLY their own membership (self-leave)", async () => {
+    // Self-leave is safe (cannot lock anyone else out). After leaving, the
+    // staff member cannot see membership rows AT ALL: the visibility policy
+    // derives from membership, so the table goes fully invisible to them.
+    await asStaffApp(async () => {
+      await setTenant(ORG_A, PROP_A);
+      await setStaff(WATCHER_A);
+      const before = await client.query<{ n: string }>("SELECT count(*) AS n FROM memberships");
+      expect(before.rows[0]!.n).toBe("5");
+      const self = await client.query("DELETE FROM memberships WHERE user_id = $1", [
+        WATCHER_A.userUuid,
+      ]);
+      expect(self.rowCount).toBe(1);
+      const after = await client.query<{ n: string }>("SELECT count(*) AS n FROM memberships");
+      expect(after.rows[0]!.n).toBe("0");
+    });
+    // Ground truth via the owner session: the other members all survived.
+    const survivors = await owner.query<{ n: string }>("SELECT count(*) AS n FROM memberships");
+    expect(survivors.rows[0]!.n).toBe("5");
   });
 
   it("shows a staff member only themselves in users (member lists come from memberships)", async () => {

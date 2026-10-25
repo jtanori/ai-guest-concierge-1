@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import crypto from "node:crypto";
 import {
   AuthVerifyError,
+  derEncodeJose,
   fakeIdentity,
   verifyIdentityToken,
   verifyWithJwk,
@@ -11,6 +12,28 @@ interface KeyMaterial {
   jwk: Record<string, unknown>;
   sign: (data: string) => Buffer;
 }
+
+const parseDerInts = (der: Buffer): Buffer[] => {
+  if (der[0] !== 0x30) throw new Error("not a DER sequence");
+  let off = 2;
+  const ints: Buffer[] = [];
+  for (let i = 0; i < 2; i++) {
+    if (der[off] !== 0x02) throw new Error("not a DER integer");
+    const len = der[off + 1]!;
+    ints.push(der.subarray(off + 2, off + 2 + len));
+    off += 2 + len;
+  }
+  if (off !== der.length) throw new Error("trailing DER bytes");
+  return ints;
+};
+const toJose = (ints: Buffer[]): Buffer => {
+  // Fixed-width 32-byte big-endian of the VALUE bytes (a DER 33-byte body
+  // with a leading 0x00 negative-prevention pad maps to its 31-byte suffix).
+  const value = (b: Buffer): Buffer => (b.length > 32 ? b.subarray(1) : b);
+  const pad = (b: Buffer): Buffer =>
+    b.length === 32 ? b : Buffer.concat([Buffer.alloc(32 - b.length), b]);
+  return Buffer.concat([pad(value(ints[0]!)), pad(value(ints[1]!))]);
+};
 
 const EC_JWK_ENTRY: KeyMaterial = (() => {
   const { privateKey, publicKey } = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
@@ -118,5 +141,39 @@ describe("Neon Auth token verification (S02-01)", () => {
   it("treats a private JWK as attacker input", () => {
     const privateJwk = { ...EC_JWK_ENTRY.jwk } as Record<string, unknown>;
     expect(() => verifyWithJwk(mint(EC_JWK_ENTRY), { ...privateJwk, d: "AAA" } as never)).toThrow(/private-key/);
+  });
+
+  it("canonicalizes fixed-width JOSE signatures before EC verification", () => {
+    // Real JWTs carry r||s in two fixed 32-byte halves; node's own output is
+    // already-canonical DER. Find a signature whose r needs the DER high-bit
+    // 0x00 pad (one in ~2 of random ECDSA sigs) and prove the round trip
+    // JOSE → canonicalizer reproduces node's DER byte-for-byte.
+    const { privateKey } = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+    let highBitSeen = false;
+    for (let i = 0; i < 400; i++) {
+      const der = crypto.sign("sha256", Buffer.from(`canon-probe ${i}`), privateKey);
+      expect(Buffer.compare(derEncodeJose(toJose(parseDerInts(der))), der)).toBe(0);
+      if (parseDerInts(der).some((part) => part.length === 33 && part[0] === 0x00)) highBitSeen = true;
+    }
+    expect(highBitSeen).toBe(true);
+  });
+
+  it("verifies tokens whose JOSE signature arrives in fixed-width form", () => {
+    // A JOSE-style signer (fixed-width r||s, as real JWKS-verified tokens use).
+    const { privateKey, publicKey } = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+    const joseSign = (data: string): Buffer => {
+      const der = crypto.sign("sha256", Buffer.from(data), privateKey);
+      const ints = parseDerInts(der);
+      const pad = (b: Buffer): Buffer =>
+        b.length === 32 ? b : Buffer.concat([Buffer.alloc(32 - b.length), b]);
+      return Buffer.concat([pad(ints[0]!), pad(ints[1]!)]);
+    };
+    const joseEntry: KeyMaterial = {
+      jwk: publicKey.export({ format: "jwk" }) as Record<string, unknown>,
+      sign: joseSign,
+    };
+    joseEntry.jwk.kid = "test-ec-jose";
+    joseEntry.jwk.alg = "ES256";
+    expect(verifyWithJwk(mint(joseEntry), joseEntry.jwk as never).displayName).toBe("Front Manager");
   });
 });

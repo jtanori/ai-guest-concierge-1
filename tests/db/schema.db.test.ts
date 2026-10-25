@@ -70,6 +70,7 @@ describe("schema (db)", () => {
       "0003_immutability.sql",
       "0004_auth.sql",
       "0005_auth_hardening.sql",
+      "0006_property_settings.sql",
     ]);
   });
 

@@ -191,11 +191,23 @@ fixture's `effectiveFrom` (`2026-01-01`) / `sourceArticleVersionId` (the
 matching published `article_version`) are what the lookup window and the D5
 citation link are read from.
 
-Verified on a simulated pre-0009 demo database (`fact_key` = fixture id,
+Verified on a purpose-built pre-0009 demo database (`fact_key` = fixture id,
 `unit = 'text'`, no effective date, no source version): one `db:seed` run
 upgraded all five rows in place to `closing_time`/`massage_60`/`facial`/
 `hours` with their units, `2026-01-01` and non-null source versions, and the
 count stayed 5.
+
+**A pre-0009 row an operator had verified loses that verdict on the first
+upgrade seed — by the one rule in §5.3, not by accident.** Measured on such a
+database (row verified, then 0009 applied, then the seed): `verified` went
+`t` → `f`, because the seed rewrites `fact_key` (the fixture id becomes
+`closing_time`) and `effective_from` (NULL becomes `2026-01-01`), i.e. a
+content change. Nothing is lost that lookup could have answered: 0009's
+`NOT VALID` CHECK let that row keep `verified = true` with a NULL
+`effective_from`, and such a row is invisible to `lookupFact`
+(`effective_from <= on` can never hold). The operator re-verifies through
+`verifyFact` once the row has its effective date, which is the same step the
+`NOT VALID` note in §5.1 asks for.
 
 The two pool facts share `(topic_key='pool.hours', fact_key='closing_time',
 language='es')` and different values, so they are a real contradiction. The
@@ -434,9 +446,10 @@ run and the counts.
   the fix is a cleanup job, not a constraint that would re-break the
   contradiction case.
 - **Legacy verified rows** (created before 0009) are not re-validated: they
-  carry no `effective_from`, so `lookupFact` cannot return them. An operator
-  must re-verify them through `verifyFact` once the row has an effective
-  date. Accepted 2026-10-25 rather than aborting the migration.
+  carry no `effective_from`, so `lookupFact` cannot return them. The first
+  upgrade seed drops such a verdict with the rest of the content rewrite
+  (§5.2), and an operator must re-verify through `verifyFact` once the row has
+  an effective date. Accepted 2026-10-25 rather than aborting the migration.
 - **Approved deviation record.** The DROP of 0001's UNIQUE, the replacement
   partial unique index, the `NOT VALID` CHECK and the verifier role are
   operator-approved (2026-10-25, PR #32 review round 1) and are written into

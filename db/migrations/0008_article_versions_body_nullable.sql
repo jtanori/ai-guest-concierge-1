@@ -1,0 +1,1 @@
+ALTER TABLE article_versions ALTER COLUMN body DROP NOT NULL;

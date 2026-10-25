@@ -166,9 +166,72 @@ describe("chunkBody", () => {
     },
   );
 
-  it("validates options even for empty bodies and applies defaults independently", () => {
+  it("validates options even for empty bodies", () => {
     expect(() => chunkBody("", { maxChars: 0 })).toThrow(RangeError);
-    expect(() => chunkBody("text", { maxChars: 100 })).toThrow(RangeError);
     expect(chunkBody("text", { overlap: 0 })).toEqual(["text"]);
+  });
+
+  it.each([1, 2, 100, 150, 151, 1200, 2000])(
+    "adapts omitted overlap to a maxChars-only override of %s",
+    (maxChars) => {
+      const body = "A. B. C. ".repeat(30);
+      const chunks = chunkBody(body, { maxChars });
+      assertCoverage(body, chunks, maxChars, Math.min(150, maxChars - 1));
+    },
+  );
+
+  it.each(["」", "』", "】"])(
+    "recognizes unspaced CJK sentence boundaries followed by %s",
+    (closingMark) => {
+      const body = `最初。${closingMark}次。${closingMark}最後。`;
+      const chunks = chunkBody(body, { maxChars: 6, overlap: 0 });
+      expect(chunks[0]).toBe(`最初。${closingMark}`);
+      expect(chunks.join("")).toBe(body);
+    },
+  );
+
+  it("recognizes unspaced CJK sentences without closing marks", () => {
+    expect(chunkBody("最初。次。最後。", { maxChars: 4, overlap: 0 })).toEqual([
+      "最初。",
+      "次。",
+      "最後。",
+    ]);
+  });
+
+  it.each(["؟", "۔", "।", "॥"])(
+    "recognizes sentence terminator %s and retains whole-sentence overlap",
+    (terminator) => {
+      const body = `Ab${terminator} Cd${terminator} Ef${terminator} Gh${terminator}`;
+      const chunks = chunkBody(body, { maxChars: 12, overlap: 4 });
+      expect(chunks).toEqual([
+        `Ab${terminator} Cd${terminator} Ef${terminator} `,
+        `Ef${terminator} Gh${terminator}`,
+      ]);
+      assertCoverage(body, chunks, 12, 4);
+    },
+  );
+
+  it("bounds output amplification below 2x with extreme overlap options", () => {
+    const body = "A. ".repeat(5000);
+    const chunks = chunkBody(body, { maxChars: 2000, overlap: 1999 });
+    const outputSize = chunks.reduce(
+      (sum, chunk) => sum + Array.from(chunk).length,
+      0,
+    );
+    expect(outputSize).toBeLessThan(2 * Array.from(body).length);
+    expect(chunks.length).toBeLessThan(20);
+    // Distinct test input verifies full coverage as well as the amplification bound.
+    const distinct = Array.from(
+      { length: 500 },
+      (_, i) => `Sentence ${i}. `,
+    ).join("");
+    const distinctChunks = chunkBody(distinct, {
+      maxChars: 2000,
+      overlap: 1999,
+    });
+    assertCoverage(distinct, distinctChunks, 2000, 1999);
+    expect(
+      distinctChunks.reduce((sum, chunk) => sum + Array.from(chunk).length, 0),
+    ).toBeLessThan(2 * Array.from(distinct).length);
   });
 });

@@ -17,16 +17,21 @@ function lowerBound(boundaries: number[], value: number): number {
 }
 
 /**
- * Prefer blank-line paragraphs, then sentences ending in . ! ? 。 ！ ？,
+ * Prefer blank-line paragraphs, then sentences ending in . ! ? 。 ！ ？ ؟ ۔ । ॥,
  * optionally followed by closing quotes/brackets. This is a deterministic
  * heuristic, not linguistic segmentation (e.g. abbreviations may split).
  * Separators stay in the preceding chunk: no trimming or text loss.
  * A whole-sentence suffix is repeated only when it fits the overlap budget;
  * unfinished/hard-split sentence fragments are never used as overlap.
+ * An omitted overlap defaults to min(150, maxChars - 1). Actual repeated
+ * text is additionally capped at half the preceding chunk's length, so
+ * total output stays below twice the normalized input size even for
+ * extreme permitted overlap budgets. The budget is an upper bound, not
+ * a required overlap size. CJK terminators need no following whitespace.
  */
 export function chunkBody(body: string, opts: ChunkOptions = {}): string[] {
   const maxChars = opts.maxChars ?? 1200;
-  const overlap = opts.overlap ?? 150;
+  const overlap = opts.overlap ?? Math.min(150, maxChars - 1);
   if (
     !Number.isInteger(maxChars) ||
     maxChars < 1 ||
@@ -49,11 +54,18 @@ export function chunkBody(body: string, opts: ChunkOptions = {}): string[] {
   // Scan once; absorb separators without dropping them. Keep sentence
   // boundaries separate from paragraph boundaries for whole-sentence overlap.
   for (let i = 0; i < points.length; i++) {
-    if (/[.!?。！？]/u.test(points[i]!)) {
+    if (/[.!?。！？؟۔।॥]/u.test(points[i]!)) {
       let end = i + 1;
-      while (end < points.length && /[.!?。！？"'”’»）)\]]/u.test(points[end]!))
+      while (
+        end < points.length &&
+        /[.!?。！？؟۔।॥"'”’»）)\]」』】]/u.test(points[end]!)
+      )
         end++;
-      if (end === points.length || /\s/u.test(points[end]!)) {
+      if (
+        end === points.length ||
+        /\s/u.test(points[end]!) ||
+        /[。！？]/u.test(points[i]!)
+      ) {
         while (end < points.length && /\s/u.test(points[end]!)) end++;
         sentences.push(end);
         i = end - 1;
@@ -99,10 +111,8 @@ export function chunkBody(body: string, opts: ChunkOptions = {}): string[] {
     if (end === points.length) break;
 
     const boundaryIndex = lowerBound(sentences, end);
-    const overlapIndex = lowerBound(
-      sentences,
-      Math.max(end - overlap, start + 1),
-    );
+    const effectiveOverlap = Math.min(overlap, Math.floor((end - start) / 2));
+    const overlapIndex = lowerBound(sentences, end - effectiveOverlap);
     // Both ends must be true sentence boundaries; never repeat a partial sentence.
     const nextStart = sentences[overlapIndex];
     previousEnd = end;

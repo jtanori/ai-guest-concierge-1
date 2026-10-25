@@ -459,3 +459,32 @@ $ npm run db:test                                      # 69 passed (69)
 $ npm test                                             # 104 passed (104)
 $ npm run typecheck && npm run lint && npm run build   # all clean
 ```
+
+## S02-04 - Seed fixtures + demo property (1.00d)
+
+**AC (verbatim):** `make seed` produces a fully populated property.
+
+**Status: DONE (2026-10-24).** `npm run db:seed` seeds the demo graph idempotently; the root `Makefile` exposes the literal `make seed` target. The target itself was not executed on this Windows box (no `make`); `tests/seed/contract.test.ts` guards the Makefile wiring and the DB suite exercises the same CLI path.
+
+- [x] `src/seed/ids.ts` derives RFC 4122 v5 UUIDs from stable keys (`org:demo`, `property:demo`, `user:*`, `article:*`, `fact:*`) with a fixed namespace, so re-runs address the same rows.
+- [x] `src/seed/embedding.ts` is the documented dev stub: SHA-256 -> xorshift -> normalized 1536-float vector. It is deterministic and hermetic, not semantic; S02-05/S05 replace it with the real provider.
+- [x] `src/seed/demo.ts` seeds in one transaction with tenant GUCs: org/property (time zone `America/Mexico_City`, mode `auto`, languages `{es,en}`, non-default `enabled_topics`), four staff users + memberships, one manual source, 7 articles + 7 versions, 5 facts, 1 open gap. Every insert is `ON CONFLICT DO NOTHING`; promotion is skipped when already current.
+- [x] Identity rows use `concierge_membership` (the only legitimate writer for arbitrary users/memberships). Because 0004/0005 revoke that role from the login role, the seed grants it inside a savepoint, sets the role, inserts, then revokes before release; a failure rolls the grant and rows back together.
+- [x] Versions are born retired and promoted only through `promote_article_version()` after a stub embedding backfill. The noticeboard is inserted retired with `body = NULL`, `embedding = NULL`, `promoted_at = NULL`; its gap row is `Parking policy article has no extractable text (noticeboard photo)` (`es`, `open`).
+- [x] `0008_article_versions_body_nullable.sql` drops the 0001 `body NOT NULL` because AC-3/AC-6 require the picture-only version to have no body. This is the only schema change; retrieval already treats NULL tsv/embedding as non-retrievable.
+- [x] Contradiction modeling: `poolWebsite` is `scope='brand'`, `poolDirectory` is `scope='property'`; both rows and both unverified facts (`21:00` / `20:00`) survive. All other articles are property-scope.
+- [x] CLI `scripts/seed.ts` refuses `APP_ENV=prod` before connecting, wraps `seedDemo` in `BEGIN/COMMIT`, and prints the count JSON. `package.json` has `db:seed`; `Makefile` has `.PHONY: seed` -> `npm run db:seed`.
+- [x] Tests: `tests/seed/contract.test.ts` (3: v5 shape/determinism, stub embedding shape/norm, wiring), `tests/db/seed.db.test.ts` (6: exact counts/6 current, idempotent second run, all six messy cases, settings/topics, cross-tenant invisibility, CLI success + prod refusal). `schema.db.test.ts`/`non-superuser.db.test.ts` now expect 8 migrations.
+
+**Evidence (local, verified):**
+```text
+$ npm run db:migrate -- --url .../concierge_local      # 8 applied (0008 lands)
+$ npm run db:seed  -- --url .../concierge_local
+{"orgs":1,"properties":1,"users":4,"memberships":4,"knowledge_sources":1,"knowledge_articles":7,"article_versions":7,"property_facts":5,"knowledge_gaps":1}
+$ npm run db:seed  -- --url .../concierge_local        # same JSON (idempotent)
+$ npm run db:test                                      # 75 passed (75)
+$ npm test                                             # 107 passed (107)
+$ npm run typecheck && npm run lint && npm run build   # all clean
+```
+
+`make` is not installed on this Windows dev box; the AC literal is covered by the Makefile contract test, and Linux/CI can run `make seed` against `$DATABASE_URL`.

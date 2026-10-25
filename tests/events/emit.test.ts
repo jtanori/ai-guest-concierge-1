@@ -7,7 +7,7 @@ import {
   type EventContext,
   type EventName,
 } from "../../src/events/taxonomy.ts";
-import { TenantContextError } from "../../src/db/tenant.ts";
+import { LANGUAGES } from "../../src/i18n/catalog.ts";
 
 const tenant = {
   orgId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
@@ -22,12 +22,10 @@ const context: EventContext = {
   createdAt: "2026-10-25T12:00:00.000Z",
 };
 function fakeClient() {
-  const query = vi
-    .fn()
-    .mockResolvedValue({
-      rowCount: 1,
-      rows: [{ event_id: "9007199254740993" }],
-    });
+  const query = vi.fn().mockResolvedValue({
+    rowCount: 1,
+    rows: [{ event_id: "9007199254740993" }],
+  });
   return { query, client: { query } as unknown as pg.Client };
 }
 
@@ -125,8 +123,13 @@ describe("emitEvent", () => {
     async (patch) => {
       const { client, query } = fakeClient();
       await expect(
-        emitEvent(client, { ...tenant, ...patch }, "message_received", context),
-      ).rejects.toBeInstanceOf(TenantContextError);
+        emitEvent(
+          client,
+          { ...tenant, ...patch } as typeof tenant,
+          "message_received",
+          context,
+        ),
+      ).rejects.toBeInstanceOf(EventError);
       expect(query).not.toHaveBeenCalled();
     },
   );
@@ -156,6 +159,9 @@ describe("emitEvent", () => {
     { createdAt: 123 },
     { language: undefined },
     { language: "fr" },
+    { topic: "" },
+    { topic: "   " },
+    { topic: "\t\n" },
     { topic: undefined },
     { topic: 42 },
   ])("rejects invalid runtime context %j before SQL", async (patch) => {
@@ -244,5 +250,39 @@ describe("emitEvent", () => {
       emitEvent(client, tenant, "message_received", context),
     ).rejects.toBeInstanceOf(EventError);
     expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(LANGUAGES)("accepts catalog language %s", async (language) => {
+    const { client, query } = fakeClient();
+    await emitEvent(client, tenant, "message_received", {
+      ...context,
+      language,
+    });
+    expect(query.mock.calls[0]![1][4]).toBe(language);
+  });
+
+  it.each([null, undefined])(
+    "rejects missing tenant context %s as EventError before SQL",
+    async (ctx) => {
+      const { client, query } = fakeClient();
+      await expect(
+        emitEvent(
+          client,
+          ctx as unknown as typeof tenant,
+          "message_received",
+          context,
+        ),
+      ).rejects.toBeInstanceOf(EventError);
+      expect(query).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves nonblank topic text without silently trimming it", async () => {
+    const { client, query } = fakeClient();
+    await emitEvent(client, tenant, "message_received", {
+      ...context,
+      topic: " pool.hours ",
+    });
+    expect(query.mock.calls[0]![1][5]).toBe(" pool.hours ");
   });
 });

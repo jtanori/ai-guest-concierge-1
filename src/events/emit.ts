@@ -1,5 +1,10 @@
 import type pg from "pg";
-import { assertTenantShape, type TenantContext } from "../db/tenant.ts";
+import {
+  assertTenantShape,
+  TenantContextError,
+  type TenantContext,
+} from "../db/tenant.ts";
+import { LANGUAGES } from "../i18n/catalog.ts";
 import {
   createEvent,
   EventError,
@@ -16,7 +21,10 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  * must not invoke this on an unscoped client; DB RLS remains the backstop.
  * Null/omitted data maps to {}, matching events.payload's NOT NULL default.
  * Returns bigint so the bigserial identifier cannot lose numeric precision.
- * Validation/serialization and DB errors propagate for caller-owned rollback.
+ * Invalid tenant/event context and payload shape throw EventError. Blank
+ * non-null topics are rejected; null is the sole unclassified topic value.
+ * Serialization and DB errors propagate unchanged for caller-owned rollback.
+ * Payload values use standard JSON.stringify semantics, not audit sanitization.
  */
 export async function emitEvent(
   client: pg.Client | pg.PoolClient,
@@ -25,7 +33,16 @@ export async function emitEvent(
   eventContext: EventContext,
   data: Record<string, unknown> | null = null,
 ): Promise<bigint> {
-  assertTenantShape(tenantContext);
+  if (!tenantContext || typeof tenantContext !== "object") {
+    throw new EventError("tenant context is required");
+  }
+  try {
+    assertTenantShape(tenantContext);
+  } catch (error) {
+    if (error instanceof TenantContextError)
+      throw new EventError(error.message);
+    throw error;
+  }
   if (!isEventName(type)) throw new EventError("unknown event name");
   if (!eventContext || typeof eventContext !== "object") {
     throw new EventError("event context is required");
@@ -52,8 +69,10 @@ export async function emitEvent(
   if (
     typeof event.context.created_at !== "string" ||
     (event.context.language !== null &&
-      !["es", "en"].includes(event.context.language)) ||
-    (event.context.topic !== null && typeof event.context.topic !== "string")
+      !LANGUAGES.includes(event.context.language)) ||
+    (event.context.topic !== null &&
+      (typeof event.context.topic !== "string" ||
+        event.context.topic.trim().length === 0))
   ) {
     throw new EventError("invalid event context fields");
   }

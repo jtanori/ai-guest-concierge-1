@@ -382,7 +382,7 @@ $ npm test          # 48 passed (48) — unit job unaffected
 **Status: DONE (2026-10-22).**
 
 - [x] Neon Auth (managed Better Auth) is the identity provider. `src/auth/session.ts` verifies bearer JWTs against the branch JWKS (ES256 / RS256 / PS256 / Ed25519 via node:crypto; kid-based key resolution with one refresh on rotation; `exp`, `sub`, `email` enforced; a private JWK is refused). The token is data, not authority — roles never come from it.
-- [x] `db/migrations/0004_auth.sql` stops treating users/memberships as global: `staff_self` shows each staff member only their own users row (member lists come from memberships); `membership_surface` makes membership rows visible to the member themselves and to staff of the same property, and restricts writes to owners ONLY (`with check` demands role_id=1 — no endpoint bug can mint a role).
+- [x] `db/migrations/0004_auth.sql` stops treating users/memberships as global: `staff_self` shows each staff member only their own users row (member lists come from memberships); `memberships carry command-split policies: membership_select (own row or same-property staff), insert/update owner-ONLY via the with check clause role_id=1, delete owner-only plus the caller’s own row (a desk/observer cannot erase coworkers, self-leave stays possible). Review round 1 additionally landed canonical DER for JOSE ECDSA (fixed-width r||s) in the Neon Auth verify path and a race-safe single-statement upsert for provision_user.
 - [x] Role resolution happens IN the database: `current_membership_role(property_id)` is a SECURITY DEFINER that reads the caller's membership for `app.current_user_id` — the definer context belongs to the cluster-scoped NOLOGIN role `concierge_membership` (guarded creation, following 0002/0003; never a member of `concierge_app`), with the migration owner as its only cluster member. Provisioning (`provision_user(neon_auth_user_id, email, display_name)`) is an idempotent upsert so a verified identity always maps to the same users row — including the no-name-change path (covered by tests).
 - [x] `src/auth/guard.ts` is the single surface matrix: owner/manager/front_desk/observer x org/knowledge/settings/queue/analytics x read/write. Manager authors knowledge + settings but never admin (org); front_desk works the queue, reads knowledge; observer is read-only everywhere; grants are monotone under the owner. `requireRole` throws a named `RoleNotOnSurfaceError`. Exhaustively tested in `tests/auth/guard.test.ts`.
 - [x] `src/auth/context.ts` mirrors withTenant: one transaction sets tenant GUCs, provisions the identity, sets `app.current_user_id`, resolves the role through the DB helper, refuses before any tenant work (no membership -> `NoMembershipError`), and yields a session whose `requireRole` is bound to the resolved role. The AC's role/surface boundary is thus enforced twice: DB policy (0004) + route matrix (guard.ts).
@@ -390,7 +390,7 @@ $ npm test          # 48 passed (48) — unit job unaffected
 
 **Evidence (local, verified):**
 ```text
-$ npm run db:test   # 31 passed (31)
-$ npm test          # 63 passed (63) — units include the JWKS verify surface
+$ npm run db:test   # 33 passed (33)
+$ npm test          # 65 passed (65) — units include the JWKS verify surface
 $ npm run typecheck && npm run lint && npm run build   # all clean
 $ npm run db:migrate -- --url .../concierge_local      # 4 applied (0004 lands)

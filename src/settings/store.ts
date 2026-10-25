@@ -7,6 +7,7 @@
  * `guard.requireRole("settings", ...)`.
  */
 import type pg from "pg";
+import { writeAudit } from "../audit/write.ts";
 import {
   mergeSettings,
   parsePropertySettings,
@@ -44,6 +45,7 @@ export async function loadPropertySettings(
 export async function savePropertySettings(
   client: pg.Client,
   context: PropertyContext,
+  actor: { userId: string },
   patch: Partial<PropertySettings>,
 ): Promise<{ settings: PropertySettings; changed: SettingsKey[] }> {
   const current = await loadPropertySettings(client, context);
@@ -58,6 +60,18 @@ export async function savePropertySettings(
   const changed = SETTINGS_KEYS.filter(
     (key) => JSON.stringify(current[key]) !== JSON.stringify(settings[key]),
   );
+
+  if (changed.length > 0) {
+    await writeAudit(client, {
+      orgId: context.orgId,
+      propertyId: context.propertyId,
+      actorUserId: actor.userId,
+      action: "settings.updated",
+      entityType: "property",
+      entityId: context.propertyId,
+      detail: { changed },
+    });
+  }
 
   return { settings, changed };
 }

@@ -24,6 +24,7 @@ import { connectScratch, dropScratch, recreateScratch } from "./helpers.db.ts";
 let client: pg.Client;
 let propertyA: PropertyContext;
 let propertyB: PropertyContext;
+let actor: { userId: string };
 
 async function asApp<T>(
   context: PropertyContext,
@@ -54,6 +55,11 @@ describe("property settings (db)", () => {
       "INSERT INTO properties (org_id, name, slug) VALUES ($1, 'Property B', 'property_b') RETURNING property_id",
       [orgB.rows[0]!.org_id],
     );
+
+    const seeded = await client.query<{ user_id: string }>(
+      "SELECT provision_user('auth|settings-a', 'settings@a.mx', 'Settings A') AS user_id",
+    );
+    actor = { userId: seeded.rows[0]!.user_id };
 
     propertyA = { orgId: orgA.rows[0]!.org_id, propertyId: a.rows[0]!.property_id };
     propertyB = { orgId: orgB.rows[0]!.org_id, propertyId: b.rows[0]!.property_id };
@@ -89,7 +95,7 @@ describe("property settings (db)", () => {
       retention_days: 30,
     };
     const saved = await asApp(propertyA, (tx) =>
-      savePropertySettings(tx, propertyA, patch),
+      savePropertySettings(tx, propertyA, actor, patch),
     );
     expect(saved.changed).toEqual(["tone", "retention_days"]);
     expect(saved.settings.tone).toBe("formal");
@@ -181,7 +187,7 @@ describe("property settings (db)", () => {
     ).rejects.toThrow(PropertyNotFoundError);
 
     await expect(
-      asApp(propertyA, (tx) => savePropertySettings(tx, propertyB, { tone: "concise" })),
+      asApp(propertyA, (tx) => savePropertySettings(tx, propertyB, actor, { tone: "concise" })),
     ).rejects.toThrow(PropertyNotFoundError);
   });
 });

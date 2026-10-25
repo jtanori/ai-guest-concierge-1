@@ -1,4 +1,4 @@
-﻿# Runbook — W00 and beyond
+# Runbook — W00 and beyond
 
 Written as items are worked, not at the end. One entry per backlog item.
 
@@ -389,7 +389,7 @@ $ npm test          # 48 passed (48) — unit job unaffected
 - [x] `src/auth/context.ts` mirrors withTenant: one transaction drops to `concierge_app`, sets tenant GUCs, provisions the identity, sets `app.current_user_id`, resolves the role through the DB helper, refuses before any tenant work (no membership -> `NoMembershipError`), and yields a session whose `requireRole` is bound to the resolved role. `tests/db/context.db.test.ts` proves the production shape end to end: role from memberships (a forged `role: owner` token claim is ignored), no-membership rollback, email collision, forged-identity refusal, a denied settings write leaving the property untouched, GUC locality, concurrent first-login idempotency, and immutable identity fields.
 - [x] CI: `tests/db/auth.db.test.ts` proves the DB-anchored half — all four roles resolve to their role_id under RLS; a property-A staff member holding a property-B context gets no membership; membership rows of property B are invisible from A; manager inserts/updates are rejected by policy, while the GM's legitimate grant on their own property lands and extending it to another property is refused; users/memberships are invisible without context; provisioning is idempotent and rejects an email collision.
 
-**Product sign-off (2026-10-24):** the five surfaces and their per-role grants are the contract approved with the S02-02 and S02-03 charters (`docs/charters/`); they are recorded here so the matrix is not an invented feature. This is sign-off for the contract only - enforcement still lands with S02-06.
+**Product sign-off (2026-10-24):** the six surfaces (including the S02-03 `audit` surface) and their per-role grants are the contract approved with the S02-02 and S02-03 charters (`docs/charters/`); they are recorded here so the matrix is not an invented feature. This is sign-off for the contract only - enforcement still lands with S02-06.
 
 **Evidence (local, verified):**
 ```text
@@ -431,5 +431,31 @@ runtime pool additionally pins every session to `concierge_app`.
 $ npm run db:migrate -- --url .../concierge_local      # 6 applied (0006 lands)
 $ npm run db:test                                      # 62 passed (62)
 $ npm test                                             # 94 passed (94)
+$ npm run typecheck && npm run lint && npm run build   # all clean
+```
+
+## S02-03 - Audit log (1.00d)
+
+**AC (verbatim):** Every consequential action writes an audit row.
+
+**Status: DONE (2026-10-24).** One write path, one closed vocabulary, one read path, and the first real call site (settings) are merged. Future actions add their call site when they land; this item does not claim every future action is already audited.
+
+- [x] `src/audit/actions.ts` is the closed vocabulary: 10 actions and 8 entity types, with `isAuditAction`/`isEntityType`. The DB keeps `action text` (no CHECK) so the app can add an action without a migration; the TS union is the gate.
+- [x] `src/audit/write.ts` validates action/entity types, org/property/actor UUIDs and non-empty `entityId`, then inserts one row with `RETURNING audit_id`. It takes the caller's client, so it runs in the caller's transaction; a failed insert aborts the mutation. No SECURITY DEFINER.
+- [x] `src/audit/detail.ts` rejects unsafe detail keys by token (`body`, `message_body`, `content`, `card`, `pan`, `token`, `secret`, `password`, including camelCase and nesting) and rejects undefined/function/bigint/non-finite/Date/circular values. `{changed: ["tone"]}` passes; `{company: "..."}` is not a false positive.
+- [x] `src/audit/read.ts` lists a property's rows newest-first (`audit_id DESC`), clamps `limit` to 1..200 (default 50), and uses `beforeId` as an exclusive bigint cursor. RLS scopes the result; all four roles may read.
+- [x] `src/audit/support.ts` writes `support.access` with `entity_type='property'`, `entity_id=property_id`, and detail `{operator_email, reason, ticket?}`; empty operator/reason is refused. Authorization (platform-admin) is S10 and deliberately not here.
+- [x] `src/settings/store.ts` now requires `actor: { userId }` and writes `settings.updated` with `{changed}` in the same transaction after the UPDATE. A no-op save writes no audit row. S02-02 tests updated.
+- [x] `src/auth/guard.ts` gains the `audit` surface: owner/manager/front_desk/observer all `read`, nobody `write`. Matrix test extended.
+- [x] `0007_audit_privileges.sql` revokes UPDATE/DELETE on `audit_log` from `concierge_app`; 0003's append-only trigger remains the second layer (proved as the owner role).
+- [x] Tests: `tests/audit/actions.test.ts` (4), `tests/audit/detail.test.ts` (5), `tests/db/audit.db.test.ts` (7: atomic settings+audit, rollback on failed audit, newest-first/limit/beforeId/observer read, cross-property invisibility, UPDATE/DELETE refusal, support access, no audit write role). `schema.db.test.ts`/`non-superuser.db.test.ts` now expect 7 migrations.
+
+**Wired call sites:** `savePropertySettings` -> `settings.updated`. **Call-site rule:** each future item adds its own `writeAudit` call inside the mutation's transaction and documents its `detail` keys in its charter; no route writes audit rows directly.
+
+**Evidence (local, verified):**
+```text
+$ npm run db:migrate -- --url .../concierge_local      # 7 applied (0007 lands)
+$ npm run db:test                                      # 69 passed (69)
+$ npm test                                             # 104 passed (104)
 $ npm run typecheck && npm run lint && npm run build   # all clean
 ```

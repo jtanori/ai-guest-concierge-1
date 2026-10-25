@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { can, MATRIX, requireRole, RoleNotOnSurfaceError, ROLE_BY_ID, ROLE_IDS, type Mode, type Role, type Surface } from "../../src/auth/guard.ts";
 
 const ROLES = Object.keys(MATRIX) as Role[];
-const SURFACES = ["org", "knowledge", "settings", "queue", "analytics"] as Surface[];
+const SURFACES = ["org", "knowledge", "settings", "queue", "analytics", "audit"] as Surface[];
 const MODES = ["read", "write"] as Mode[];
 
 describe("four-role surface matrix (S02-01)", () => {
@@ -54,6 +54,14 @@ describe("four-role surface matrix (S02-01)", () => {
     for (const surface of SURFACES) {
       expect(can("observer", surface, "read"), `observer reads ${surface}`).toBe(true);
       expect(can("observer", surface, "write"), `observer writes ${surface}`).toBe(false);
+    }
+  });
+
+  it("grants audit read to every role and write to none", () => {
+    for (const role of ROLES) {
+      expect(can(role, "audit", "read"), `${role} reads audit`).toBe(true);
+      expect(can(role, "audit", "write"), `${role} writes audit`).toBe(false);
+      expect(() => requireRole(role, "audit", "write")).toThrow(RoleNotOnSurfaceError);
     }
   });
 

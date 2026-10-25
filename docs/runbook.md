@@ -488,3 +488,25 @@ $ npm run typecheck && npm run lint && npm run build   # all clean
 ```
 
 `make` is not installed on this Windows dev box; the AC literal is covered by the Makefile contract test, and Linux/CI can run `make seed` against `$DATABASE_URL`.
+
+## S02-05 - is_current retrieval filtering + re-embed job (0.50d)
+
+**AC (verbatim):** Editing an article makes its old chunks unretrievable.
+
+**Status: DONE (2026-10-24).** The retrieval primitive hard-filters `is_current` in both SQL paths, and `reembedAndPublish` embeds + promotes as one unit of work. No schema change and no new dependency.
+
+- [x] `src/knowledge/retrieval.ts` (`retrieveCurrentVersions`): one mode per call. Lexical uses `websearch_to_tsquery('simple', $1)` + `ts_rank`; vector uses cosine similarity (`1 - (embedding <=> $1::vector)`). Both statements contain the literal `AND av.is_current` plus `body IS NOT NULL`; RLS supplies the tenant scope. `limit` defaults to 8 and clamps 1..50.
+- [x] No include-retired escape hatch: `RetrievalInput` has no such option and the DB test pins the source to exactly two literal `AND av.is_current` occurrences.
+- [x] `src/knowledge/reembed.ts` (`reembedAndPublish`, `Embedder` port): typed `VersionNotFoundError` (unknown and foreign-tenant ids are indistinguishable), `UnembeddableVersionError` (NULL body), `VersionAlreadyCurrentError`, `EmbeddingDimensionError`. It selects under the caller's tenant GUCs, embeds, writes only `embedding`, then calls `promote_article_version()`.
+- [x] Atomicity is the caller transaction: a failed promotion rolls the embedding write back with it, so there is no half-published version. 0003's trigger remains the history/body enforcement.
+- [x] `src/knowledge/embedding.ts`: exactly 1536 finite floats; rejects wrong length, NaN/Infinity, non-arrays and typed arrays; `toVectorLiteral` is the pgvector text form.
+- [x] Tests: `tests/db/retrieval.db.test.ts` (8: v1 current, publish v2, old token zero / new token v2, history intact, vector path filtered, strongest retired match excluded, no bypass + SQL snapshot, five typed refusals, promotion-failure rollback). `tests/knowledge/embedding.test.ts` (5 validator/literal cases).
+- [x] Wiring rule for S05: the answer pipeline must call `retrieveCurrentVersions`, never raw SQL; publish goes through `reembedAndPublish`. Hybrid ranking and chunking remain S05/schema items.
+- [x] Stub embeddings remain non-semantic; retrieval quality is not judged until S05 wires the real provider.
+
+**Evidence (local, verified):**
+```text
+$ npm run db:test                                      # 83 passed (83), incl. 8 retrieval
+$ npm test                                             # 112 passed (112), incl. 5 embedding
+$ npm run typecheck && npm run lint && npm run build   # all clean
+```

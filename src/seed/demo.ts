@@ -184,20 +184,42 @@ export async function seedDemo(client: pg.Client): Promise<SeedSummary> {
   }
 
   for (const fact of FIXTURE_FACTS) {
+    // S03-03: fact_key is the LOGICAL key (closing_time), not the fixture id,
+    // so the two pool rows collide on (topic, fact_key, language,
+    // effective_from) and become a real contradiction for listContradictions.
+    // The conflict path rewrites the four fields 0009 added so an existing
+    // demo database picks them up without a reset; counts stay 5 and an
+    // operator's verification is never undone by a seed. The WHERE makes a
+    // repeat seed a genuine no-op: a row whose fixture values already match is
+    // not written at all (no dead tuple, and nothing for 0009's guard trigger
+    // to inspect, so a verified fact is untouched - review round 3).
     await client.query(
       `INSERT INTO property_facts
-         (fact_id, org_id, property_id, topic_key, fact_key, fact_value, language, source_id, verified)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       ON CONFLICT (fact_id) DO NOTHING`,
+         (fact_id, org_id, property_id, topic_key, fact_key, fact_value, language,
+          unit, effective_from, source_id, source_article_version_id, verified)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       ON CONFLICT (fact_id) DO UPDATE
+          SET fact_key = EXCLUDED.fact_key,
+              unit = EXCLUDED.unit,
+              effective_from = EXCLUDED.effective_from,
+              source_article_version_id = EXCLUDED.source_article_version_id
+        WHERE property_facts.fact_key IS DISTINCT FROM EXCLUDED.fact_key
+           OR property_facts.unit IS DISTINCT FROM EXCLUDED.unit
+           OR property_facts.effective_from IS DISTINCT FROM EXCLUDED.effective_from
+           OR property_facts.source_article_version_id
+              IS DISTINCT FROM EXCLUDED.source_article_version_id`,
       [
         stableUuid(`fact:${fact.factId}`),
         DEMO_ORG_ID,
         DEMO_PROPERTY_ID,
         fact.topicKey,
-        fact.factId,
+        fact.factKey,
         fact.value,
         fact.language,
+        fact.unit,
+        fact.effectiveFrom,
         DEMO_SOURCE_ID,
+        fact.sourceArticleVersionId,
         fact.verified,
       ],
     );

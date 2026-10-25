@@ -73,6 +73,7 @@ describe("schema (db)", () => {
       "0006_property_settings.sql",
       "0007_audit_privileges.sql",
       "0008_article_versions_body_nullable.sql",
+      "0009_property_facts.sql",
     ]);
   });
 

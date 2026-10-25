@@ -17,6 +17,8 @@ describe("audit vocabulary (S02-03)", () => {
       "article.version_created",
       "article.updated",
       "article.archived",
+      "fact.created",
+      "fact.updated",
       "fact.verified",
       "conversation.takeover",
       "message.sent",

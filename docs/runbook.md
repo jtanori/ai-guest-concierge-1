@@ -532,3 +532,24 @@ $ npm run db:test                                      # 95 passed (95), incl. 1
 $ npm test                                             # 120 passed (120), incl. 8 article validation
 $ npm run typecheck && npm run lint && npm run build   # all clean
 ```
+
+## S03-02 - CSV bulk import (2.00d)
+
+**AC (verbatim):** A 100-row CSV imports with a preview step and no silent failures.
+
+**Status: DONE (2026-10-25).** `src/knowledge/csv.ts` is a dependency-free parser/preview; `src/knowledge/import.ts` commits through S03-01's `createArticle`/`editArticle` inside the caller's transaction. No schema change, no HTTP route, no `requireRole` (S04-01 owns the guard).
+
+- [x] `previewArticleCsv(text)` is pure (no DB): UTF-8 optional BOM, `\n`/`\r\n`, RFC 4180 quoting with escaped quotes and embedded newlines; blank and whitespace-only lines are skipped. Header is exactly `topic_key,title,language,body`, case-insensitive after trim, fixed order. Structural failures (empty/header-only file, bad header, unclosed quote, bare CR outside quotes, stray quote in an unquoted field, >500 rows, >10 MiB input) throw `CsvParseError` with row/field where available. Row-level failures (wrong column count, invalid fields, duplicate `topic_key`) are returned in `CsvPreview.errors`.
+- [x] The 500-row cap is enforced during parsing (it stops at the 501st data record), and a 10 MiB byte ceiling bounds the request before the parser allocates records.
+- [x] Row validation delegates to S03-01's exported validators (`validateTopicKey`, `validateTitle`, `validateBody`, `validateLanguage`, `validateSourceId`). A row reports every bad field, not just the first; `body` may contain newlines but not be empty; `language` is `es|en`; a later duplicate `topic_key` is a row error. Invalid topics do not pollute duplicate detection. `CsvPreview` returns only valid drafts plus `{total, valid, invalid}`.
+- [x] `importArticleCsv(client, context, actor, text)` verifies the session is inside a `withTenant` transaction matching the supplied context, revalidates, then looks up each property-scope topic and calls `editArticle` for an existing article or `createArticle` for a new one. It returns `{imported, created, updated, unchanged, preview}`; validation failures throw `CsvImportValidationError` carrying the full preview before any write.
+- [x] All-or-nothing is the caller transaction: a DB failure mid-file rolls back every prior row (articles, versions, audit). No duplicate articles on re-import; an identical row is `unchanged` and writes no version or audit row, while `updated` counts only rows that actually wrote.
+- [x] Tests: `tests/knowledge/csv.test.ts` (18: 100-row preview, BOM/CRLF/header case, quoted comma/quote/newline, all-field errors, duplicate topic, invalid-topic deduplication, wrong columns, blank/whitespace lines, empty fields, header-only, empty/malformed headers, unclosed quote, bare CR, stray quote, 500-row cap, byte ceiling, empty body/language, determinism). `tests/db/import.db.test.ts` (12: 100 rows -> 100 articles + 100 retired versions, changed re-import -> 200 versions no duplicates, identical re-import -> 100 unchanged + zero writes, validation failure writes nothing, mixed create/update, per-tenant isolation, header-only refusal, parse-error no-write, bare-CR/whitespace handling, tenant-transaction precondition, 500/501 boundary, forced DB failure mid-file rollback). The 100-row import completed in ~2.8s in the DB suite.
+- [x] No `requireRole` call: S04-01's first staff route will call `session.requireRole("knowledge", "write")` and close S02-06.
+
+**Evidence (local, verified):**
+```text
+$ npm run db:test                                      # 107 passed (107), incl. 12 import
+$ npm test                                             # 138 passed (138), incl. 18 CSV
+$ npm run typecheck && npm run lint && npm run build   # all clean
+```

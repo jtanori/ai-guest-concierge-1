@@ -128,7 +128,7 @@ function isUniqueViolation(error: unknown): boolean {
   );
 }
 
-function parseTopicKey(value: unknown): string {
+export function validateTopicKey(value: unknown): string {
   if (typeof value !== "string") fail("topicKey", "must be a string");
   const topicKey = value.trim();
   if (topicKey.length === 0) fail("topicKey", "must be a non-empty string");
@@ -141,7 +141,7 @@ function parseTopicKey(value: unknown): string {
   return topicKey;
 }
 
-function parseTitle(value: unknown): string {
+export function validateTitle(value: unknown): string {
   if (typeof value !== "string") fail("title", "must be a string");
   const title = value.trim();
   if (title.length === 0) fail("title", "must be a non-empty string");
@@ -151,7 +151,7 @@ function parseTitle(value: unknown): string {
   return title;
 }
 
-function parseBody(value: unknown): string | null {
+export function validateBody(value: unknown): string | null {
   if (value === null) return null;
   if (typeof value !== "string") fail("body", "must be a string or null");
   if (value.trim().length === 0) fail("body", "must not be empty (use null for a picture-only article)");
@@ -162,7 +162,7 @@ function parseBody(value: unknown): string | null {
   return value;
 }
 
-function parseLanguage(value: unknown): ArticleLanguage {
+export function validateLanguage(value: unknown): ArticleLanguage {
   if (typeof value !== "string") fail("language", "must be a string");
   const language = value.trim().toLowerCase();
   if (!(ARTICLE_LANGUAGES as readonly string[]).includes(language)) {
@@ -171,7 +171,7 @@ function parseLanguage(value: unknown): ArticleLanguage {
   return language as ArticleLanguage;
 }
 
-function parseSourceId(value: unknown): string | null | undefined {
+export function validateSourceId(value: unknown): string | null | undefined {
   if (value === undefined) return undefined;
   if (value === null) return null;
   if (typeof value !== "string") fail("sourceId", "must be a UUID or null");
@@ -189,11 +189,11 @@ export function validateArticleDraft(draft: ArticleDraft): ArticleDraft {
     fail("", "draft must be an object");
   }
   return {
-    topicKey: parseTopicKey(draft.topicKey),
-    title: parseTitle(draft.title),
-    body: parseBody(draft.body),
-    language: parseLanguage(draft.language),
-    sourceId: parseSourceId(draft.sourceId),
+    topicKey: validateTopicKey(draft.topicKey),
+    title: validateTitle(draft.title),
+    body: validateBody(draft.body),
+    language: validateLanguage(draft.language),
+    sourceId: validateSourceId(draft.sourceId),
   };
 }
 
@@ -317,7 +317,12 @@ export async function editArticle(
   actor: { userId: string },
   articleId: string,
   draft: ArticleDraft,
-): Promise<{ articleVersionId: string; versionNo: number; created: boolean }> {
+): Promise<{
+  articleVersionId: string;
+  versionNo: number;
+  created: boolean;
+  wrote: boolean;
+}> {
   assertTenantShape(context);
   assertUuid(articleId, "articleId");
   const valid = validateArticleDraft(draft);
@@ -363,6 +368,7 @@ export async function editArticle(
       articleVersionId: latest.article_version_id,
       versionNo: latest.version_no,
       created: false,
+      wrote: false,
     };
   }
 
@@ -389,6 +395,7 @@ export async function editArticle(
       articleVersionId: latest.article_version_id,
       versionNo: latest.version_no,
       created: false,
+      wrote: true,
     };
   }
 
@@ -409,7 +416,7 @@ export async function editArticle(
   }
 
   await writeVersionCreated(client, context, actor, valid, articleVersionId, versionNo);
-  return { articleVersionId, versionNo, created: true };
+  return { articleVersionId, versionNo, created: true, wrote: true };
 }
 
 interface ArticleListRow {

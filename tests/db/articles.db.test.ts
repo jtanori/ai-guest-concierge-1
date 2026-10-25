@@ -212,7 +212,7 @@ describe("article editor + immutable versioning (db)", () => {
         }),
       ),
     );
-    expect(edited).toMatchObject({ versionNo: 2, created: true });
+    expect(edited).toMatchObject({ versionNo: 2, created: true, wrote: true });
     expect(edited.articleVersionId).not.toBe(created.articleVersionId);
 
     const oldVersion = await asApp(tenantA, (tx) =>
@@ -257,6 +257,7 @@ describe("article editor + immutable versioning (db)", () => {
       articleVersionId: created.articleVersionId,
       versionNo: 1,
       created: false,
+      wrote: false,
     });
     expect(await auditRows(tenantA.propertyId)).toHaveLength(before);
 
@@ -283,6 +284,7 @@ describe("article editor + immutable versioning (db)", () => {
       articleVersionId: created.articleVersionId,
       versionNo: 1,
       created: false,
+      wrote: true,
     });
 
     const detail = await asApp(tenantA, (tx) =>

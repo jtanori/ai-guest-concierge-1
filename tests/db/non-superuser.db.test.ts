@@ -139,7 +139,9 @@ describe("non-superuser owner (db)", () => {
   });
 
   it("transfers function ownership without a superuser", async () => {
-    const rows = await admin!.query<{ proname: string; owner: string }>(
+    // Must inspect the SCRATCH database, not the admin connection's database:
+    // CI starts from an empty template, so pg_proc there has no functions.
+    const rows = await login!.query<{ proname: string; owner: string }>(
       `SELECT p.proname, pg_get_userbyid(p.proowner) AS owner
          FROM pg_proc p
          JOIN pg_namespace n ON n.oid = p.pronamespace

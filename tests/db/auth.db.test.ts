@@ -264,4 +264,97 @@ describe("staff identity + four roles under RLS (db)", () => {
       expect(res.rows.map((row) => row.user_id)).toEqual([DESK_A.userUuid]);
     });
   });
+
+  it("never rewrites an existing identity during provisioning (review round 2)", async () => {
+    const fresh: Staff = {
+      email: "fresh@autha.mx",
+      neon: "auth|fresh-idem",
+      displayName: "Fresh",
+      userUuid: "",
+    };
+    await provision(fresh);
+    await asStaffApp(async () => {
+      const res = await client.query<{ user_id: string }>(
+        "SELECT provision_user($1, $2, $3) AS user_id",
+        [fresh.neon, "changed@autha.mx", "Changed"],
+      );
+      expect(res.rows[0]!.user_id).toBe(fresh.userUuid);
+    });
+    const row = await owner.query<{ email: string; display_name: string | null }>(
+      "SELECT email, display_name FROM users WHERE user_id = $1",
+      [fresh.userUuid],
+    );
+    expect(row.rows[0]!.email).toBe(fresh.email);
+    expect(row.rows[0]!.display_name).toBe("Fresh");
+  });
+
+  it("rejects provisioning an email already bound to another identity", async () => {
+    await expect(
+      asStaffApp(async () => {
+        await client.query("SELECT provision_user($1, $2, $3)", [
+          "auth|email-thief",
+          DESK_A.email,
+          null,
+        ]);
+      }),
+    ).rejects.toThrow(/duplicate key|unique/i);
+  });
+
+  it("makes users self-visible with display_name as the only writable column", async () => {
+    await asStaffApp(async () => {
+      await setTenant(ORG_A, PROP_A);
+      await setStaff(DESK_A);
+      const renamed = await client.query(
+        "UPDATE users SET display_name = $2 WHERE user_id = $1",
+        [DESK_A.userUuid, "Desk Renamed"],
+      );
+      expect(renamed.rowCount).toBe(1);
+    });
+
+    // Email takeover, inserts and deletes are privileges the app never holds.
+    await expect(
+      asStaffApp(async () => {
+        await setTenant(ORG_A, PROP_A);
+        await setStaff(DESK_A);
+        await client.query("UPDATE users SET email = $2 WHERE user_id = $1", [
+          DESK_A.userUuid,
+          "evil@autha.mx",
+        ]);
+      }),
+    ).rejects.toThrow(/permission denied/);
+    await expect(
+      asStaffApp(async () => {
+        await setTenant(ORG_A, PROP_A);
+        await setStaff(DESK_A);
+        await client.query("INSERT INTO users (email) VALUES ('intruder@autha.mx')");
+      }),
+    ).rejects.toThrow(/permission denied/);
+    await expect(
+      asStaffApp(async () => {
+        await setTenant(ORG_A, PROP_A);
+        await setStaff(DESK_A);
+        await client.query("DELETE FROM users WHERE user_id = $1", [DESK_A.userUuid]);
+      }),
+    ).rejects.toThrow(/permission denied/);
+
+    const ground = await owner.query<{ email: string; display_name: string | null }>(
+      "SELECT email, display_name FROM users WHERE user_id = $1",
+      [DESK_A.userUuid],
+    );
+    expect(ground.rows[0]!.email).toBe(DESK_A.email);
+    expect(ground.rows[0]!.display_name).toBe("Desk Renamed");
+  });
+
+  it("returns zero users and memberships without context (no-context invariant)", async () => {
+    await client.query("BEGIN");
+    try {
+      await client.query("SET LOCAL ROLE concierge_app");
+      for (const table of ["users", "memberships"]) {
+        const res = await client.query<{ n: string }>(`SELECT count(*) AS n FROM ${table}`);
+        expect(res.rows[0]!.n).toBe("0");
+      }
+    } finally {
+      await client.query("ROLLBACK");
+    }
+  });
 });

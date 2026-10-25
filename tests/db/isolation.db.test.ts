@@ -87,6 +87,15 @@ describe("row-level security (db)", () => {
     });
   });
 
+  it("S02-01: users and memberships are invisible without context too", async () => {
+    await asTenantApp(client, async () => {
+      for (const table of ["users", "memberships"]) {
+        const res = await client.query<{ n: string }>(`SELECT count(*) AS n FROM ${table}`);
+        expect(res.rows[0]!.n).toBe("0");
+      }
+    });
+  });
+
   it("S01-03 AC: every tenant table leaks nothing across tenants (both directions)", async () => {
     await asTenantApp(client, async () => {
       for (const table of EXPECTED_TENANT_TABLES) {

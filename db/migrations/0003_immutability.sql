@@ -40,8 +40,13 @@ BEGIN
 END $$;
 
 -- The ownership transfer below requires the migrating role to be able to
--- SET ROLE to the new owner — the membership grant MUST precede it.
+-- SET ROLE to the new owner — the membership grant MUST precede it. On Neon
+-- the migrating role is NOT a superuser, so the new owner also needs CREATE
+-- on the schema it will own the function in (review round 2, 4369257064).
+-- 0005_auth_hardening.sql revokes the membership again once the ALTER is
+-- done, so the deployed login role cannot SET ROLE into the promoter.
 GRANT concierge_promoter TO CURRENT_USER;
+GRANT CREATE ON SCHEMA public TO concierge_promoter;
 
 CREATE OR REPLACE FUNCTION article_versions_block_rewrite() RETURNS trigger
 LANGUAGE plpgsql

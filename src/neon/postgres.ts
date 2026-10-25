@@ -19,15 +19,28 @@ export interface PostgresStatus {
 
 let pool: pg.Pool | null = null;
 
+/**
+ * Runtime connections must run as the non-superuser `concierge_app` role:
+ * the deployed Neon login role owns the tables, and PostgreSQL lets owners
+ * bypass RLS unless FORCE is set — and even then the login role's membership
+ * in definer roles would be an escalation path. The startup `role` parameter
+ * applies to every new session in the pool, so no query can forget it
+ * (review round 2, 4369257062).
+ */
+export function appPoolConfig(connectionString: string): pg.PoolConfig {
+  return {
+    connectionString,
+    // Application traffic keeps a tiny pool; workers/seeds make their own.
+    max: 3,
+    idleTimeoutMillis: 30_000,
+    options: "-c role=concierge_app",
+  };
+}
+
 export function getPool(): pg.Pool {
   if (!pool) {
     const cfg = loadConfig(process.env);
-    pool = new pg.Pool({
-      connectionString: cfg.databaseUrl,
-      // Application traffic keeps a tiny pool; workers/seeds make their own.
-      max: 3,
-      idleTimeoutMillis: 30_000,
-    });
+    pool = new pg.Pool(appPoolConfig(cfg.databaseUrl));
     pool.on("error", (err) => {
       // A dropped idle connection must never crash the process.
       console.error(JSON.stringify({ event: "pg_pool_error", err: err.message }));

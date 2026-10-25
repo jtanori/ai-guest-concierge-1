@@ -4,26 +4,39 @@
  * The provider is Neon Auth (managed Better Auth). Our contract with it is
  * deliberately narrow: a bearer JWT whose signature verifies against the
  * branch JWKS endpoint (NEON_AUTH_* env, probed in W00). Claims we bind:
- * `sub` (the Neon Auth user id) and `email` (provisioned users row). Roles
- * are NEVER taken from tokens or request bodies — they resolve from
- * `memberships` under RLS (db/migrations/0004_auth.sql).
+ * `sub` (the Neon Auth user id), `email` (provisioned users row), issuer,
+ * audience, validity window and a verified email. Roles are NEVER taken from
+ * tokens or request bodies — they resolve from `memberships` under RLS
+ * (db/migrations/0004_auth.sql).
  *
- * Verification uses node:crypto only; supported signature algorithms are the
- * EC/RSA/Ed25519 families that appear in JWKS in practice (ES256, RS256,
- * PS256, EdDSA).
+ * Verification uses node:crypto only. A JWK is accepted ONLY when it is
+ * structurally bound to the token: same kid, same alg, matching kty/crv
+ * (ES256→EC/P-256, RS256/PS256→RSA, EdDSA→OKP/Ed25519), no private `d`, and
+ * no conflicting `use`/`key_ops`. ES256 signatures must be the JOSE
+ * fixed-width r||s form (64 bytes) — DER is rejected, never coerced.
  */
 import crypto from "node:crypto";
 
+const IDENTITY_BRAND: unique symbol = Symbol("StaffIdentity");
+
+/**
+ * A JWKS-verified identity. The brand is a module-private symbol: the only
+ * way to obtain one is verifyWithJwk/verifyIdentityToken, so a structurally
+ * identical object literal cannot be passed off as a session
+ * (review round 2, 4369257035).
+ */
 export interface StaffIdentity {
+  readonly [IDENTITY_BRAND]: true;
   /** Neon Auth `sub` — idempotently mapped to users.neon_auth_user_id. */
-  neonAuthUserId: string;
-  email: string;
-  displayName: string | null;
+  readonly neonAuthUserId: string;
+  readonly email: string;
+  readonly displayName: string | null;
   /** seconds — used by the caller to build the session record. */
-  expiresAt: number;
+  readonly expiresAt: number;
 }
 
 export class AuthVerifyError extends Error {}
+export class AuthConfigError extends Error {}
 
 interface Jwk {
   kty?: string;
@@ -36,11 +49,64 @@ interface Jwk {
   y?: string;
   d?: string;
   use?: string;
+  key_ops?: unknown;
+}
+
+export interface VerifyOptions {
+  issuer: string;
+  audience: string | readonly string[];
+  /** Override for tests; seconds since epoch. */
+  nowEpoch?: number;
+  /** Allowed clock drift for exp/nbf/iat; defaults to 60s. */
+  clockSkewSeconds?: number;
+}
+
+export interface JwksClient {
+  url: string;
+  fetch?: typeof fetch;
+}
+
+/** The env-derived pieces verifyIdentityToken needs. */
+export interface AuthClientConfig extends JwksClient {
+  issuer: string;
+  audience: string;
+}
+
+export function isStaffIdentity(value: unknown): value is StaffIdentity {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { [IDENTITY_BRAND]?: unknown })[IDENTITY_BRAND] === true
+  );
+}
+
+function makeIdentity(
+  neonAuthUserId: string,
+  email: string,
+  displayName: string | null,
+  expiresAt: number,
+): StaffIdentity {
+  return {
+    [IDENTITY_BRAND]: true,
+    neonAuthUserId,
+    email,
+    displayName,
+    expiresAt,
+  };
 }
 
 /** Decoding + claim validation. Signature per key follows below. */
 function decodeSegment(segment: string): Record<string, unknown> {
-  return JSON.parse(Buffer.from(segment, "base64url").toString("utf8")) as Record<string, unknown>;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(segment, "base64url").toString("utf8"));
+  } catch {
+    throw new AuthVerifyError("malformed token segment");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new AuthVerifyError("malformed token segment");
+  }
+  return parsed as Record<string, unknown>;
 }
 
 export function decodeJwt(token: string): {
@@ -63,46 +129,148 @@ export function decodeJwt(token: string): {
   return { header, payload, signingInput: `${h}.${p}`, signature };
 }
 
-function extractIdentity(payload: Record<string, unknown>, nowEpoch: number): StaffIdentity {
+function extractIdentity(
+  payload: Record<string, unknown>,
+  options: VerifyOptions,
+): StaffIdentity {
+  const now = options.nowEpoch ?? Date.now() / 1000;
+  const skew = options.clockSkewSeconds ?? 60;
+
   const sub = payload["sub"];
   const email = payload["email"];
   if (typeof sub !== "string" || sub.length === 0) throw new AuthVerifyError("missing sub claim");
   if (typeof email !== "string" || email.length === 0) throw new AuthVerifyError("missing email claim");
+
+  // Better Auth emits `emailVerified`; JWT-standard deployments use
+  // `email_verified`. Accept either spelling, but only an explicit true.
+  const verified = payload["email_verified"] ?? payload["emailVerified"];
+  if (verified !== true) throw new AuthVerifyError("email is not verified");
+
   const exp = payload["exp"];
-  if (typeof exp !== "number" || exp <= nowEpoch) throw new AuthVerifyError("token expired or exp missing");
+  if (typeof exp !== "number" || !Number.isFinite(exp)) {
+    throw new AuthVerifyError("token expired or exp missing");
+  }
+  if (exp <= now - skew) throw new AuthVerifyError("token expired");
+
+  const nbf = payload["nbf"];
+  if (nbf !== undefined) {
+    if (typeof nbf !== "number" || !Number.isFinite(nbf)) {
+      throw new AuthVerifyError("malformed nbf claim");
+    }
+    if (nbf > now + skew) throw new AuthVerifyError("token is not valid yet (nbf)");
+  }
+
+  const iat = payload["iat"];
+  if (iat !== undefined) {
+    if (typeof iat !== "number" || !Number.isFinite(iat)) {
+      throw new AuthVerifyError("malformed iat claim");
+    }
+    if (iat > now + skew) throw new AuthVerifyError("token issued in the future (iat)");
+  }
+
+  if (payload["iss"] !== options.issuer) throw new AuthVerifyError("issuer mismatch");
+
+  const expected = Array.isArray(options.audience) ? options.audience : [options.audience];
+  const audience = payload["aud"];
+  const presented = Array.isArray(audience) ? audience : [audience];
+  if (!presented.some((a) => typeof a === "string" && expected.includes(a))) {
+    throw new AuthVerifyError("audience mismatch");
+  }
+
   const name = payload["name"];
-  return {
-    neonAuthUserId: sub,
+  return makeIdentity(
+    sub,
     email,
-    displayName: typeof name === "string" && name.length > 0 ? name : null,
-    expiresAt: exp,
-  };
+    typeof name === "string" && name.length > 0 ? name : null,
+    exp,
+  );
+}
+
+const KEY_BY_ALG: Record<string, { kty: string; crv?: string }> = {
+  ES256: { kty: "EC", crv: "P-256" },
+  RS256: { kty: "RSA" },
+  PS256: { kty: "RSA" },
+  EdDSA: { kty: "OKP", crv: "Ed25519" },
+};
+
+/**
+ * Binds the token header to the JWKS entry before any crypto runs. Returns
+ * the algorithm both agree on (or throws). Real Neon Auth JWKS entries omit
+ * `use`/`key_ops`, so their absence is fine; when present they must not
+ * contradict signing.
+ */
+function assertKeyBinding(
+  header: Record<string, unknown>,
+  jwk: Jwk,
+): string {
+  const alg = header["alg"];
+  if (typeof alg !== "string" || !(alg in KEY_BY_ALG)) {
+    throw new AuthVerifyError("unsupported token alg");
+  }
+  const kid = header["kid"];
+  if (typeof kid !== "string" || kid.length === 0) {
+    throw new AuthVerifyError("token header missing kid");
+  }
+  if (jwk.kid !== kid) throw new AuthVerifyError("JWKS key does not match the token's kid");
+  if (jwk.d !== undefined) throw new AuthVerifyError("refusing private-key material");
+  if (jwk.use !== undefined && jwk.use !== "sig") {
+    throw new AuthVerifyError("JWKS key is not a signing key (use)");
+  }
+  if (jwk.key_ops !== undefined) {
+    if (!Array.isArray(jwk.key_ops) || !jwk.key_ops.includes("verify")) {
+      throw new AuthVerifyError("JWKS key_ops does not allow verify");
+    }
+  }
+  if (jwk.alg !== alg) {
+    throw new AuthVerifyError("JWKS key alg does not match the token alg");
+  }
+  const expected = KEY_BY_ALG[alg]!;
+  if (jwk.kty !== expected.kty) throw new AuthVerifyError("JWKS key type does not match the token alg");
+  if (expected.crv !== undefined && jwk.crv !== expected.crv) {
+    throw new AuthVerifyError("JWKS curve does not match the token alg");
+  }
+  return alg;
 }
 
 function verifySignature(
   signingInput: string,
   signature: Buffer,
-  hed: Record<string, unknown>,
+  alg: string,
   jwk: Jwk,
 ): boolean {
   const data = Buffer.from(signingInput, "utf8");
   try {
-    const keyObject = crypto.createPublicKey({ key: jwk as crypto.JsonWebKey, format: "jwk" });
-    switch (hed["alg"]) {
+    const keyObject = crypto.createPublicKey({
+      key: jwk as unknown as crypto.JsonWebKey,
+      format: "jwk",
+    });
+    switch (alg) {
       case "ES256":
-        return crypto.verify("sha256", data, keyObject, paddedEcSignature(signature));
+        // JOSE fixed-width r||s only: node's DER default would also accept a
+        // DER signature, which a real JWT never carries.
+        return crypto.verify(
+          "sha256",
+          data,
+          { key: keyObject, dsaEncoding: "ieee-p1363" },
+          signature,
+        );
       case "RS256":
       case "PS256":
-        // RSASSA-PKCS1 vs RSASSA-PSS — node keys it off the padding option.
-        return crypto.verify("sha256", data, {
-          key: keyObject,
-          padding: hed["alg"] === "PS256" ? crypto.constants.RSA_PKCS1_PSS_PADDING : crypto.constants.RSA_PKCS1_PADDING,
-          saltLength: hed["alg"] === "PS256" ? 32 : undefined,
-        }, signature);
-      case "EdDSA": {
-        if (jwk.kty !== "OKP" || jwk.crv !== "Ed25519") return false;
+        return crypto.verify(
+          "sha256",
+          data,
+          {
+            key: keyObject,
+            padding:
+              alg === "PS256"
+                ? crypto.constants.RSA_PKCS1_PSS_PADDING
+                : crypto.constants.RSA_PKCS1_PADDING,
+            saltLength: alg === "PS256" ? 32 : undefined,
+          },
+          signature,
+        );
+      case "EdDSA":
         return crypto.verify(null, data, keyObject, signature);
-      }
       default:
         return false;
     }
@@ -112,43 +280,21 @@ function verifySignature(
   }
 }
 
-/** JOSE r||s (64 bytes) → canonical DER, as node:crypto/OpenSSL requires. */
-function paddedEcSignature(sig: Buffer): Buffer {
-  // Test-fixture signers hand node's own DER over; real JWTs are always the
-  // fixed-width JOSE form.
-  if (sig.length !== 64) return sig;
-  // Each half is a big-endian integer in exactly 32 bytes; strip the
-  // redundant leading zeros JOSE's fixed-width encoding allows, prepend 0x00
-  // only when a one then appears (or the integer would read as negative),
-  // and wrap both in an ASN.1 SEQUENCE.
-  const part = (raw: Buffer): Buffer => {
-    let first = 0;
-    while (first < raw.length - 1 && raw[first] === 0) first++;
-    const integer = raw.subarray(first);
-    const padded =
-      (integer[0] ?? 0) & 0x80
-        ? Buffer.concat([Buffer.from([0x00]), integer])
-        : integer;
-    return Buffer.concat([Buffer.from([0x02, padded.length]), padded]);
-  };
-  const rDer = part(sig.subarray(0, 32));
-  const sDer = part(sig.subarray(32, 64));
-  return Buffer.concat([Buffer.from([0x30, rDer.length + sDer.length]), rDer, sDer]);
-}
-
-/** Test/interop seam: canonical DER for a JOSE (fixed-width) signature. */
-export function derEncodeJose(sig: Buffer): Buffer {
-  return paddedEcSignature(sig);
-}
-
 /** Extracts the raw key of the matching kid — tests hand it over directly. */
-export function verifyWithJwk(token: string, jwk: Jwk, nowEpoch = Date.now() / 1000): StaffIdentity {
+export function verifyWithJwk(
+  token: string,
+  jwk: Jwk,
+  options: VerifyOptions,
+): StaffIdentity {
   const { header, payload, signingInput, signature } = decodeJwt(token);
-  if (header["alg"] === "none" || jwk.d) throw new AuthVerifyError("refusing private-key material");
-  if (!verifySignature(signingInput, signature, header, jwk)) {
+  const alg = assertKeyBinding(header, jwk);
+  if (alg === "ES256" && signature.length !== 64) {
+    throw new AuthVerifyError("ES256 signatures must be 64-byte JOSE r||s, not DER");
+  }
+  if (!verifySignature(signingInput, signature, alg, jwk)) {
     throw new AuthVerifyError("signature verification failed");
   }
-  return extractIdentity(payload, nowEpoch);
+  return extractIdentity(payload, options);
 }
 
 export class JwksError extends AuthVerifyError {}
@@ -161,10 +307,12 @@ interface JwksCache {
 const cache = new Map<string, JwksCache>();
 const TTL_MS = 10 * 60 * 1000;
 
-async function fetchJwks(client: { url: string; fetch?: typeof fetch }): Promise<Jwk[]> {
+async function fetchJwks(client: JwksClient): Promise<Jwk[]> {
   const cached = cache.get(client.url);
   if (cached && Date.now() - cached.fetchedAt < TTL_MS) return cached.keys;
-  const res = await (client.fetch ?? fetch)(client.url, { signal: AbortSignal.timeout(8000) });
+  const res = await (client.fetch ?? fetch)(client.url, {
+    signal: AbortSignal.timeout(8000),
+  });
   if (res.status !== 200) throw new JwksError(`JWKS endpoint answered ${res.status}`);
   const body = (await res.json()) as { keys?: Jwk[] };
   if (!Array.isArray(body.keys)) throw new JwksError("JWKS body missing keys array");
@@ -178,29 +326,48 @@ async function fetchJwks(client: { url: string; fetch?: typeof fetch }): Promise
  */
 export async function verifyIdentityToken(
   token: string,
-  client: { url: string; fetch?: typeof fetch },
-  nowEpoch = Date.now() / 1000,
+  client: JwksClient,
+  options: VerifyOptions,
 ): Promise<StaffIdentity> {
   const keys = await fetchJwks(client);
-  const kidFromToken = decodeJwt(token).header["kid"];
-  const pick = (list: Jwk[]): Jwk | undefined =>
-    typeof kidFromToken === "string" ? list.find((k) => k.kid === kidFromToken) : list[0];
+  const kid = decodeJwt(token).header["kid"];
+  if (typeof kid !== "string" || kid.length === 0) {
+    throw new AuthVerifyError("token header missing kid");
+  }
+  const pick = (list: Jwk[]): Jwk | undefined => list.find((k) => k.kid === kid);
   let jwk = pick(keys);
   if (!jwk) {
     cache.delete(client.url); // key rotation: one refresh before refusing
     jwk = pick(await fetchJwks(client));
   }
   if (!jwk) throw new JwksError("no JWKS key matched the token's kid");
-  return verifyWithJwk(token, jwk, nowEpoch);
+  return verifyWithJwk(token, jwk, options);
 }
 
-/** Strong-typed claim assemblers for the fake sessions tests use. */
-export function fakeIdentity(overrides: Partial<StaffIdentity> = {}): StaffIdentity {
+/**
+ * Resolves the auth client from env. `NEON_AUTH_BASE_URL` doubles as the
+ * issuer (and the default audience, which is Better Auth's convention);
+ * `NEON_AUTH_ISSUER` / `NEON_AUTH_AUDIENCE` override either explicitly.
+ */
+export function loadAuthConfig(
+  source: Record<string, string | undefined>,
+): AuthClientConfig {
+  const url = source["NEON_AUTH_JWKS_URL"];
+  if (!url) throw new AuthConfigError("NEON_AUTH_JWKS_URL is required");
+  try {
+    new URL(url);
+  } catch {
+    throw new AuthConfigError("NEON_AUTH_JWKS_URL is not a valid URL");
+  }
+  const issuer = source["NEON_AUTH_ISSUER"] ?? source["NEON_AUTH_BASE_URL"];
+  if (!issuer) {
+    throw new AuthConfigError(
+      "NEON_AUTH_ISSUER or NEON_AUTH_BASE_URL is required to verify token issuer",
+    );
+  }
   return {
-    neonAuthUserId: "auth0|00000000000000000000",
-    email: "staff@example.com",
-    displayName: "Test Staff",
-    expiresAt: Math.floor(Date.now() / 1000) + 3600,
-    ...overrides,
+    url,
+    issuer,
+    audience: source["NEON_AUTH_AUDIENCE"] ?? issuer,
   };
 }

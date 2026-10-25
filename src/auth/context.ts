@@ -17,7 +17,7 @@
 import type pg from "pg";
 import { assertTenantShape, type TenantContext } from "../db/tenant.ts";
 import { requireRole, ROLE_BY_ID, type Mode, type Role, type Surface } from "./guard.ts";
-import type { StaffIdentity } from "./session.ts";
+import { isStaffIdentity, type StaffIdentity } from "./session.ts";
 
 export { can, requireRole, RoleNotOnSurfaceError } from "./guard.ts";
 export type { TenantContext } from "../db/tenant.ts";
@@ -31,6 +31,16 @@ export interface StaffSession {
 
 export class UnknownStaffUserError extends Error {}
 export class NoMembershipError extends Error {}
+/** A verified identity whose email is already bound to a different Neon user. */
+export class EmailCollisionError extends Error {}
+
+function isUniqueViolation(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { code?: unknown }).code === "23505"
+  );
+}
 
 /**
  * Runs `fn` inside one transaction shaped like withTenant, with the caller's
@@ -44,6 +54,9 @@ export async function withStaffSession<T>(
   identity: StaffIdentity,
   fn: (session: StaffSession, scoped: pg.Client | pg.PoolClient) => Promise<T>,
 ): Promise<T> {
+  if (!isStaffIdentity(identity)) {
+    throw new UnknownStaffUserError("identity is not JWKS-verified — refusing to run");
+  }
   if (!identity.neonAuthUserId || !identity.email) {
     throw new UnknownStaffUserError("identity is not JWKS-verified — refusing to run");
   }
@@ -54,13 +67,28 @@ export async function withStaffSession<T>(
 
   await client.query("BEGIN");
   try {
+    // The pool's startup role already does this, but SET LOCAL ROLE here
+    // makes the guarantee hold for every caller (tests, scripts, a
+    // misconfigured pool): tenant work NEVER runs as a table-owning login
+    // role. Superusers can SET ROLE too, so local dev is covered.
+    await client.query("SET LOCAL ROLE concierge_app");
     await client.query("SELECT set_config('app.current_org_id', $1, true)", [context.orgId]);
     await client.query("SELECT set_config('app.current_property_id', $1, true)", [context.propertyId]);
 
-    const provisioned = await client.query<{ user_id: string }>(
-      "SELECT provision_user($1, $2, $3) AS user_id",
-      [identity.neonAuthUserId, identity.email, identity.displayName],
-    );
+    let provisioned: pg.QueryResult<{ user_id: string }>;
+    try {
+      provisioned = await client.query<{ user_id: string }>(
+        "SELECT provision_user($1, $2, $3) AS user_id",
+        [identity.neonAuthUserId, identity.email, identity.displayName],
+      );
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        throw new EmailCollisionError(
+          "this verified email is already bound to a different Neon Auth user",
+        );
+      }
+      throw error;
+    }
     const userUuid = provisioned.rows[0]!.user_id;
     await client.query("SELECT set_config('app.current_user_id', $1, true)", [userUuid]);
 

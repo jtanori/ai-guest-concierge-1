@@ -65,7 +65,11 @@ describe("schema (db)", () => {
       "SELECT filename FROM schema_migrations ORDER BY filename",
     );
     expect(files.rows.map((r) => r.filename).sort()).toEqual([
-      "0001_init.sql", "0002_rls.sql", "0003_immutability.sql", "0004_auth.sql",
+      "0001_init.sql",
+      "0002_rls.sql",
+      "0003_immutability.sql",
+      "0004_auth.sql",
+      "0005_auth_hardening.sql",
     ]);
   });
 

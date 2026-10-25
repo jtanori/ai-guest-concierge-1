@@ -375,10 +375,12 @@ async function seedOneTenant(client: pg.Client, tag: "a" | "b"): Promise<SeedRes
   );
   const VERSION = ver.rows[0]!.article_version_id;
 
+  // 0009: a verified fact must carry verifier, time and effective date
+  // (property_facts_verified_fields), so the leak sweep seeds a complete one.
   await client.query(
-    `INSERT INTO property_facts (org_id, property_id, source_id, topic_key, fact_key, fact_value, language, verified)
-     VALUES ($1, $2, $3, 'pool.hours', 'closing', '20:00', 'es', true)`,
-    [ORG, PROP, SRC],
+    `INSERT INTO property_facts (org_id, property_id, source_id, topic_key, fact_key, fact_value, language, unit, effective_from, verified, verified_by, verified_at)
+     VALUES ($1, $2, $3, 'pool.hours', 'closing', '20:00', 'es', 'time-of-day', '2026-01-01', true, $4, now())`,
+    [ORG, PROP, SRC, USER],
   );
 
   const run = await client.query<{ ai_run_id: string }>(

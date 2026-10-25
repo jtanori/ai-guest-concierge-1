@@ -194,8 +194,13 @@ erDiagram
         text fact_key
         text fact_value
         text language
+        text unit
+        date effective_from
+        uuid source_article_version_id FK
+        uuid verified_by FK
         uuid source_id FK
         boolean verified
+        timestamptz verified_at
         vector_1536 embedding
         tsvector tsv
         timestamptz created_at

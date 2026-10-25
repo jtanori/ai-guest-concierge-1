@@ -7,6 +7,8 @@ export const AUDIT_ACTIONS = [
   "article.version_created",
   "article.updated",
   "article.archived",
+  "fact.created",
+  "fact.updated",
   "fact.verified",
   "conversation.takeover",
   "message.sent",

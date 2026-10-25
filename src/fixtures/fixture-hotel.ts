@@ -28,6 +28,8 @@ export interface FixtureFact {
   factId: string;
   propertyId: "demo";
   topicKey: string;
+  /** Logical key inside the topic (S03-03) - not the fixture id. */
+  factKey: string;
   unit: string;
   value: string;
   language: string;
@@ -194,6 +196,7 @@ export const FIXTURE_FACTS: FixtureFact[] = [
     factId: "fact-pool-website",
     propertyId: "demo",
     topicKey: "pool.hours",
+    factKey: "closing_time",
     unit: "time-of-day",
     value: "21:00",
     language: "es",
@@ -206,6 +209,7 @@ export const FIXTURE_FACTS: FixtureFact[] = [
     factId: "fact-pool-directory",
     propertyId: "demo",
     topicKey: "pool.hours",
+    factKey: "closing_time",
     unit: "time-of-day",
     value: "20:00",
     language: "es",
@@ -218,6 +222,7 @@ export const FIXTURE_FACTS: FixtureFact[] = [
     factId: "fact-spa-massage-fr",
     propertyId: "demo",
     topicKey: "spa.services",
+    factKey: "massage_60",
     unit: "currency-amount",
     value: "90 EUR / masaje 60 min",
     language: "fr",
@@ -230,6 +235,7 @@ export const FIXTURE_FACTS: FixtureFact[] = [
     factId: "fact-spa-facial-fr",
     propertyId: "demo",
     topicKey: "spa.services",
+    factKey: "facial",
     unit: "currency-amount",
     value: "75 EUR / limpia facial",
     language: "fr",
@@ -242,6 +248,7 @@ export const FIXTURE_FACTS: FixtureFact[] = [
     factId: "fact-gym-hours",
     propertyId: "demo",
     topicKey: "gym.hours",
+    factKey: "hours",
     unit: "hours",
     value: "24/7",
     language: "en",
@@ -270,7 +277,7 @@ export const MESSY_CASES = [
   {
     id: "contradiction-pool-hours",
     articleVersionId: VERSION.poolWebsite,
-    whatBreaks: "two verified=false facts share topicKey=pool.hours with different values (21:00 vs 20:00); onboarding must refuse to resolve silently — G1 requires zero unresolved contradictions",
+    whatBreaks: "two verified=false facts share topicKey=pool.hours AND factKey=closing_time (same effective date) with different values (21:00 vs 20:00); onboarding must refuse to resolve silently — G1 requires zero unresolved contradictions",
   },
   {
     id: "spa-prices-foreign-language",

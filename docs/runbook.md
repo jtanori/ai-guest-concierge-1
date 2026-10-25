@@ -553,3 +553,30 @@ $ npm run db:test                                      # 107 passed (107), incl.
 $ npm test                                             # 138 passed (138), incl. 18 CSV
 $ npm run typecheck && npm run lint && npm run build   # all clean
 ```
+
+## S03-03 - property_facts service (2.00d)
+
+**AC (verbatim):** Pool hours answered by lookup, not generation.
+
+**Status: DONE (2026-10-25).** `src/knowledge/facts.ts` is the tenant-scoped fact service: create/update/list/get, verify with an actor, exact-key lookup of verified rows only, and contradiction listing. `db/migrations/0009_property_facts.sql` is the schema change; `src/fixtures/fixture-hotel.ts` carries `factKey` and the seed fills the new columns. No browser UI and no LLM call (S08 owns the screen, S04-01 the route).
+
+- [x] **Schema (0009, operator-approved):** adds `unit` (CHECK: `text`, `time-of-day`, `hours`, `currency-amount`, `duration`, `distance`, `count`), `effective_from`, `source_article_version_id`, `verified_by`, `verified_at`; `property_facts_verified_fields` (verified ⇒ by + at + effective_from); composite FK to `article_versions`; **drops** 0001's `UNIQUE (property_id, topic_key, fact_key, language)` so unverified variants can coexist, and replaces it with the partial unique `property_facts_verified_key ... WHERE verified` (one verified holder per key + effective date) plus the `property_facts_lookup` index. Existing rows need no backfill UPDATE; `unit` defaults to `text`.
+- [x] **Fixture/seed:** `FixtureFact.factKey` added (`closing_time` x2, `massage_60`, `facial`, `hours`); the seed writes `fact_key`/`unit`/`effective_from`/`source_article_version_id` with `ON CONFLICT (fact_id) DO UPDATE` on those four fields only — an existing demo DB is upgraded in place, counts stay 5, and an operator's `verified` is never reset. The two pool rows now share `(pool.hours, closing_time, es, 2026-01-01)` with 21:00 vs 20:00: a real contradiction. Spa prices differ by `fact_key`, so they are not one.
+- [x] **Lookup (AC-1/AC-2):** `FACT_LOOKUP_SQL` is one `SELECT` over `property_facts` — no write clause, no embedding column, no ranking, no provider (asserted in `tests/knowledge/facts.test.ts`). It hard-filters `verified`, exact key/language/tenant, `effective_from <= on` (default today) and orders newest-first; unverified or unknown keys return `null`, never a guess. `on` must be a real calendar date or it is a `FactValidationError`.
+- [x] **Verify (AC-3):** `verifyFact` resolves the actor first (`FactActorError` for missing/malformed/unknown users — a failed audit rolls the unit back), requires `effective_from`, locks the whole key group `ORDER BY fact_id FOR UPDATE`, refuses any other verified row with `FactContradictionError` (both ids + the conflicting value), then sets `verified/verified_by/verified_at` and writes `fact.verified`. Unique-violation (23505) is a backstop contradiction; FK (23503) becomes `FactActorError`. Re-verifying the same row is idempotent — the index bars a second *row*, not a second look.
+- [x] **Update (AC-4):** any update rewrites the row and resets `verified=false`, `verified_by=NULL`, `verified_at=NULL`; the return reports `verifiedReset` so callers can explain the change. Lookup falls back to `null` afterwards unless another row is verified.
+- [x] **Contradictions:** `listContradictions` groups by `(topic_key, fact_key, language, effective_from)` with `count(distinct fact_value) > 1`, returning values, verified flags and source version ids for S04-01's queue — both verified and unverified sides.
+- [x] **Tenancy (AC-4):** foreign fact ids are `FactNotFoundError` for get/update/verify (no existence leak), foreign `sourceArticleVersionId` is `FactSourceVersionNotFoundError`, and `listFacts`/`lookupFact` are RLS- plus context-scoped.
+- [x] **Audit (AC-6):** vocabulary gains `fact.created` and `fact.updated` (`fact.verified` existed); detail is `{topic_key, fact_key, unit, language, effective_from}` (+ `value` for verify) — never body/content. A failed `writeAudit` throws `AuditWriteError` and the transaction rolls the fact back with it.
+- [x] **Validation:** keys are lowercase dot/underscore segments ≤120; value trimmed 1..500; unit from the closed CHECK; language 2-8 lowercase letters (the `es|en` article rule does not apply — the fixture uses `fr`); `effectiveFrom`/`on` are real dates (leap-day aware), future dates allowed.
+- [x] **Tests:** `tests/knowledge/facts.test.ts` (11: key/value/unit/language/date validation, source-version UUID handling, whole-input normalization, lookup SQL shape with no write/embedding/provider keyword, contradiction SQL shape, unit set matching the migration's CHECK). `tests/db/facts.db.test.ts` (16: 0009 columns/constraints/dropped unique/partial index, seeded units+dates+version ids and the pool/spa key shape, null lookup before verification (incl. an unknown key), verify + contradiction refusal + lookup returns 21:00 + `verified_by/at`, effective-date window, the CHECK rejecting a verifier-stripped row, contradiction listing (pool yes, spa/gym no), update resets verification and lookup returns null again, create/get/list + audit detail, foreign source version refused, actor required three ways, idempotent re-verify, audit-failure rollback, cross-tenant invisibility, legacy row without `effective_from` refused). `tests/db/non-superuser.db.test.ts` migration count 8 → 9.
+- [x] No new dependency, no route, no `requireRole` (S04-01 owns the guard), no LLM/embedding call anywhere in the module.
+
+**Evidence (local, verified):**
+```text
+$ node --env-file=.env.local scripts/migrate.ts       # 1 applied (0009 lands)
+$ node --env-file=.env.local scripts/seed.ts          # property_facts: 5 (new fields filled on an existing DB)
+$ npm run db:test                                     # 123 passed (123), incl. 16 facts
+$ npm test                                            # 149 passed (149), incl. 11 fact validation
+$ npm run typecheck && npm run lint && npm run build  # all clean
+```

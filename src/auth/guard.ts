@@ -13,9 +13,10 @@
  *   settings  — property settings (languages, tone, hours, topics, caps)
  *   queue     — conversation queue + service requests + manual takeover
  *   analytics — golden metrics, weekly reports (read-only everywhere)
+ *   audit     — property audit trail (read-only for every role)
  */
 export type Role = "owner" | "manager" | "front_desk" | "observer";
-export type Surface = "org" | "knowledge" | "settings" | "queue" | "analytics";
+export type Surface = "org" | "knowledge" | "settings" | "queue" | "analytics" | "audit";
 export type Mode = "read" | "write";
 
 export const ROLE_IDS: Record<Role, number> = {
@@ -40,6 +41,7 @@ export const MATRIX: Record<Role, Record<Surface, readonly Mode[]>> = {
     settings: ["read", "write"],
     queue: ["read", "write"],
     analytics: ["read"],
+    audit: ["read"],
   },
   manager: {
     org: [],
@@ -47,6 +49,7 @@ export const MATRIX: Record<Role, Record<Surface, readonly Mode[]>> = {
     settings: ["read", "write"],
     queue: ["read", "write"],
     analytics: ["read"],
+    audit: ["read"],
   },
   front_desk: {
     org: [],
@@ -54,6 +57,7 @@ export const MATRIX: Record<Role, Record<Surface, readonly Mode[]>> = {
     settings: [],
     queue: ["read", "write"],
     analytics: ["read"],
+    audit: ["read"],
   },
   observer: {
     org: ["read"],
@@ -61,6 +65,7 @@ export const MATRIX: Record<Role, Record<Surface, readonly Mode[]>> = {
     settings: ["read"],
     queue: ["read"],
     analytics: ["read"],
+    audit: ["read"],
   },
 };
 

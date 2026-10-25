@@ -71,6 +71,7 @@ describe("schema (db)", () => {
       "0004_auth.sql",
       "0005_auth_hardening.sql",
       "0006_property_settings.sql",
+      "0007_audit_privileges.sql",
     ]);
   });
 

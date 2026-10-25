@@ -4,6 +4,8 @@ export const AUDIT_ACTIONS = [
   "membership.role_changed",
   "membership.revoked",
   "article.version_published",
+  "article.version_created",
+  "article.updated",
   "article.archived",
   "fact.verified",
   "conversation.takeover",

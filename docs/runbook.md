@@ -510,3 +510,25 @@ $ npm run db:test                                      # 83 passed (83), incl. 8
 $ npm test                                             # 112 passed (112), incl. 5 embedding
 $ npm run typecheck && npm run lint && npm run build   # all clean
 ```
+## S03-01 - Article editor + immutable versioning (2.00d)
+
+**AC (verbatim):** Editing never alters a historical version.
+
+**Status: DONE (2026-10-24).** `src/knowledge/articles.ts` is the tenant-scoped authoring service: create, edit, list, version list and version detail. Edits append a new retired version; publishing stays in S04-01. No schema change, no HTTP route, no `requireRole` (S04-01 owns the guard).
+
+- [x] `createArticle` inserts one `scope='property'` article and a retired version 1, then writes `article.version_created` (`article_version`, detail `{topic_key, version_no, has_text, language}`). A duplicate property topic is `ArticleTopicConflictError`; a foreign/unknown `sourceId` is `ArticleSourceNotFoundError`.
+- [x] `editArticle` locks the article row (`FOR UPDATE`), computes `max(version_no)+1`, and appends a retired version when the body changes. The old row is untouched (0003 trigger). A unique race is `ArticleVersionConflictError`.
+- [x] No-op edits (same body/title/language/source) create no version and no audit row. Title/language/source-only edits update `knowledge_articles` and write `article.updated` (`{changed}`) without a version. `topicKey` cannot change on edit.
+- [x] `sourceId: undefined` preserves the existing source on edit; `sourceId: null` clears it; create normalizes omitted to `null`.
+- [x] `body: null` is supported for picture-only articles; empty/whitespace body is rejected, max 200,000 chars. Title max 200; topic max 120 and lowercase dot/underscore/dash segments; language is `es|en` (normalized case).
+- [x] `listArticles` returns property-scope articles only (brand scope is excluded) with `versionCount` and the current version (null until S04-01 publishes). `listVersions` returns newest-first summaries with a 160-char preview; `getVersion` returns the full body and metadata. Foreign ids are not found; malformed ids are validation errors.
+- [x] Audit vocabulary grows to 12 actions: `article.version_created` and `article.updated` (entity types `article_version` / `article`). Audit detail never contains the body; the boolean key is `has_text` because `body_present` is correctly rejected by the detail guard.
+- [x] Tests: `tests/knowledge/articles.test.ts` (8 validation cases), `tests/db/articles.db.test.ts` (12: create+audit, duplicate topic, append/old-body-intact, no-op, metadata-only, source preserve/clear, null body, current version after `reembedAndPublish`, foreign isolation, brand exclusion, topic-key refusal, audit-failure rollback). Existing audit action test updated.
+- [x] No `requireRole` call: S03-01 is a service, S04-01's first staff route will call `session.requireRole("knowledge", "write")` and close S02-06.
+
+**Evidence (local, verified):**
+```text
+$ npm run db:test                                      # 95 passed (95), incl. 12 articles
+$ npm test                                             # 120 passed (120), incl. 8 article validation
+$ npm run typecheck && npm run lint && npm run build   # all clean
+```

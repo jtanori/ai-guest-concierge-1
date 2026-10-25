@@ -1,16 +1,21 @@
 /**
- * S03-03 - deterministic facts under RLS.
+ * S03-03 - deterministic facts under RLS, and a `verified` column that only
+ * the database itself can move.
  *
  * The AC's shape is literal: the pool closing time comes back from a verified
  * row (or not at all), never from a model. The fixture's two pool facts share
  * (topic, fact_key, language, effective_from) with different values, so they
  * are the contradiction case the whole item exists for - until a human picks
  * one, lookup must answer nothing and verifyFact must refuse the second.
+ *
+ * The second half of the file is the P1 from review round 1: `verified` is
+ * trust, so `concierge_app` may not write it, the table owner may not write
+ * it, and nothing may change a fact's value while keeping its verification.
+ * The probes below run as each of those roles on purpose.
  */
 import crypto from "node:crypto";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { AuditWriteError } from "../../src/audit/write.ts";
 import { withTenant, type TenantContext } from "../../src/db/tenant.ts";
 import {
   FactActorError,
@@ -47,6 +52,9 @@ const factIdOf = (factId: string): string => stableUuid(`fact:${factId}`);
 const poolWebsite = FIXTURE_FACTS.find((f) => f.value === "21:00")!;
 const poolDirectory = FIXTURE_FACTS.find((f) => f.value === "20:00")!;
 
+/** 02:00Z is still 20:00 the PREVIOUS day in Mexico City (UTC-6). */
+const CLOCK = new Date("2026-10-26T02:00:00Z");
+
 function input(overrides: Partial<FactInput> = {}): FactInput {
   return {
     topicKey: "spa.services",
@@ -59,14 +67,38 @@ function input(overrides: Partial<FactInput> = {}): FactInput {
   };
 }
 
-async function asApp<T>(
+function actorFor(context: TenantContext): { userId: string } {
+  if (context.propertyId === demo.propertyId) return demoActor;
+  if (context.propertyId === tenantA.propertyId) return actorA;
+  if (context.propertyId === tenantB.propertyId) return actorB;
+  throw new Error(`no default actor for property ${context.propertyId}`);
+}
+
+/**
+ * What withStaffSession sets up: tenant GUCs, the app role, and the session
+ * identity every fact write is bound to. `session = null` is the "no staff
+ * session" case, a different `session` is the "actor is not the session user"
+ * case.
+ */
+async function asStaff<T>(
   context: TenantContext,
+  session: { userId: string } | null,
   fn: (tx: pg.Client) => Promise<T>,
 ): Promise<T> {
   return withTenant(client, context, async (tx) => {
     await tx.query("SET LOCAL ROLE concierge_app");
+    if (session !== null) {
+      await tx.query("SELECT set_config('app.current_user_id', $1, true)", [session.userId]);
+    }
     return fn(tx);
   });
+}
+
+function asApp<T>(
+  context: TenantContext,
+  fn: (tx: pg.Client) => Promise<T>,
+): Promise<T> {
+  return asStaff(context, actorFor(context), fn);
 }
 
 async function auditActions(propertyId: string): Promise<string[]> {
@@ -75,6 +107,27 @@ async function auditActions(propertyId: string): Promise<string[]> {
     [propertyId],
   );
   return result.rows.map((row) => row.action);
+}
+
+async function auditCount(propertyId: string, action: string): Promise<number> {
+  const result = await client.query<{ count: string }>(
+    "SELECT count(*) AS count FROM audit_log WHERE property_id = $1 AND action = $2",
+    [propertyId, action],
+  );
+  return Number(result.rows[0]!.count);
+}
+
+async function factRow(factId: string): Promise<{
+  verified: boolean;
+  verified_by: string | null;
+  verified_at: Date | null;
+  fact_value: string;
+}> {
+  const result = await client.query(
+    "SELECT verified, verified_by, verified_at, fact_value FROM property_facts WHERE fact_id = $1",
+    [factId],
+  );
+  return result.rows[0]!;
 }
 
 describe("property facts (db)", () => {
@@ -101,7 +154,7 @@ describe("property facts (db)", () => {
       "INSERT INTO organizations (name, slug) VALUES ('Facts B', 'facts_b') RETURNING org_id",
     );
     const propertyA = await client.query<{ property_id: string }>(
-      "INSERT INTO properties (org_id, name, slug) VALUES ($1, 'Facts A', 'facts_property_a') RETURNING property_id",
+      "INSERT INTO properties (org_id, name, slug, time_zone) VALUES ($1, 'Facts A', 'facts_property_a', 'America/Mexico_City') RETURNING property_id",
       [orgA.rows[0]!.org_id],
     );
     const propertyB = await client.query<{ property_id: string }>(
@@ -119,6 +172,10 @@ describe("property facts (db)", () => {
     );
     actorA = { userId: userA.rows[0]!.user_id };
     actorB = { userId: userB.rows[0]!.user_id };
+    await client.query(
+      "INSERT INTO memberships (user_id, property_id, role_id) VALUES ($1, $2, 1), ($3, $4, 2)",
+      [actorA.userId, tenantA.propertyId, actorB.userId, tenantB.propertyId],
+    );
 
     sourceA = await asApp(tenantA, async (tx) => {
       const row = await tx.query<{ source_id: string }>(
@@ -148,7 +205,7 @@ describe("property facts (db)", () => {
     await dropScratch();
   });
 
-  it("0009 lands: new columns, the three constraints, the dropped unique and the two indexes", async () => {
+  it("0009 lands: columns, a NOT VALID verified CHECK, the dropped unique, both partial indexes, the guard and the narrowed ACL", async () => {
     const columns = await client.query<{ column_name: string }>(
       `SELECT column_name FROM information_schema.columns
         WHERE table_schema = 'public' AND table_name = 'property_facts'`,
@@ -164,32 +221,61 @@ describe("property facts (db)", () => {
       expect(names.has(column), column).toBe(true);
     }
 
-    const constraints = await client.query<{ conname: string }>(
-      `SELECT conname FROM pg_constraint
+    const constraints = await client.query<{ conname: string; convalidated: boolean }>(
+      `SELECT conname, convalidated FROM pg_constraint
         WHERE conrelid = 'property_facts'::regclass`,
     );
-    const connames = new Set(constraints.rows.map((row) => row.conname));
-    for (const name of [
-      "property_facts_unit_check",
-      "property_facts_verified_fields",
-      "property_facts_source_version_fk",
-    ]) {
-      expect(connames.has(name), name).toBe(true);
-    }
+    const byName = new Map(constraints.rows.map((row) => [row.conname, row.convalidated]));
+    expect(byName.has("property_facts_unit_check"), "unit_check").toBe(true);
+    expect(byName.has("property_facts_source_version_fk"), "source_version_fk").toBe(true);
+    // NOT VALID: a pre-0009 verified row has no effective_from, so a validated
+    // CHECK would abort this migration before the seed could touch anything.
+    expect(byName.get("property_facts_verified_fields")).toBe(false);
     // 0001's key is gone: two rows must be able to share a key (AC-2/AC-3)
-    expect(connames.has("property_facts_property_id_topic_key_fact_key_language_key")).toBe(
-      false,
-    );
+    expect(byName.has("property_facts_property_id_topic_key_fact_key_language_key")).toBe(false);
 
     const indexes = await client.query<{ indexname: string; indexdef: string }>(
       "SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'property_facts'",
     );
-    const byName = new Map(indexes.rows.map((row) => [row.indexname, row.indexdef]));
-    expect(byName.has("property_facts_lookup")).toBe(true);
-    const verifiedKey = byName.get("property_facts_verified_key") ?? "";
+    const defs = new Map(indexes.rows.map((row) => [row.indexname, row.indexdef]));
+
+    const verifiedKey = defs.get("property_facts_verified_key") ?? "";
     expect(verifiedKey).toMatch(/^CREATE UNIQUE INDEX/);
     expect(verifiedKey).toMatch(/\(property_id, topic_key, fact_key, language, effective_from\)/);
     expect(verifiedKey).toMatch(/WHERE verified\b/);
+
+    const lookup = defs.get("property_facts_lookup") ?? "";
+    expect(lookup).toMatch(
+      /\(property_id, topic_key, fact_key, language, effective_from DESC, created_at DESC\) WHERE verified/,
+    );
+
+    const triggers = await client.query<{ tgname: string }>(
+      `SELECT tgname FROM pg_trigger
+        WHERE tgrelid = 'property_facts'::regclass AND NOT tgisinternal`,
+    );
+    expect(triggers.rows.map((row) => row.tgname)).toContain(
+      "property_facts_guard_verification",
+    );
+
+    // The app writes the fact, never the verdict.
+    for (const column of ["topic_key", "fact_value", "unit", "effective_from"]) {
+      const check = await client.query<{ ok: boolean }>(
+        "SELECT has_column_privilege('concierge_app', 'property_facts', $1, 'UPDATE') AS ok",
+        [column],
+      );
+      expect(check.rows[0]!.ok, column).toBe(true);
+    }
+    for (const column of ["verified", "verified_by", "verified_at"]) {
+      const check = await client.query<{ ok: boolean }>(
+        "SELECT has_column_privilege('concierge_app', 'property_facts', $1, 'UPDATE') AS ok",
+        [column],
+      );
+      expect(check.rows[0]!.ok, column).toBe(false);
+    }
+    const executor = await client.query<{ ok: boolean }>(
+      `SELECT has_function_privilege('concierge_app', 'verify_property_fact(uuid, uuid)', 'EXECUTE') AS ok`,
+    );
+    expect(executor.rows[0]!.ok).toBe(true);
   });
 
   it("seeds 5 facts with unit, effective date and source VERSION; pool shares closing_time, spa keys differ", async () => {
@@ -244,6 +330,7 @@ describe("property facts (db)", () => {
   it("verifies one pool value, refuses the other, then answers by lookup (AC-1, AC-3)", async () => {
     const websiteId = factIdOf(poolWebsite.factId);
     const directoryId = factIdOf(poolDirectory.factId);
+    const before = await auditCount(DEMO_PROPERTY_ID, "fact.verified");
 
     const verified = await asApp(demo, (tx) => verifyFact(tx, demo, demoActor, websiteId));
     expect(verified.factId).toBe(websiteId);
@@ -262,25 +349,16 @@ describe("property facts (db)", () => {
     );
     expect(hit).toEqual({ value: "21:00", unit: "time-of-day", effectiveFrom: "2026-01-01" });
 
-    const row = await client.query<{ verified_by: string; verified_at: Date }>(
-      "SELECT verified_by, verified_at FROM property_facts WHERE fact_id = $1",
-      [websiteId],
-    );
-    expect(row.rows[0]!.verified_by).toBe(DEMO_STAFF[0]!.userId);
-    expect(row.rows[0]!.verified_at).toBeInstanceOf(Date);
+    const row = await factRow(websiteId);
+    expect(row.verified_by).toBe(DEMO_STAFF[0]!.userId);
+    expect(row.verified_at).toBeInstanceOf(Date);
+    expect((await factRow(directoryId)).verified).toBe(false);
 
-    const refused = await client.query<{ verified: boolean }>(
-      "SELECT verified FROM property_facts WHERE fact_id = $1",
-      [directoryId],
-    );
-    expect(refused.rows[0]!.verified).toBe(false);
-
-    expect(await auditActions(DEMO_PROPERTY_ID)).toEqual(
-      expect.arrayContaining(["fact.verified"]),
-    );
+    // exactly one fact.verified row per successful verification
+    expect(await auditCount(DEMO_PROPERTY_ID, "fact.verified")).toBe(before + 1);
   });
 
-  it("honours the effective date: a fact is invisible before it takes effect", async () => {
+  it("honours an explicit effective date: a fact is invisible before it takes effect", async () => {
     const before = await asApp(demo, (tx) =>
       lookupFact(tx, demo, {
         topicKey: "pool.hours",
@@ -312,22 +390,173 @@ describe("property facts (db)", () => {
     expect(badDate).toBeInstanceOf(FactValidationError);
   });
 
-  it("the database itself refuses a verified fact stripped of its verifier", async () => {
-    const websiteId = factIdOf(poolWebsite.factId);
+  it("the property's timezone decides \"today\", with a fixed clock (P2)", async () => {
+    const early = await asApp(tenantA, (tx) =>
+      createFact(tx, tenantA, actorA, input({ factKey: "facts_morning", value: "06:00", unit: "time-of-day", effectiveFrom: "2026-10-25" })),
+    );
+    const late = await asApp(tenantA, (tx) =>
+      createFact(tx, tenantA, actorA, input({ factKey: "facts_evening", value: "22:00", unit: "time-of-day", effectiveFrom: "2026-10-26" })),
+    );
+    await asApp(tenantA, (tx) => verifyFact(tx, tenantA, actorA, early.factId));
+    await asApp(tenantA, (tx) => verifyFact(tx, tenantA, actorA, late.factId));
+
+    // 02:00Z on 26 October is 20:00 on 25 October in America/Mexico_City, so
+    // "today at the property" is 2026-10-25: the 25th answers, the 26th does
+    // not - a UTC session date would have answered the wrong one.
+    const localToday = await asApp(tenantA, (tx) =>
+      lookupFact(tx, tenantA, {
+        topicKey: "spa.services",
+        factKey: "facts_morning",
+        language: "en",
+      }, CLOCK),
+    );
+    expect(localToday).toMatchObject({ value: "06:00", effectiveFrom: "2026-10-25" });
+
+    const tomorrow = await asApp(tenantA, (tx) =>
+      lookupFact(tx, tenantA, {
+        topicKey: "spa.services",
+        factKey: "facts_evening",
+        language: "en",
+      }, CLOCK),
+    );
+    expect(tomorrow).toBeNull();
+
+    // an explicit `on` still wins over the resolved clock
+    const explicit = await asApp(tenantA, (tx) =>
+      lookupFact(tx, tenantA, {
+        topicKey: "spa.services",
+        factKey: "facts_evening",
+        language: "en",
+        on: "2026-10-26",
+      }, CLOCK),
+    );
+    expect(explicit).toMatchObject({ value: "22:00" });
+
+    await asApp(tenantA, (tx) => updateFact(tx, tenantA, actorA, early.factId, input({ factKey: "raw_probe_a", value: "06:00", unit: "time-of-day", effectiveFrom: "2026-10-25" })));
+    await asApp(tenantA, (tx) => updateFact(tx, tenantA, actorA, late.factId, input({ factKey: "raw_probe_b", value: "22:00", unit: "time-of-day", effectiveFrom: "2026-10-26" })));
+  });
+
+  it("raw SQL cannot verify a fact, and cannot keep a verification while changing it (P1)", async () => {
+    const held = await asApp(tenantA, (tx) =>
+      createFact(tx, tenantA, actorA, input({ factKey: "raw_held" })),
+    );
+    const victim = await asApp(tenantA, (tx) =>
+      createFact(tx, tenantA, actorA, input({ factKey: "raw_victim" })),
+    );
+    const spare = await asApp(tenantA, (tx) =>
+      createFact(tx, tenantA, actorA, input({ factKey: "raw_spare" })),
+    );
+    for (const id of [held.factId, victim.factId]) {
+      await asApp(tenantA, (tx) => verifyFact(tx, tenantA, actorA, id));
+    }
+    const audited = await auditCount(tenantA.propertyId, "fact.verified");
+
+    // 1. the app role cannot even name the column
     await expect(
-      asApp(demo, (tx) =>
+      asApp(tenantA, (tx) =>
+        tx.query(
+          "UPDATE property_facts SET verified = true, verified_by = $1, verified_at = now() WHERE fact_id = $2",
+          [actorA.userId, victim.factId],
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "42501" });
+    await expect(
+      asApp(tenantA, (tx) =>
         tx.query("UPDATE property_facts SET verified_by = NULL WHERE fact_id = $1", [
-          websiteId,
+          held.factId,
         ]),
       ),
-    ).rejects.toMatchObject({ code: "23514" });
+    ).rejects.toMatchObject({ code: "42501" });
 
-    const stillVerified = await client.query<{ verified: boolean; verified_by: string }>(
-      "SELECT verified, verified_by FROM property_facts WHERE fact_id = $1",
-      [websiteId],
+    // 2. an insert that arrives verified is refused too
+    await expect(
+      asApp(tenantA, (tx) =>
+        tx.query(
+          `INSERT INTO property_facts (org_id, property_id, topic_key, fact_key, fact_value,
+                                       verified, verified_by, verified_at)
+           VALUES ($1, $2, 'raw.sql', 'born_verified', 'yes', true, $3, now())`,
+          [tenantA.orgId, tenantA.propertyId, actorA.userId],
+        ),
+      ),
+    ).rejects.toThrow(/verify_property_fact/);
+
+    // 3. the table owner is refused as well - grants do not apply to it.
+    //    Both probes are stamp-only: on a verified row the stamp is
+    //    immutable, on an unverified one `verified` may only flip inside
+    //    verify_property_fact().
+    await expect(
+      client.query("UPDATE property_facts SET verified_by = NULL WHERE fact_id = $1", [
+        held.factId,
+      ]),
+    ).rejects.toThrow(/verify_property_fact/);
+    await expect(
+      client.query(
+        `UPDATE property_facts SET verified = true, verified_by = $1, verified_at = now()
+          WHERE fact_id = $2`,
+        [actorA.userId, spare.factId],
+      ),
+    ).rejects.toThrow(/verify_property_fact/);
+
+    // 4. the owner CAN rewrite a value, but the stale "verified" never
+    //    travels with it: content change drops the verdict for every role.
+    await client.query(
+      `UPDATE property_facts SET fact_value = 'hijacked', verified = true,
+              verified_by = $1, verified_at = now()
+        WHERE fact_id = $2`,
+      [actorA.userId, spare.factId],
     );
-    expect(stillVerified.rows[0]!.verified).toBe(true);
-    expect(stillVerified.rows[0]!.verified_by).toBe(DEMO_STAFF[0]!.userId);
+    expect(await factRow(spare.factId)).toMatchObject({
+      fact_value: "hijacked",
+      verified: false,
+      verified_by: null,
+      verified_at: null,
+    });
+
+    // 5. the CHECK is still the last word: with the guard off, stripping the
+    //    verifier of a verified row is a 23514, not a silent success
+    await client.query("ALTER TABLE property_facts DISABLE TRIGGER property_facts_guard_verification");
+    try {
+      await expect(
+        client.query("UPDATE property_facts SET verified_by = NULL WHERE fact_id = $1", [
+          held.factId,
+        ]),
+      ).rejects.toMatchObject({ code: "23514" });
+    } finally {
+      await client.query("ALTER TABLE property_facts ENABLE TRIGGER property_facts_guard_verification");
+    }
+
+    // 6. content mutation drops the verification, whatever the role
+    await asApp(tenantA, (tx) =>
+      tx.query("UPDATE property_facts SET fact_value = '29 min' WHERE fact_id = $1", [
+        held.factId,
+      ]),
+    );
+    const afterApp = await factRow(held.factId);
+    expect(afterApp).toMatchObject({ verified: false, verified_by: null, verified_at: null });
+
+    await client.query(
+      "UPDATE property_facts SET fact_value = '31 min' WHERE fact_id = $1",
+      [victim.factId],
+    );
+    expect(await factRow(victim.factId)).toMatchObject({
+      verified: false,
+      verified_by: null,
+      verified_at: null,
+    });
+
+    // 7. the function itself demands a tenant context and the session's actor
+    await expect(
+      client.query("SELECT verify_property_fact($1, $2)", [spare.factId, actorA.userId]),
+    ).rejects.toThrow(/tenant context/);
+    await expect(
+      asStaff(tenantA, actorA, (tx) =>
+        tx.query("SELECT verify_property_fact($1, $2)", [spare.factId, actorB.userId]),
+      ),
+    ).rejects.toThrow(/is not the session user/);
+
+    // none of the probes wrote an audit row
+    expect(await auditCount(tenantA.propertyId, "fact.verified")).toBe(audited);
+    expect((await factRow(spare.factId)).verified).toBe(false);
   });
 
   it("lists the pool pair as a contradiction and leaves the two spa prices alone", async () => {
@@ -350,11 +579,9 @@ describe("property facts (db)", () => {
     expect(found.some((c) => c.topicKey === "gym.hours")).toBe(false);
   });
 
-  it("an update resets verification, and lookup falls back to answering nothing", async () => {
+  it("an update that changes the value resets verification, and lookup answers nothing again", async () => {
     const websiteId = factIdOf(poolWebsite.factId);
-    const before = await asApp(demo, (tx) =>
-      getFact(tx, demo, websiteId),
-    );
+    const before = await asApp(demo, (tx) => getFact(tx, demo, websiteId));
     expect(before.verified).toBe(true);
 
     const updated = await asApp(demo, (tx) =>
@@ -381,13 +608,36 @@ describe("property facts (db)", () => {
     );
     expect(hit).toBeNull();
 
-    // the seed writes its rows directly, so demo audit history starts here
     expect(await auditActions(DEMO_PROPERTY_ID)).toEqual(
       expect.arrayContaining(["fact.updated", "fact.verified"]),
     );
   });
 
+  it("the lookup path really uses the partial verified index (EXPLAIN)", async () => {
+    const plan = await asApp(demo, async (tx) => {
+      await tx.query("SET LOCAL enable_seqscan = off");
+      const result = await tx.query<{ "QUERY PLAN": string }>(
+        `EXPLAIN
+         SELECT fact_value, unit, to_char(effective_from, 'YYYY-MM-DD')
+           FROM property_facts
+          WHERE org_id = '${DEMO_ORG_ID}'
+            AND property_id = '${DEMO_PROPERTY_ID}'
+            AND topic_key = 'pool.hours'
+            AND fact_key = 'closing_time'
+            AND language = 'es'
+            AND verified
+            AND effective_from <= DATE '2026-10-25'
+          ORDER BY effective_from DESC, created_at DESC
+          LIMIT 1`,
+      );
+      return result.rows.map((row) => row["QUERY PLAN"]).join("\n");
+    });
+    expect(plan).toContain("property_facts_lookup");
+    expect(plan).toMatch(/Index (Only )?Scan/);
+  });
+
   it("creates, reads back and audits a fact with its source version (AC-6)", async () => {
+    const createdBefore = await auditCount(tenantA.propertyId, "fact.created");
     const created = await asApp(tenantA, (tx) =>
       createFact(tx, tenantA, actorA, input({ sourceArticleVersionId: versionA })),
     );
@@ -416,7 +666,8 @@ describe("property facts (db)", () => {
     expect(listed.map((fact) => fact.factId)).toContain(created.factId);
 
     const actions = await auditActions(tenantA.propertyId);
-    expect(actions.filter((action) => action === "fact.created")).toHaveLength(1);
+    expect(actions).toContain("fact.created");
+    expect(await auditCount(tenantA.propertyId, "fact.created")).toBe(createdBefore + 1);
     const audit = await client.query<{ detail: Record<string, unknown> }>(
       `SELECT detail FROM audit_log
         WHERE property_id = $1 AND action = 'fact.created' AND entity_id = $2`,
@@ -429,6 +680,43 @@ describe("property facts (db)", () => {
       language: "en",
       effective_from: "2026-03-01",
     });
+  });
+
+  it("keeps the citation when the field is omitted and clears it only on null (P2)", async () => {
+    const created = await asApp(tenantA, (tx) =>
+      createFact(tx, tenantA, actorA, input({ factKey: "citation_probe", sourceArticleVersionId: versionA })),
+    );
+
+    const kept = await asApp(tenantA, (tx) =>
+      updateFact(tx, tenantA, actorA, created.factId, {
+        topicKey: "spa.services",
+        factKey: "citation_probe",
+        value: "45 min",
+        unit: "duration",
+        language: "en",
+        effectiveFrom: "2026-03-01",
+      }),
+    );
+    expect(kept.verifiedReset).toBe(false);
+    expect(
+      (await asApp(tenantA, (tx) => getFact(tx, tenantA, created.factId))).sourceArticleVersionId,
+    ).toBe(versionA);
+
+    const cleared = await asApp(tenantA, (tx) =>
+      updateFact(tx, tenantA, actorA, created.factId, {
+        topicKey: "spa.services",
+        factKey: "citation_probe",
+        value: "45 min",
+        unit: "duration",
+        language: "en",
+        effectiveFrom: "2026-03-01",
+        sourceArticleVersionId: null,
+      }),
+    );
+    expect(cleared.verifiedReset).toBe(false);
+    expect(
+      (await asApp(tenantA, (tx) => getFact(tx, tenantA, created.factId))).sourceArticleVersionId,
+    ).toBeNull();
   });
 
   it("refuses a source version from another tenant as if it did not exist (AC-4)", async () => {
@@ -453,76 +741,103 @@ describe("property facts (db)", () => {
     ).rejects.toBeInstanceOf(FactSourceVersionNotFoundError);
   });
 
-  it("verification demands an actor: no actor, a malformed one, or an unknown user all refuse (AC-3)", async () => {
+  it("binds every write to the session: no session, a different actor, a foreign member (P2)", async () => {
     const created = await asApp(tenantA, (tx) =>
-      createFact(tx, tenantA, actorA, input({ factKey: "steam_room" })),
+      createFact(tx, tenantA, actorA, input({ factKey: "session_probe" })),
     );
 
     await expect(
-      asApp(tenantA, (tx) => verifyFact(tx, tenantA, undefined as never, created.factId)),
+      asStaff(tenantA, null, (tx) =>
+        createFact(tx, tenantA, actorA, input({ factKey: "session_probe" })),
+      ),
+    ).rejects.toThrow(/app\.current_user_id is not set/);
+
+    // syntax failures still refuse first
+    await expect(
+      asStaff(tenantA, actorA, (tx) =>
+        verifyFact(tx, tenantA, undefined as never, created.factId),
+      ),
     ).rejects.toBeInstanceOf(FactActorError);
     await expect(
-      asApp(tenantA, (tx) => verifyFact(tx, tenantA, { userId: "not-a-uuid" }, created.factId)),
+      asStaff(tenantA, actorA, (tx) =>
+        verifyFact(tx, tenantA, { userId: "not-a-uuid" }, created.factId),
+      ),
     ).rejects.toBeInstanceOf(FactActorError);
     await expect(
-      asApp(tenantA, (tx) =>
+      asStaff(tenantA, actorA, (tx) =>
         verifyFact(tx, tenantA, { userId: crypto.randomUUID() }, created.factId),
       ),
     ).rejects.toBeInstanceOf(FactActorError);
 
-    const row = await client.query<{ verified: boolean; verified_by: string | null }>(
-      "SELECT verified, verified_by FROM property_facts WHERE fact_id = $1",
-      [created.factId],
-    );
-    expect(row.rows[0]!.verified).toBe(false);
-    expect(row.rows[0]!.verified_by).toBeNull();
+    // a well-formed id that is simply not who is logged in
+    await expect(
+      asApp(tenantA, (tx) => verifyFact(tx, tenantA, actorB, created.factId)),
+    ).rejects.toThrow(/is not the session user/);
+
+    // a session whose user has no membership in this property
+    await expect(
+      asStaff(tenantA, actorB, (tx) => verifyFact(tx, tenantA, actorB, created.factId)),
+    ).rejects.toThrow(/is not a member of this property/);
+
+    expect((await factRow(created.factId)).verified).toBe(false);
   });
 
-  it("re-verifying the same fact is idempotent - the index bars a second ROW, not a second look", async () => {
+  it("re-verifying the same fact changes nothing: same stamp, no second audit row", async () => {
     const created = await asApp(tenantA, (tx) =>
       createFact(tx, tenantA, actorA, input({ factKey: "steam_room" })),
     );
     await asApp(tenantA, (tx) => verifyFact(tx, tenantA, actorA, created.factId));
+
+    const stamped = await factRow(created.factId);
+    const audited = await auditCount(tenantA.propertyId, "fact.verified");
 
     const again = await asApp(tenantA, (tx) =>
       verifyFact(tx, tenantA, actorA, created.factId),
     );
     expect(again).toEqual({ factId: created.factId });
 
-    const row = await client.query<{ verified: boolean; verified_by: string | null }>(
-      "SELECT verified, verified_by FROM property_facts WHERE fact_id = $1",
-      [created.factId],
-    );
-    expect(row.rows[0]!.verified).toBe(true);
-    expect(row.rows[0]!.verified_by).toBe(actorA.userId);
+    const after = await factRow(created.factId);
+    expect(after.verified).toBe(true);
+    expect(after.verified_by).toBe(actorA.userId);
+    expect(after.verified_at).toEqual(stamped.verified_at);
+    expect(await auditCount(tenantA.propertyId, "fact.verified")).toBe(audited);
   });
 
-  it("updates reset verification and write an audit row (AC-6)", async () => {
+  it("updates reset verification, keep an untouched verification and write an audit row (AC-6)", async () => {
     const created = await asApp(tenantA, (tx) =>
       createFact(tx, tenantA, actorA, input({ factKey: "updates_reset" })),
     );
     await asApp(tenantA, (tx) => verifyFact(tx, tenantA, actorA, created.factId));
 
-    const unchanged = await asApp(tenantA, (tx) =>
-      updateFact(tx, tenantA, actorA, created.factId, input({ factKey: "updates_reset" })),
+    // content change: the trigger drops the verification
+    const changed = await asApp(tenantA, (tx) =>
+      updateFact(tx, tenantA, actorA, created.factId, {
+        ...input({ factKey: "updates_reset" }),
+        value: "35 min",
+      }),
     );
-    expect(unchanged).toEqual({ factId: created.factId, verifiedReset: true });
+    expect(changed).toEqual({ factId: created.factId, verifiedReset: true });
+    expect(await factRow(created.factId)).toMatchObject({
+      verified: false,
+      verified_by: null,
+      verified_at: null,
+    });
 
-    const after = await asApp(tenantA, (tx) => getFact(tx, tenantA, created.factId));
-    expect(after.verified).toBe(false);
-
-    // a second update of an already-unverified fact reports no reset
-    const again = await asApp(tenantA, (tx) =>
-      updateFact(tx, tenantA, actorA, created.factId, input({ factKey: "updates_reset" })),
+    // nothing material changed: the row stays as it was (still unverified here)
+    const same = await asApp(tenantA, (tx) =>
+      updateFact(tx, tenantA, actorA, created.factId, {
+        ...input({ factKey: "updates_reset" }),
+        value: "35 min",
+      }),
     );
-    expect(again.verifiedReset).toBe(false);
+    expect(same.verifiedReset).toBe(false);
 
     const actions = await auditActions(tenantA.propertyId);
-    expect(actions.filter((action) => action === "fact.updated").length).toBeGreaterThanOrEqual(2);
+    expect(actions.filter((action) => action === "fact.updated").length).toBeGreaterThanOrEqual(3);
     expect(actions).toContain("fact.verified");
   });
 
-  it("a failed audit write rolls the fact back with it (AC-6)", async () => {
+  it("a fact row is rolled back when its audit row cannot be written (AC-6)", async () => {
     const before = await asApp(tenantA, async (tx) => {
       const rows = await tx.query<{ count: string }>(
         "SELECT count(*) AS count FROM property_facts WHERE property_id = $1",
@@ -531,11 +846,16 @@ describe("property facts (db)", () => {
       return Number(rows.rows[0]!.count);
     });
 
-    await expect(
-      asApp(tenantA, (tx) =>
-        createFact(tx, tenantA, { userId: "not-a-uuid" }, input({ factKey: "rollback.fact" })),
-      ),
-    ).rejects.toBeInstanceOf(AuditWriteError);
+    await client.query("REVOKE INSERT ON audit_log FROM concierge_app");
+    try {
+      await expect(
+        asApp(tenantA, (tx) =>
+          createFact(tx, tenantA, actorA, input({ factKey: "rollback.fact" })),
+        ),
+      ).rejects.toMatchObject({ code: "42501" });
+    } finally {
+      await client.query("GRANT INSERT ON audit_log TO concierge_app");
+    }
 
     const after = await asApp(tenantA, async (tx) => {
       const rows = await tx.query<{ count: string }>(

@@ -7,6 +7,7 @@
  * ranking expression and no provider call.
  */
 import { describe, expect, it } from "vitest";
+import type pg from "pg";
 import {
   FACT_CONTRADICTIONS_SQL,
   FACT_LIMITS,
@@ -14,6 +15,8 @@ import {
   FACT_UNITS,
   FactValidationError,
   isRealDate,
+  lookupFact,
+  propertyLocalDate,
   validateEffectiveFrom,
   validateFactInput,
   validateFactKey,
@@ -252,5 +255,100 @@ describe("unit vocabulary", () => {
       "distance",
       "count",
     ]);
+  });
+});
+
+/** "Today" is a calendar day AT THE PROPERTY (P2), not at the database. */
+describe("property timezone resolves today (P2)", () => {
+  const instant = new Date("2026-10-26T02:00:00Z");
+
+  it("counts the calendar day where the hotel is, not where the session runs", () => {
+    expect(propertyLocalDate("America/Mexico_City", instant)).toBe("2026-10-25");
+    expect(propertyLocalDate("UTC", instant)).toBe("2026-10-26");
+    expect(propertyLocalDate("Asia/Tokyo", instant)).toBe("2026-10-26");
+  });
+
+  it("always returns a zero-padded YYYY-MM-DD the date accepts", () => {
+    const formatted = propertyLocalDate("America/Mexico_City", instant);
+    expect(formatted).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(isRealDate(formatted ?? "")).toBe(true);
+    // midnight local can still be the previous UTC day (winter, UTC-5)
+    expect(propertyLocalDate("America/New_York", new Date("2026-01-15T02:00:00Z"))).toBe(
+      "2026-01-14",
+    );
+  });
+
+  it("returns null when there is nothing usable to resolve, so SQL falls back", () => {
+    for (const zone of [null, undefined, "", "   "]) {
+      expect(propertyLocalDate(zone, instant), String(zone)).toBeNull();
+    }
+    // Intl throws RangeError on an unknown zone; the caller must not crash
+    expect(propertyLocalDate("Not/AZone", instant)).toBeNull();
+  });
+});
+
+describe("lookup asks the property, then the verified rows", () => {
+  const context = {
+    orgId: "00000000-0000-0000-0000-0000000000a1",
+    propertyId: "00000000-0000-0000-0000-0000000000b1",
+  };
+  const lookupInput = { topicKey: "pool.hours", factKey: "closing_time", language: "es" };
+
+  function stubClient(...responses: { rows: Record<string, unknown>[] }[]) {
+    const calls: { sql: string; params: unknown[] | undefined }[] = [];
+    let index = 0;
+    const client = {
+      query(sql: string, params?: unknown[]) {
+        calls.push({ sql, params });
+        const response = responses[index] ?? { rows: [] };
+        index += 1;
+        return Promise.resolve(response);
+      },
+    } as unknown as pg.Client;
+    return { client, calls };
+  }
+
+  it("resolves the effective date from the property's timezone when no `on` is given", async () => {
+    const { client, calls } = stubClient(
+      { rows: [{ time_zone: "America/Mexico_City" }] },
+      { rows: [{ fact_value: "21:00", unit: "time-of-day", effective_from: "2026-01-01" }] },
+    );
+
+    const hit = await lookupFact(
+      client,
+      context,
+      lookupInput,
+      new Date("2026-10-26T02:00:00Z"),
+    );
+
+    expect(hit).toEqual({ value: "21:00", unit: "time-of-day", effectiveFrom: "2026-01-01" });
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.sql).toMatch(/SELECT time_zone FROM properties/);
+    expect(calls[0]!.params).toEqual([context.orgId, context.propertyId]);
+    expect(calls[1]!.sql).toBe(FACT_LOOKUP_SQL);
+    expect(calls[1]!.params).toEqual([
+      context.orgId,
+      context.propertyId,
+      "pool.hours",
+      "closing_time",
+      "es",
+      "2026-10-25",
+    ]);
+  });
+
+  it("skips the timezone query when the caller already knows the date", async () => {
+    const { client, calls } = stubClient({ rows: [] });
+
+    expect(await lookupFact(client, context, { ...lookupInput, on: "2026-01-01" })).toBeNull();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.sql).toBe(FACT_LOOKUP_SQL);
+    expect(calls[0]!.params?.[5]).toBe("2026-01-01");
+  });
+
+  it("passes NULL when the timezone cannot be resolved, letting SQL use CURRENT_DATE", async () => {
+    const { client, calls } = stubClient({ rows: [] }, { rows: [] });
+
+    expect(await lookupFact(client, context, lookupInput)).toBeNull();
+    expect(calls[1]!.params?.[5]).toBeNull();
   });
 });

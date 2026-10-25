@@ -17,7 +17,12 @@ import { scratchAdminUrl } from "./helpers.db.ts";
 const ROLE = `neon_owner_${process.pid}`;
 const DB = `scratch_ns_${process.pid}`;
 const PASSWORD = "neon_owner_pw";
-const CLUSTER_ROLES = ["concierge_app", "concierge_membership", "concierge_promoter"];
+const CLUSTER_ROLES = [
+  "concierge_app",
+  "concierge_membership",
+  "concierge_promoter",
+  "concierge_fact_verifier",
+];
 
 let admin: pg.Client | null = null;
 let app: pg.Client | null = null;
@@ -68,14 +73,15 @@ describe("non-superuser owner (db)", () => {
     expect(applied).toBe(9);
 
     // What the migrations granted, the migrations revoked: no membership in
-    // either definer role was granted BY the owner itself.
+    // any definer role was granted BY the owner itself.
     const selfGrants = await admin.query<{ role: string }>(
       `SELECT roleid::regrole AS role
          FROM pg_auth_members
         WHERE member = (SELECT oid FROM pg_roles WHERE rolname = $1)
           AND grantor = (SELECT oid FROM pg_roles WHERE rolname = $1)
           AND roleid IN (SELECT oid FROM pg_roles
-                          WHERE rolname IN ('concierge_membership', 'concierge_promoter'))`,
+                          WHERE rolname IN ('concierge_membership', 'concierge_promoter',
+                                            'concierge_fact_verifier'))`,
       [ROLE],
     );
     expect(selfGrants.rows).toHaveLength(0);
@@ -84,7 +90,7 @@ describe("non-superuser owner (db)", () => {
     // inherit/set enabled) has no production analogue — on a virgin cluster
     // the owner's auto-grant is inert (inherit=false, set=false). Remove it
     // so the assertions below see the production end state.
-    for (const role of ["concierge_membership", "concierge_promoter"]) {
+    for (const role of ["concierge_membership", "concierge_promoter", "concierge_fact_verifier"]) {
       await admin.query(`REVOKE ${role} FROM ${ROLE}`);
     }
 
@@ -163,6 +169,8 @@ describe("non-superuser owner (db)", () => {
       membership_set: boolean;
       promoter_usage: boolean;
       promoter_set: boolean;
+      verifier_usage: boolean;
+      verifier_set: boolean;
       app_usage: boolean;
       app_set: boolean;
     }>(
@@ -170,6 +178,8 @@ describe("non-superuser owner (db)", () => {
               pg_has_role(current_user, 'concierge_membership', 'SET')   AS membership_set,
               pg_has_role(current_user, 'concierge_promoter', 'USAGE')   AS promoter_usage,
               pg_has_role(current_user, 'concierge_promoter', 'SET')     AS promoter_set,
+              pg_has_role(current_user, 'concierge_fact_verifier', 'USAGE') AS verifier_usage,
+              pg_has_role(current_user, 'concierge_fact_verifier', 'SET')   AS verifier_set,
               pg_has_role(current_user, 'concierge_app', 'USAGE')        AS app_usage,
               pg_has_role(current_user, 'concierge_app', 'SET')          AS app_set`,
     );
@@ -177,6 +187,8 @@ describe("non-superuser owner (db)", () => {
     expect(flags.rows[0]!.membership_set).toBe(false);
     expect(flags.rows[0]!.promoter_usage).toBe(false);
     expect(flags.rows[0]!.promoter_set).toBe(false);
+    expect(flags.rows[0]!.verifier_usage).toBe(false);
+    expect(flags.rows[0]!.verifier_set).toBe(false);
     expect(flags.rows[0]!.app_usage).toBe(true);
     expect(flags.rows[0]!.app_set).toBe(true);
 
@@ -184,6 +196,9 @@ describe("non-superuser owner (db)", () => {
       /permission denied|must be member/,
     );
     await expect(login!.query("SET ROLE concierge_promoter")).rejects.toThrow(
+      /permission denied|must be member/,
+    );
+    await expect(login!.query("SET ROLE concierge_fact_verifier")).rejects.toThrow(
       /permission denied|must be member/,
     );
   });

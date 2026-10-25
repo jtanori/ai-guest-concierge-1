@@ -258,19 +258,50 @@ function assertUuid(value: string, field: string): void {
 }
 
 /**
- * AC-3: verification is always attributable. create/update deliberately do
- * NOT pre-check the actor - `writeAudit` is their validator and a failure
- * there rolls the whole unit back (the S03-01 pattern) - but verification is
- * a state change that must never land without an actor, so it refuses first.
+ * Syntax half of the actor check: every write names one, and the id has to be
+ * a UUID before it reaches the database.
  */
 function assertActor(actor: { userId: string } | null | undefined): string {
   if (actor === null || actor === undefined) {
-    throw new FactActorError("verifyFact requires an actor");
+    throw new FactActorError("fact writes require an actor");
   }
   if (typeof actor.userId !== "string" || !UUID_RE.test(actor.userId)) {
-    throw new FactActorError("verifyFact requires an actor with a UUID userId");
+    throw new FactActorError("fact writes require an actor with a UUID userId");
   }
   return actor.userId;
+}
+
+/**
+ * AC-3/§6: the actor IS the session user, never a request field. One round
+ * trip reads the identity `withStaffSession` resolved (`app.current_user_id`)
+ * and 0004's membership probe for this property, so a well-formed but foreign
+ * or unknown uuid is a typed FactActorError instead of a raw 23503 - and a
+ * caller cannot attribute a verification to somebody else's id.
+ */
+async function assertSessionActor(
+  client: pg.Client | pg.PoolClient,
+  context: TenantContext,
+  actor: { userId: string } | null | undefined,
+): Promise<string> {
+  const userId = assertActor(actor);
+  const result = await client.query<{ session_user: string | null; role: number | null }>(
+    `SELECT nullif(current_setting('app.current_user_id', true), '') AS session_user,
+            current_membership_role($1) AS role`,
+    [context.propertyId],
+  );
+  const row = result.rows[0];
+  if (row === undefined || row.session_user === null) {
+    throw new FactActorError(
+      "fact writes require a staff session (app.current_user_id is not set)",
+    );
+  }
+  if (row.session_user !== userId) {
+    throw new FactActorError(`actor ${userId} is not the session user (${row.session_user})`);
+  }
+  if (row.role === null) {
+    throw new FactActorError(`actor ${userId} is not a member of this property`);
+  }
+  return userId;
 }
 
 function isUniqueViolation(error: unknown): boolean {
@@ -278,14 +309,6 @@ function isUniqueViolation(error: unknown): boolean {
     typeof error === "object" &&
     error !== null &&
     (error as { code?: unknown }).code === "23505"
-  );
-}
-
-function isForeignKeyViolation(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    (error as { code?: unknown }).code === "23503"
   );
 }
 
@@ -377,6 +400,7 @@ export async function createFact(
   input: FactInput,
 ): Promise<{ factId: string }> {
   assertTenantShape(context);
+  const userId = await assertSessionActor(client, context, actor);
   const valid = validateFactInput(input);
   const sourceVersionId = valid.sourceArticleVersionId ?? null;
   if (sourceVersionId !== null) {
@@ -406,7 +430,7 @@ export async function createFact(
   await writeAudit(client, {
     orgId: context.orgId,
     propertyId: context.propertyId,
-    actorUserId: actor.userId,
+    actorUserId: userId,
     action: "fact.created",
     entityType: "fact",
     entityId: factId,
@@ -475,8 +499,13 @@ export async function updateFact(
   input: FactInput,
 ): Promise<{ factId: string; verifiedReset: boolean }> {
   assertTenantShape(context);
+  const userId = await assertSessionActor(client, context, actor);
   assertUuid(factId, "factId");
   const valid = validateFactInput(input);
+  // `undefined` keeps the citation, `null` clears it: losing the D5 link
+  // because a caller omitted a field would be silent data loss (S03-01's
+  // editArticle distinguishes the two the same way).
+  const sourceSupplied = valid.sourceArticleVersionId !== undefined;
   const sourceVersionId = valid.sourceArticleVersionId ?? null;
   if (sourceVersionId !== null) {
     await assertSourceVersionVisible(client, context, sourceVersionId);
@@ -492,6 +521,21 @@ export async function updateFact(
   const before = locked.rows[0];
   if (before === undefined) throw new FactNotFoundError(factId);
 
+  const beforeEffective =
+    before.effective_from === null ? null : toIsoDate(before.effective_from);
+  const contentChanged =
+    before.topic_key !== valid.topicKey ||
+    before.fact_key !== valid.factKey ||
+    before.fact_value !== valid.value ||
+    before.language !== valid.language ||
+    before.unit !== valid.unit ||
+    beforeEffective !== valid.effectiveFrom ||
+    (sourceSupplied && before.source_article_version_id !== sourceVersionId);
+
+  // verified/verified_by/verified_at are deliberately NOT listed: 0009's
+  // trigger drops verification whenever the content or citation below
+  // changes, and concierge_app no longer holds UPDATE on those columns. The
+  // result reports what the trigger did, not what we asked for.
   await client.query(
     `UPDATE property_facts
         SET topic_key = $1,
@@ -500,11 +544,10 @@ export async function updateFact(
             language = $4,
             unit = $5,
             effective_from = $6,
-            source_article_version_id = $7,
-            verified = false,
-            verified_by = NULL,
-            verified_at = NULL
-      WHERE org_id = $8 AND property_id = $9 AND fact_id = $10`,
+            source_article_version_id = CASE WHEN $7::boolean
+                                             THEN $8
+                                             ELSE source_article_version_id END
+      WHERE org_id = $9 AND property_id = $10 AND fact_id = $11`,
     [
       valid.topicKey,
       valid.factKey,
@@ -512,6 +555,7 @@ export async function updateFact(
       valid.language,
       valid.unit,
       valid.effectiveFrom,
+      sourceSupplied,
       sourceVersionId,
       context.orgId,
       context.propertyId,
@@ -522,14 +566,14 @@ export async function updateFact(
   await writeAudit(client, {
     orgId: context.orgId,
     propertyId: context.propertyId,
-    actorUserId: actor.userId,
+    actorUserId: userId,
     action: "fact.updated",
     entityType: "fact",
     entityId: factId,
     detail: factDetail(valid),
   });
 
-  return { factId, verifiedReset: before.verified };
+  return { factId, verifiedReset: before.verified && contentChanged };
 }
 
 export async function listFacts(
@@ -573,19 +617,18 @@ export async function verifyFact(
   factId: string,
 ): Promise<{ factId: string }> {
   assertTenantShape(context);
-  const userId = assertActor(actor);
+  const userId = await assertSessionActor(client, context, actor);
   assertUuid(factId, "factId");
 
-  // Read the key first (no lock): it tells us which group to lock.
+  // Read the key first (no lock): it only tells us which group to lock. Every
+  // value that reaches the audit row is read again AFTER the lock below.
   const keyResult = await client.query<{
     topic_key: string;
     fact_key: string;
-    fact_value: string;
-    unit: string;
     language: string;
     effective_from: Date | null;
   }>(
-    `SELECT topic_key, fact_key, fact_value, unit, language, effective_from
+    `SELECT topic_key, fact_key, language, effective_from
        FROM property_facts
       WHERE org_id = $1 AND property_id = $2 AND fact_id = $3`,
     [context.orgId, context.propertyId, factId],
@@ -602,13 +645,22 @@ export async function verifyFact(
 
   // Lock the whole key group in a deterministic order: two verifiers of the
   // same key then serialise on the same rows in the same order, so the
-  // contradiction check below cannot race (and cannot deadlock).
+  // contradiction check below cannot race (and cannot deadlock). The row is
+  // read here rather than reused from above, so the value we verify and the
+  // value we audit are the same one - a concurrent update between the two
+  // reads cannot make the trail lie.
   const group = await client.query<{
     fact_id: string;
+    topic_key: string;
+    fact_key: string;
     fact_value: string;
+    unit: string;
+    language: string;
+    effective_from: Date;
     verified: boolean;
   }>(
-    `SELECT fact_id, fact_value, verified
+    `SELECT fact_id, topic_key, fact_key, fact_value, unit, language,
+            effective_from, verified
        FROM property_facts
       WHERE org_id = $1
         AND property_id = $2
@@ -627,7 +679,8 @@ export async function verifyFact(
       effectiveFrom,
     ],
   );
-  if (!group.rows.some((row) => row.fact_id === factId)) {
+  const target = group.rows.find((row) => row.fact_id === factId);
+  if (target === undefined) {
     // The row changed key while we were reading it - refuse rather than
     // verify something we have not inspected.
     throw new FactVerificationError(
@@ -635,57 +688,64 @@ export async function verifyFact(
     );
   }
 
+  // Already verified: nothing to do. The partial unique index bars a second
+  // ROW holding this key, not a second look at this one, so re-verifying is a
+  // no-op - it must not restamp verified_at, re-attribute the verifier or
+  // emit a duplicate fact.verified audit row.
+  if (target.verified) return { factId };
+
   // One verified row per key + effective date (the partial index says so);
   // when it is a different value that is the contradiction G1 tracks, when it
   // is the same value the key is simply already held. Unverified
   // disagreements are neither: they answer nothing (AC-2) and stay in the
   // contradiction queue for S04-01.
-  const clash = group.rows.find(
-    (row) => row.fact_id !== factId && row.verified,
-  );
+  const clash = group.rows.find((row) => row.fact_id !== factId && row.verified);
   if (clash !== undefined) {
     throw new FactContradictionError(factId, clash.fact_id, clash.fact_value);
   }
 
+  // The write itself happens in the database: 0009's trigger only lets
+  // verified flip inside verify_property_fact(), which re-checks the session
+  // user and the membership. A savepoint keeps the transaction usable if the
+  // function refuses, so the contradiction backstop below can still answer.
+  await client.query("SAVEPOINT verify_property_fact");
   try {
-    await client.query(
-      `UPDATE property_facts
-          SET verified = true,
-              verified_by = $1,
-              verified_at = now()
-        WHERE org_id = $2 AND property_id = $3 AND fact_id = $4`,
-      [userId, context.orgId, context.propertyId, factId],
-    );
+    await client.query("SELECT verify_property_fact($1, $2)", [factId, userId]);
+    await client.query("RELEASE SAVEPOINT verify_property_fact");
   } catch (error) {
-    if (isUniqueViolation(error)) {
-      const winner = await client.query<{ fact_id: string; fact_value: string }>(
-        `SELECT fact_id, fact_value
-           FROM property_facts
-          WHERE org_id = $1 AND property_id = $2
-            AND topic_key = $3 AND fact_key = $4 AND language = $5
-            AND effective_from = $6::date
-            AND verified AND fact_id <> $7`,
-        [
-          context.orgId,
-          context.propertyId,
-          key.topic_key,
-          key.fact_key,
-          key.language,
-          effectiveFrom,
-          factId,
-        ],
-      );
-      const conflicting = winner.rows[0];
-      throw new FactContradictionError(
+    await client.query("ROLLBACK TO SAVEPOINT verify_property_fact");
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("verify_property_fact:")) {
+      if (message.includes("is not in tenant")) throw new FactNotFoundError(factId);
+      if (message.includes("is not the session user") || message.includes("is not a member")) {
+        throw new FactActorError(message);
+      }
+      throw new FactVerificationError(message);
+    }
+    if (!isUniqueViolation(error)) throw error;
+    const winner = await client.query<{ fact_id: string; fact_value: string }>(
+      `SELECT fact_id, fact_value
+         FROM property_facts
+        WHERE org_id = $1 AND property_id = $2
+          AND topic_key = $3 AND fact_key = $4 AND language = $5
+          AND effective_from = $6::date
+          AND verified AND fact_id <> $7`,
+      [
+        context.orgId,
+        context.propertyId,
+        target.topic_key,
+        target.fact_key,
+        target.language,
+        effectiveFrom,
         factId,
-        conflicting?.fact_id ?? "unknown",
-        conflicting?.fact_value ?? "unknown",
-      );
-    }
-    if (isForeignKeyViolation(error)) {
-      throw new FactActorError(`actor ${userId} is not a known user`);
-    }
-    throw error;
+      ],
+    );
+    const conflicting = winner.rows[0];
+    throw new FactContradictionError(
+      factId,
+      conflicting?.fact_id ?? "unknown",
+      conflicting?.fact_value ?? "unknown",
+    );
   }
 
   await writeAudit(client, {
@@ -696,22 +756,48 @@ export async function verifyFact(
     entityType: "fact",
     entityId: factId,
     detail: {
-      topic_key: key.topic_key,
-      fact_key: key.fact_key,
-      unit: key.unit,
-      language: key.language,
-      effective_from: effectiveFrom,
-      value: key.fact_value,
+      topic_key: target.topic_key,
+      fact_key: target.fact_key,
+      unit: target.unit,
+      language: target.language,
+      effective_from: toIsoDate(target.effective_from),
+      value: target.fact_value,
     },
   });
 
   return { factId };
 }
 
+/**
+ * The property's calendar date at `instant`, or null when the timezone is
+ * missing or unparseable (the caller then lets the statement fall back to
+ * CURRENT_DATE). "Effective today" means today AT THE PROPERTY: 02:00Z is
+ * still "yesterday" in Mexico City, and answering a guest from the database
+ * session's date instead of the hotel's would publish tomorrow's hours a few
+ * hours early. Pinned with fixed instants in tests/knowledge/facts.test.ts.
+ */
+export function propertyLocalDate(
+  timeZone: string | null | undefined,
+  instant: Date,
+): string | null {
+  if (typeof timeZone !== "string" || timeZone.trim().length === 0) return null;
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(instant);
+  } catch {
+    return null;
+  }
+}
+
 export async function lookupFact(
   client: pg.Client | pg.PoolClient,
   context: TenantContext,
   input: FactLookupInput,
+  now: Date = new Date(),
 ): Promise<FactLookupResult | null> {
   assertTenantShape(context);
   if (typeof input !== "object" || input === null) {
@@ -720,8 +806,15 @@ export async function lookupFact(
   const topicKey = validateFactKey(input.topicKey, "topicKey");
   const factKey = validateFactKey(input.factKey, "factKey");
   const language = validateFactLanguage(input.language);
-  const on =
+  let on =
     input.on === undefined ? null : validateEffectiveFrom(input.on, "on");
+  if (on === null) {
+    const property = await client.query<{ time_zone: string | null }>(
+      "SELECT time_zone FROM properties WHERE org_id = $1 AND property_id = $2",
+      [context.orgId, context.propertyId],
+    );
+    on = propertyLocalDate(property.rows[0]?.time_zone, now);
+  }
 
   const result = await client.query<{
     fact_value: string;

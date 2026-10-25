@@ -150,8 +150,12 @@ in code and are now recorded here:
   1. `property_facts_guard_verification()` (BEFORE INSERT OR UPDATE) drops
      `verified/verified_by/verified_at` whenever the fact's content or
      citation changes (any role, including the owner), refuses any
-     `false → true` flip or stamp rewrite unless `current_user` is
-     `concierge_fact_verifier`, and keeps unverified rows stamp-free;
+     `false → true` flip or stamp rewrite (`verified_by`/`verified_at`
+     changed by a non-verifier) unless `current_user` is
+     `concierge_fact_verifier`, keeps unverified rows stamp-free, and lets a
+     verified row through **when its stamp is unchanged** — a no-op UPDATE is
+     not a rewrite, so `db:seed` and a no-change `updateFact` work on a
+     verified fact;
   2. `verify_property_fact(fact_id, actor)` is `SECURITY DEFINER` owned by
      that NOLOGIN role; it refuses an actor that is not the session user
      (`app.current_user_id`, set by `withStaffSession`) or not a member of
@@ -177,8 +181,13 @@ The seed writes `fact_key = factKey`, `unit`, `effective_from`, and
 `source_article_version_id` (not `source_id`) for the five facts. The
 `fact_id` values stay stable. `ON CONFLICT (fact_id) DO UPDATE` fills the
 new columns on an existing demo DB; counts stay 5. It rewrites only the four
-added fields, so a re-seed never resets an operator's `verified` verdict, and
-the fixture's `effectiveFrom` (`2026-01-01`) / `sourceArticleVersionId` (the
+added fields, and the `DO UPDATE` carries a `WHERE` on those same four
+columns, so a re-seed whose fixture values already match writes **nothing**:
+no dead tuple, nothing for the guard trigger to inspect, and an operator's
+`verified` verdict (and its stamp) is untouched — verified by re-running
+`db:seed` twice over a verified fact (`npm run db:seed` on a DB where the
+pool time is verified: still 5 facts, still 1 verified, same stamp). The
+fixture's `effectiveFrom` (`2026-01-01`) / `sourceArticleVersionId` (the
 matching published `article_version`) are what the lookup window and the D5
 citation link are read from.
 
@@ -273,11 +282,17 @@ export async function listContradictions(
   itself goes through `verify_property_fact()`; its refusals map to
   `FactNotFoundError`/`FactActorError`/`FactVerificationError`, and a 23505 is
   the contradiction backstop.
-- `updateFact` always resets `verified=false`, `verified_by=NULL`,
-  `verified_at=NULL` — enforced by 0009's trigger (the app does not even hold
-  the column permission) and reported back as `verifiedReset`. `FactInput.
-  sourceArticleVersionId` is tri-state: omitted keeps the existing D5 link,
-  `null` clears it, a UUID replaces it.
+- `updateFact` reports `verifiedReset` and the trigger decides the outcome —
+  **one rule, stated once:** *a content/citation change resets
+  `verified=false`, `verified_by=NULL`, `verified_at=NULL` for every role; an
+  update that changes none of those fields is a no-op and keeps the verdict.*
+  So `verifiedReset` is `true` when the row was verified and the write changed
+  its content or citation, and `false` otherwise (including on an already
+  unverified row). It is never a trigger exception: 0009's guard only refuses
+  a *rewrite of the stamp itself* (`verified_by`/`verified_at` changed by a
+  non-verifier), which is why re-running the seed and a no-op update both
+  succeed on a verified row. `FactInput.sourceArticleVersionId` is tri-state:
+  omitted keeps the existing D5 link, `null` clears it, a UUID replaces it.
 - `listContradictions` groups by `(topic_key, fact_key, language,
   effective_from)` having `count(distinct fact_value) > 1`, returning the
   values and source version ids. It reports both verified and unverified
@@ -315,8 +330,10 @@ verify, `{value}`. Never put article body/message content in detail.
   member of this property, and `verify_property_fact()` re-checks the same
   two facts inside the database.
 - `verified`, `verified_by` and `verified_at` are not app-writable columns;
-  the guard trigger refuses a raw verification or stamp rewrite for every
-  role, and a content/citation edit drops the verification automatically.
+  the guard trigger refuses a raw `false → true` flip or a stamp rewrite for
+  every role. A content/citation edit drops the verification automatically;
+  an update that changes nothing keeps it. Those two outcomes are the whole
+  rule — there is no "always resets".
 - Foreign fact ids/topics return `FactNotFoundError`; no existence leak.
 - `lookupFact` is deterministic and side-effect free; it is safe for the
   future guest path because it cannot generate text.
@@ -356,9 +373,16 @@ DB - `tests/db/facts.db.test.ts` (19):
   still fires (23514); and no probe writes an audit row.
 - re-verifying is idempotent: same `verified_at`, same `verified_by`, no
   second `fact.verified` row.
-- `updateFact` resets verification; lookup returns `null` again. The D5
-  citation survives an update that omits `sourceArticleVersionId` and is
-  cleared only by an explicit `null`.
+- **both halves of the update rule, starting from `verified = true`**
+  (review round 3): an identical `updateFact` returns
+  `{ verifiedReset: false }` and leaves `verified_by`/`verified_at`/value
+  intact; a content change returns `{ verifiedReset: true }` and clears the
+  stamp; lookup returns `null` again. The D5 citation survives an update that
+  omits `sourceArticleVersionId` and is cleared only by an explicit `null`.
+- **`seedDemo` over a verified fact** (review round 3): seeding twice after a
+  `verifyFact` succeeds, keeps 5 facts, keeps the row verified with the same
+  stamp, and adds no `fact.verified` audit row — the regression that made
+  `npm run db:seed` fail on any demo DB with a verified fact.
 - the property's timezone decides "today" at a fixed clock, and an explicit
   `on` still wins.
 - the lookup path uses the partial verified index (`EXPLAIN`).
@@ -378,8 +402,9 @@ member of and cannot `SET ROLE` into.
 ```text
 $ npm run db:migrate -- --url .../concierge_local      # 9 applied (0009 lands)
 $ npm run db:seed  -- --url .../concierge_local        # 5 facts, new fields filled
-$ npm run db:seed  -- --url .../concierge_local        # re-seed: still 5, no reset
-$ npm run db:test                                      # 126 passed (126), incl. 19 facts
+$ <verify the pool 21:00 through verify_property_fact>
+$ npm run db:seed  -- --url .../concierge_local        # over a VERIFIED fact: 5 facts, still 1 verified
+$ npm run db:test                                      # 127 passed (127), incl. 20 facts
 $ npm test                                             # 268 passed (268), incl. 17 facts
 $ npm run typecheck && npm run lint && npm run build    # all clean
 ```
@@ -387,7 +412,8 @@ $ npm run typecheck && npm run lint && npm run build    # all clean
 Measured on PostgreSQL 16 + pgvector 0.6.2 + pg_trgm (a real cluster, not a
 mocked client), which is what makes the trigger/definer/ACL claims in §5.1
 executable rather than argued. Runbook S03-03 records the lookup/no-guess
-case, the contradiction refusal, the raw-SQL probes and the counts.
+case, the contradiction refusal, the raw-SQL probes, the seed-after-verify
+run and the counts.
 
 ## 9. Risks and open questions
 

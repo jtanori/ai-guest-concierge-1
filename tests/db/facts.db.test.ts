@@ -34,7 +34,7 @@ import {
   type FactInput,
 } from "../../src/knowledge/facts.ts";
 import { FIXTURE_FACTS } from "../../src/fixtures/fixture-hotel.ts";
-import { seedDemo } from "../../src/seed/demo.ts";
+import { seedDemo, type SeedSummary } from "../../src/seed/demo.ts";
 import { DEMO_ORG_ID, DEMO_PROPERTY_ID, DEMO_STAFF, stableUuid } from "../../src/seed/ids.ts";
 import { connectScratch, dropScratch, recreateScratch } from "./helpers.db.ts";
 
@@ -99,6 +99,19 @@ function asApp<T>(
   fn: (tx: pg.Client) => Promise<T>,
 ): Promise<T> {
   return asStaff(context, actorFor(context), fn);
+}
+
+/** `scripts/seed.ts` shape: seedDemo needs a transaction (it uses a savepoint). */
+async function seedDemoInTx(target: pg.Client): Promise<SeedSummary> {
+  await target.query("BEGIN");
+  try {
+    const summary = await seedDemo(target);
+    await target.query("COMMIT");
+    return summary;
+  } catch (error) {
+    await target.query("ROLLBACK");
+    throw error;
+  }
 }
 
 async function auditActions(propertyId: string): Promise<string[]> {
@@ -803,16 +816,34 @@ describe("property facts (db)", () => {
     expect(await auditCount(tenantA.propertyId, "fact.verified")).toBe(audited);
   });
 
-  it("updates reset verification, keep an untouched verification and write an audit row (AC-6)", async () => {
+  it("keeps an untouched verification, then resets it on a content change (AC-6, P2)", async () => {
+    const original = input({ factKey: "updates_reset" });
     const created = await asApp(tenantA, (tx) =>
-      createFact(tx, tenantA, actorA, input({ factKey: "updates_reset" })),
+      createFact(tx, tenantA, actorA, original),
     );
     await asApp(tenantA, (tx) => verifyFact(tx, tenantA, actorA, created.factId));
+    const stamped = await factRow(created.factId);
+    expect(stamped.verified).toBe(true);
 
-    // content change: the trigger drops the verification
+    // 1. THE case the item's contract turns on, asserted on a VERIFIED row:
+    //    an update that changes nothing is a no-op, not a reset and not a
+    //    trigger exception (review round 3: this half used to run only after
+    //    the content change below had already cleared the verdict).
+    const same = await asApp(tenantA, (tx) =>
+      updateFact(tx, tenantA, actorA, created.factId, original),
+    );
+    expect(same).toEqual({ factId: created.factId, verifiedReset: false });
+    expect(await factRow(created.factId)).toMatchObject({
+      verified: true,
+      verified_by: actorA.userId,
+      verified_at: stamped.verified_at,
+      fact_value: original.value,
+    });
+
+    // 2. a content change: the trigger drops the verification
     const changed = await asApp(tenantA, (tx) =>
       updateFact(tx, tenantA, actorA, created.factId, {
-        ...input({ factKey: "updates_reset" }),
+        ...original,
         value: "35 min",
       }),
     );
@@ -823,18 +854,44 @@ describe("property facts (db)", () => {
       verified_at: null,
     });
 
-    // nothing material changed: the row stays as it was (still unverified here)
-    const same = await asApp(tenantA, (tx) =>
+    // 3. nothing material changed again - now on an unverified row
+    const again = await asApp(tenantA, (tx) =>
       updateFact(tx, tenantA, actorA, created.factId, {
-        ...input({ factKey: "updates_reset" }),
+        ...original,
         value: "35 min",
       }),
     );
-    expect(same.verifiedReset).toBe(false);
+    expect(again.verifiedReset).toBe(false);
 
     const actions = await auditActions(tenantA.propertyId);
     expect(actions.filter((action) => action === "fact.updated").length).toBeGreaterThanOrEqual(3);
     expect(actions).toContain("fact.verified");
+  });
+
+  it("re-seeds over a verified fact without touching it (review round 3)", async () => {
+    // The demo pool closing time is verified above; `npm run db:seed` is a
+    // documented, re-runnable operator command and used to abort here with a
+    // raw P0001 from 0009's guard trigger.
+    const websiteId = factIdOf(poolWebsite.factId);
+    await asApp(demo, (tx) => verifyFact(tx, demo, demoActor, websiteId));
+    const stamped = await factRow(websiteId);
+    expect(stamped.verified).toBe(true);
+    const audited = await auditCount(DEMO_PROPERTY_ID, "fact.verified");
+
+    for (const attempt of [1, 2]) {
+      const summary = await seedDemoInTx(client);
+      expect(summary.property_facts, `seed ${attempt}`).toBe(5);
+      expect((await factRow(websiteId)).verified, `seed ${attempt}`).toBe(true);
+      expect(await factRow(websiteId), `seed ${attempt}`).toEqual(stamped);
+    }
+
+    // the seed is a no-op for facts: 5 rows, and no verdict was re-stamped
+    const count = await client.query<{ count: string }>(
+      "SELECT count(*) AS count FROM property_facts WHERE property_id = $1",
+      [DEMO_PROPERTY_ID],
+    );
+    expect(Number(count.rows[0]!.count)).toBe(5);
+    expect(await auditCount(DEMO_PROPERTY_ID, "fact.verified")).toBe(audited);
   });
 
   it("a fact row is rolled back when its audit row cannot be written (AC-6)", async () => {

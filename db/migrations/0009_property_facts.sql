@@ -49,7 +49,10 @@
 --        never mutate a value and keep its verification;
 --      - verified=false rows never carry a stamp;
 --      - false -> true, and any rewrite of the stamp, is refused unless
---        current_user IS concierge_fact_verifier.
+--        current_user IS concierge_fact_verifier. A verified row that arrives
+--        with an UNCHANGED stamp is a no-op and passes, so re-running the
+--        seed or an update that changes nothing does not fail on a verified
+--        fact (review round 3).
 --   2. verify_property_fact(fact_id, actor) is SECURITY DEFINER under that
 --      role: it refuses an actor who is not the session user
 --      (app.current_user_id, set by withStaffSession) or not a member of the
@@ -150,12 +153,22 @@ BEGIN
     RETURN NEW;
   END IF;
 
+  -- A verified row that arrives with the SAME stamp is a no-op (an ON CONFLICT
+  -- DO UPDATE that rewrites identical values, or an updateFact that changes
+  -- nothing): it must pass, otherwise a documented operator command -- seed
+  -- after a verification -- fails, and updateFact cannot express its own
+  -- "nothing changed" result. Only a rewrite of the stamp itself is refused.
   IF NEW.verified THEN
     IF current_user::text <> 'concierge_fact_verifier' THEN
-      IF TG_OP = 'UPDATE' AND OLD.verified THEN
+      IF TG_OP = 'UPDATE' AND OLD.verified
+         AND (NEW.verified_by IS DISTINCT FROM OLD.verified_by
+              OR NEW.verified_at IS DISTINCT FROM OLD.verified_at) THEN
         RAISE EXCEPTION 'property_facts.verified_by/verified_at are immutable once verified (only verify_property_fact() writes them; % blocked by db/migrations/0009_property_facts.sql)', TG_OP;
       END IF;
-      RAISE EXCEPTION 'property_facts.verified flips true only inside verify_property_fact() (no actor, no contradiction check and no audit row behind a raw UPDATE; blocked by db/migrations/0009_property_facts.sql)';
+      -- false -> true is still refused for every role, INSERT or UPDATE.
+      IF NOT (TG_OP = 'UPDATE' AND OLD.verified) THEN
+        RAISE EXCEPTION 'property_facts.verified flips true only inside verify_property_fact() (no actor, no contradiction check and no audit row behind a raw UPDATE; blocked by db/migrations/0009_property_facts.sql)';
+      END IF;
     END IF;
     RETURN NEW;
   END IF;

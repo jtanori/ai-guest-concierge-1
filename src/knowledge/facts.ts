@@ -534,8 +534,10 @@ export async function updateFact(
 
   // verified/verified_by/verified_at are deliberately NOT listed: 0009's
   // trigger drops verification whenever the content or citation below
-  // changes, and concierge_app no longer holds UPDATE on those columns. The
-  // result reports what the trigger did, not what we asked for.
+  // changes, keeps it when nothing changed (a no-op update is not a stamp
+  // rewrite), and concierge_app no longer holds UPDATE on those columns. The
+  // result reports what the trigger did, not what we asked for -
+  // `verifiedReset` above mirrors that rule exactly.
   await client.query(
     `UPDATE property_facts
         SET topic_key = $1,

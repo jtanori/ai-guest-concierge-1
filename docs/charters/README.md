@@ -7,9 +7,10 @@ validation rules, tenancy, tests, evidence and open questions. S02-01 was
 delivered without one and review found three gaps that a charter would have
 caught; this directory closes that gap.
 
-Status: **Approved (2026-10-24)**. No item starts until its charter is
-approved. The remaining sprints are chartered sprint-by-sprint (each sprint's
-charters land as one PR) rather than all 80 items at once.
+Status: **S02 approved (2026-10-24); S03 draft (2026-10-24), awaiting
+approval.** No item starts until its charter is approved. The remaining
+sprints are chartered sprint-by-sprint (each sprint's charters land as one PR)
+rather than all 80 items at once.
 
 S02-01 shipped as **PARTIAL** (PR #7): its primitives are merged, but the
 verbatim AC ("each role can only reach its own surface") has no production
@@ -24,9 +25,18 @@ tracked on the sprint board rather than retro-chartered here.
 | `S02-03-audit-log.md` | Audit log | 1.00 |
 | `S02-04-seed-fixtures.md` | Seed fixtures + demo property | 1.00 |
 | `S02-05-is-current-retrieval.md` | is_current retrieval filtering + re-embed job | 0.50 |
+| `S03-01-article-editor.md` | Article editor + immutable versioning | 2.00 |
+| `S03-02-csv-import.md` | CSV bulk import with preview | 1.00 |
+| `S03-03-property-facts.md` | property_facts table + UI | 2.00 |
 
 S02-01 is already implemented (PR #7) and its decisions are recorded in
 `docs/runbook.md`; it is not retro-chartered.
+
+S03 is chartered **API/service-first** (2026-10-24): the repo has no frontend
+framework, so the browser staff UI is deferred to S08. S03-01/02/03 ship
+tenant-scoped services, validation, migrations and tests; they do not add an
+HTTP route or call `requireRole`. S02-06 therefore stays deferred to S04-01,
+the first real staff surface.
 
 ## Charter format
 

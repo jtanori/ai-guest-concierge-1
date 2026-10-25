@@ -29,7 +29,8 @@ const EXPECTED_TENANT_TABLES = [
   "ai_runs", "citations", "handoff_reasons", "knowledge_gaps",
   "events", "rollups", "audit_log", "outbox",
 ];
-/** users/memberships carry S02-01's own surfaces (staff_self / membership_surface);
+/** users/memberships carry S02-01's own surfaces (staff_select/staff_update_name
+ *  and membership_select/insert/update/delete);
  *  organizations/roles are deliberately global (no policy at all). */
 const EXPECTED_GLOBAL_TABLES = ["organizations", "users", "roles", "memberships"];
 

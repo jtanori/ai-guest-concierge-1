@@ -317,7 +317,12 @@ export async function editArticle(
   actor: { userId: string },
   articleId: string,
   draft: ArticleDraft,
-): Promise<{ articleVersionId: string; versionNo: number; created: boolean }> {
+): Promise<{
+  articleVersionId: string;
+  versionNo: number;
+  created: boolean;
+  wrote: boolean;
+}> {
   assertTenantShape(context);
   assertUuid(articleId, "articleId");
   const valid = validateArticleDraft(draft);
@@ -363,6 +368,7 @@ export async function editArticle(
       articleVersionId: latest.article_version_id,
       versionNo: latest.version_no,
       created: false,
+      wrote: false,
     };
   }
 
@@ -389,6 +395,7 @@ export async function editArticle(
       articleVersionId: latest.article_version_id,
       versionNo: latest.version_no,
       created: false,
+      wrote: true,
     };
   }
 
@@ -409,7 +416,7 @@ export async function editArticle(
   }
 
   await writeVersionCreated(client, context, actor, valid, articleVersionId, versionNo);
-  return { articleVersionId, versionNo, created: true };
+  return { articleVersionId, versionNo, created: true, wrote: true };
 }
 
 interface ArticleListRow {

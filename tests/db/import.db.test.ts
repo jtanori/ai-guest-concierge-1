@@ -2,14 +2,21 @@
  * S03-02 - all-or-nothing CSV import under RLS.
  *
  * The unit suite covers parsing. These tests prove the commit path: 100 rows
- * create 100 articles + versions, a second file appends versions rather than
- * duplicating topics, validation failures write nothing, tenants stay isolated,
- * and a database failure mid-file rolls the whole file back.
+ * create 100 articles + versions, a changed re-import appends versions rather
+ * than duplicating topics, an identical re-import writes nothing, validation
+ * and parse failures write nothing, tenants stay isolated, the tenant
+ * transaction is required, and a database failure mid-file rolls the whole
+ * file back.
  */
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { withTenant, type TenantContext } from "../../src/db/tenant.ts";
+import {
+  TenantContextError,
+  withTenant,
+  type TenantContext,
+} from "../../src/db/tenant.ts";
 import { listArticles } from "../../src/knowledge/articles.ts";
+import { CsvParseError } from "../../src/knowledge/csv.ts";
 import { importArticleCsv } from "../../src/knowledge/import.ts";
 import { connectScratch, dropScratch, recreateScratch } from "./helpers.db.ts";
 
@@ -135,7 +142,12 @@ describe("CSV import (db)", () => {
       importArticleCsv(tx, tenantA, actorA, csvFor("bulk.import.", 100)),
     );
 
-    expect(result).toMatchObject({ imported: 100, created: 100, updated: 0 });
+    expect(result).toMatchObject({
+      imported: 100,
+      created: 100,
+      updated: 0,
+      unchanged: 0,
+    });
     expect(result.preview.counts).toEqual({ total: 100, valid: 100, invalid: 0 });
     expect(await stats(tenantA.propertyId, "bulk.import.")).toEqual({
       articles: 100,
@@ -155,7 +167,7 @@ describe("CSV import (db)", () => {
     expect(await versionAudits(tenantA.propertyId, "bulk.import.")).toBe(100);
   });
 
-  it("updates existing topics on re-import instead of duplicating articles", async () => {
+  it("updates existing topics on a changed re-import instead of duplicating articles", async () => {
     const result = await asApp(tenantA, (tx) =>
       importArticleCsv(
         tx,
@@ -165,7 +177,12 @@ describe("CSV import (db)", () => {
       ),
     );
 
-    expect(result).toMatchObject({ imported: 100, created: 0, updated: 100 });
+    expect(result).toMatchObject({
+      imported: 100,
+      created: 0,
+      updated: 100,
+      unchanged: 0,
+    });
     expect(await stats(tenantA.propertyId, "bulk.import.")).toEqual({
       articles: 100,
       versions: 200,
@@ -178,6 +195,29 @@ describe("CSV import (db)", () => {
     expect(ours).toHaveLength(100);
     expect(ours.every((row) => row.versionCount === 2)).toBe(true);
     expect(await versionAudits(tenantA.propertyId, "bulk.import.")).toBe(200);
+  });
+
+  it("reports an identical re-import as unchanged and writes nothing", async () => {
+    const beforeStats = await stats(tenantA.propertyId, "bulk.import.");
+    const beforeAudits = (await auditRows(tenantA.propertyId)).length;
+
+    const result = await asApp(tenantA, (tx) =>
+      importArticleCsv(
+        tx,
+        tenantA,
+        actorA,
+        csvFor("bulk.import.", 100, " v2"),
+      ),
+    );
+
+    expect(result).toMatchObject({
+      imported: 100,
+      created: 0,
+      updated: 0,
+      unchanged: 100,
+    });
+    expect(await stats(tenantA.propertyId, "bulk.import.")).toEqual(beforeStats);
+    expect((await auditRows(tenantA.propertyId)).length).toBe(beforeAudits);
   });
 
   it("writes nothing when any row fails validation", async () => {
@@ -215,7 +255,12 @@ describe("CSV import (db)", () => {
     const result = await asApp(tenantA, (tx) =>
       importArticleCsv(tx, tenantA, actorA, csv),
     );
-    expect(result).toMatchObject({ imported: 2, created: 1, updated: 1 });
+    expect(result).toMatchObject({
+      imported: 2,
+      created: 1,
+      updated: 1,
+      unchanged: 0,
+    });
 
     expect(await stats(tenantA.propertyId, "mixed.new")).toEqual({
       articles: 1,
@@ -233,10 +278,10 @@ describe("CSV import (db)", () => {
 
     expect(
       await asApp(tenantB, (tx) => importArticleCsv(tx, tenantB, actorB, csv)),
-    ).toMatchObject({ imported: 1, created: 1, updated: 0 });
+    ).toMatchObject({ imported: 1, created: 1, updated: 0, unchanged: 0 });
     expect(
       await asApp(tenantA, (tx) => importArticleCsv(tx, tenantA, actorA, csv)),
-    ).toMatchObject({ imported: 1, created: 1, updated: 0 });
+    ).toMatchObject({ imported: 1, created: 1, updated: 0, unchanged: 0 });
 
     const a = (await asApp(tenantA, (tx) => listArticles(tx, tenantA))).find(
       (row) => row.topicKey === "foreign.only",
@@ -257,6 +302,112 @@ describe("CSV import (db)", () => {
       versions: 1,
       maxVersion: 1,
     });
+  });
+
+  it("refuses a header-only file without writing", async () => {
+    const before = await stats(tenantA.propertyId, "");
+    await expect(
+      asApp(tenantA, (tx) => importArticleCsv(tx, tenantA, actorA, HEADER)),
+    ).rejects.toBeInstanceOf(CsvParseError);
+    expect(await stats(tenantA.propertyId, "")).toEqual(before);
+  });
+
+  it("refuses a parse error before writing any valid prefix", async () => {
+    const before = await stats(tenantA.propertyId, "");
+    const csv = [
+      HEADER,
+      "parse.error.0,Valid,en,Body.",
+      'parse.error.1,"Unclosed,en,Body.',
+    ].join("\n");
+
+    await expect(
+      asApp(tenantA, (tx) => importArticleCsv(tx, tenantA, actorA, csv)),
+    ).rejects.toBeInstanceOf(CsvParseError);
+    expect(await stats(tenantA.propertyId, "")).toEqual(before);
+  });
+
+  it("rejects bare CR and skips whitespace-only lines at commit", async () => {
+    const before = await stats(tenantA.propertyId, "");
+    await expect(
+      asApp(tenantA, (tx) =>
+        importArticleCsv(
+          tx,
+          tenantA,
+          actorA,
+          `${HEADER}\nbare.cr,Title,en,Line1\rspa.hours,Spa,en,Line2\n`,
+        ),
+      ),
+    ).rejects.toBeInstanceOf(CsvParseError);
+    expect(await stats(tenantA.propertyId, "")).toEqual(before);
+
+    const csv = `${HEADER}\n   \nwhitespace.row,Whitespace,en,Full body.\n\t\n`;
+    const result = await asApp(tenantA, (tx) =>
+      importArticleCsv(tx, tenantA, actorA, csv),
+    );
+    expect(result).toMatchObject({
+      imported: 1,
+      created: 1,
+      updated: 0,
+      unchanged: 0,
+    });
+    expect(await stats(tenantA.propertyId, "whitespace.row")).toEqual({
+      articles: 1,
+      versions: 1,
+      maxVersion: 1,
+    });
+    const body = await client.query<{ body: string }>(
+      `SELECT av.body
+         FROM article_versions av
+         JOIN knowledge_articles ka
+           ON ka.article_id = av.article_id
+          AND ka.org_id = av.org_id
+          AND ka.property_id = av.property_id
+        WHERE av.property_id = $1 AND ka.topic_key = 'whitespace.row'`,
+      [tenantA.propertyId],
+    );
+    expect(body.rows[0]!.body).toBe("Full body.");
+  });
+
+  it("requires a withTenant transaction matching the supplied context", async () => {
+    const beforeA = await stats(tenantA.propertyId, "");
+    const beforeB = await stats(tenantB.propertyId, "");
+
+    await expect(
+      importArticleCsv(client, tenantA, actorA, csvFor("tenant.outside.", 1)),
+    ).rejects.toBeInstanceOf(TenantContextError);
+    await expect(
+      asApp(tenantA, (tx) =>
+        importArticleCsv(tx, tenantB, actorB, csvFor("tenant.mismatch.", 1)),
+      ),
+    ).rejects.toBeInstanceOf(TenantContextError);
+
+    expect(await stats(tenantA.propertyId, "")).toEqual(beforeA);
+    expect(await stats(tenantB.propertyId, "")).toEqual(beforeB);
+  });
+
+  it("accepts exactly 500 rows and refuses 501 before writing", async () => {
+    const result = await asApp(tenantB, (tx) =>
+      importArticleCsv(tx, tenantB, actorB, csvFor("max.rows.", 500)),
+    );
+    expect(result).toMatchObject({
+      imported: 500,
+      created: 500,
+      updated: 0,
+      unchanged: 0,
+    });
+    expect(await stats(tenantB.propertyId, "max.rows.")).toEqual({
+      articles: 500,
+      versions: 500,
+      maxVersion: 1,
+    });
+
+    const before = await stats(tenantA.propertyId, "");
+    await expect(
+      asApp(tenantA, (tx) =>
+        importArticleCsv(tx, tenantA, actorA, csvFor("max.rows.over.", 501)),
+      ),
+    ).rejects.toBeInstanceOf(CsvParseError);
+    expect(await stats(tenantA.propertyId, "")).toEqual(before);
   });
 
   it("rolls the whole file back when a database write fails mid-file", async () => {

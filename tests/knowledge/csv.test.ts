@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  CSV_MAX_BYTES,
   CSV_MAX_ROWS,
   CsvParseError,
   previewArticleCsv,
@@ -90,6 +91,20 @@ describe("CSV preview (S03-02)", () => {
     ]);
   });
 
+  it("does not let invalid topics pollute duplicate detection", () => {
+    const preview = previewArticleCsv(
+      rowsCsv([
+        "pool.hours,Pool,en,Open daily.",
+        "POOL.HOURS,Pool,en,Open daily.",
+        "POOL.HOURS,Pool,en,Open daily.",
+      ]),
+    );
+    expect(preview.counts).toEqual({ total: 3, valid: 1, invalid: 2 });
+    expect(preview.errors).toHaveLength(2);
+    expect(preview.errors.every((error) => error.field === "topic_key")).toBe(true);
+    expect(preview.errors.some((error) => /duplicate/.test(error.message))).toBe(false);
+  });
+
   it("reports wrong column counts as row errors and keeps row numbers stable", () => {
     const preview = previewArticleCsv(
       rowsCsv([
@@ -104,20 +119,27 @@ describe("CSV preview (S03-02)", () => {
     ]);
   });
 
-  it("skips blank lines but keeps data-row numbering", () => {
-    const csv = `${HEADER}\n\npool.hours,Pool,en,Open daily.\n\nspa.services,Spa,en,Open daily.\n`;
+  it("skips blank and whitespace-only lines but keeps data-row numbering", () => {
+    const csv = `${HEADER}\n\n   \npool.hours,Pool,en,Open daily.\n\t\r\nspa.services,Spa,en,Open daily.\n   `;
     const preview = previewArticleCsv(csv);
     expect(preview.counts).toEqual({ total: 2, valid: 2, invalid: 0 });
     expect(preview.rows.map((row) => row.row)).toEqual([1, 2]);
   });
 
-  it("accepts a header-only file as an empty import", () => {
-    const preview = previewArticleCsv(HEADER);
-    expect(preview).toEqual({
-      rows: [],
-      errors: [],
-      counts: { total: 0, valid: 0, invalid: 0 },
-    });
+  it("keeps empty comma-separated fields as a genuine invalid row", () => {
+    const preview = previewArticleCsv(rowsCsv([",,,"]));
+    expect(preview.counts).toEqual({ total: 1, valid: 0, invalid: 1 });
+    expect(preview.errors.map((error) => error.field)).toEqual([
+      "topic_key",
+      "title",
+      "language",
+      "body",
+    ]);
+  });
+
+  it("rejects a header-only file as having no data rows", () => {
+    expect(() => previewArticleCsv(HEADER)).toThrow(/no data rows/);
+    expect(() => previewArticleCsv(`${HEADER}\n   \n`)).toThrow(/no data rows/);
   });
 
   it("rejects an empty file and malformed headers", () => {
@@ -146,20 +168,44 @@ describe("CSV preview (S03-02)", () => {
     }
   });
 
+  it("rejects a bare CR outside quotes instead of splitting a row", () => {
+    expect(() =>
+      previewArticleCsv(
+        `${HEADER}\npool.hours,Pool,en,Line1\rspa.hours,Spa,en,Line2\n`,
+      ),
+    ).toThrow(/bare CR outside a quoted field/);
+    expect(() =>
+      previewArticleCsv(`${HEADER}\npool.hours,"Pool",en,"Body"\r`),
+    ).toThrow(/bare CR outside a quoted field/);
+  });
+
+  it("rejects stray quotes in unquoted fields", () => {
+    expect(() => previewArticleCsv(rowsCsv(['pool.hours,Po"ol,en,Body.']))).toThrow(
+      /unexpected quote in unquoted field/,
+    );
+    expect(() => previewArticleCsv(rowsCsv(['pool.hours, "Pool",en,Body.']))).toThrow(
+      /unexpected quote in unquoted field/,
+    );
+  });
+
   it("rejects more than the 500-row limit before row validation", () => {
     const rows = Array.from(
       { length: CSV_MAX_ROWS + 1 },
       (_, index) => `bulk.topic${index},Bulk ${index},en,Body ${index}.`,
     );
     expect(() => previewArticleCsv(rowsCsv(rows))).toThrow(
-      new RegExp(`maximum is ${CSV_MAX_ROWS}`),
+      new RegExp(`more than ${CSV_MAX_ROWS} data rows`),
+    );
+  });
+
+  it("rejects an input larger than the byte ceiling", () => {
+    expect(() => previewArticleCsv("a".repeat(CSV_MAX_BYTES + 1))).toThrow(
+      /larger than/,
     );
   });
 
   it("rejects empty bodies and unsupported languages", () => {
-    const preview = previewArticleCsv(
-      rowsCsv(['pool.hours,Pool,fr,""']),
-    );
+    const preview = previewArticleCsv(rowsCsv(['pool.hours,Pool,fr,""']));
     expect(preview.errors.map((error) => error.field)).toEqual([
       "language",
       "body",

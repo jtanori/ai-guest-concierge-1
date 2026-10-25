@@ -4,9 +4,11 @@
  * The parser is deliberately small and pure: no DB, no I/O, no package. It
  * reports every row-level error it can instead of stopping at the first, so
  * the content owner sees the whole file's problems before anything is written.
- * Structural failures (empty file, bad header, unclosed quote, >500 rows)
- * throw `CsvParseError`; row failures are returned in `CsvPreview.errors`.
+ * Structural failures (empty/oversized file, bad header, unclosed quote, bare
+ * CR, stray quote, >500 rows) throw `CsvParseError`; row failures are returned
+ * in `CsvPreview.errors`.
  */
+import { Buffer } from "node:buffer";
 import {
   ArticleValidationError,
   validateBody,
@@ -19,6 +21,8 @@ import {
 
 export const CSV_COLUMNS = ["topic_key", "title", "language", "body"] as const;
 export const CSV_MAX_ROWS = 500;
+/** Bounds a single import request before the parser allocates row records. */
+export const CSV_MAX_BYTES = 10 * 1024 * 1024;
 
 export interface CsvRowError {
   row: number;
@@ -67,8 +71,26 @@ interface RawRecord {
   line: number;
 }
 
-function parseRecords(input: string): RawRecord[] {
-  const text = input.charCodeAt(0) === 0xfeff ? input.slice(1) : input;
+function hasNonWhitespace(input: string): boolean {
+  let index = input.charCodeAt(0) === 0xfeff ? 1 : 0;
+  for (; index < input.length; index += 1) {
+    const char = input[index]!;
+    if (
+      char !== " " &&
+      char !== "\t" &&
+      char !== "\r" &&
+      char !== "\n" &&
+      char !== "\f" &&
+      char !== "\v"
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function parseRecords(input: string, maxDataRows: number): RawRecord[] {
+  const text = input;
   const records: RawRecord[] = [];
 
   let fields: string[] = [];
@@ -78,6 +100,7 @@ function parseRecords(input: string): RawRecord[] {
   let line = 1;
   let recordLine = 1;
   let hasContent = false;
+  let recordHasQuote = false;
 
   const pushField = (): void => {
     fields.push(field);
@@ -88,12 +111,35 @@ function parseRecords(input: string): RawRecord[] {
   const pushRecord = (): void => {
     pushField();
     records.push({ fields, line: recordLine });
+    if (records.length > maxDataRows + 1) {
+      throw new CsvParseError(
+        `CSV has more than ${maxDataRows} data rows; maximum is ${maxDataRows}`,
+        { row: 1, field: "rows" },
+      );
+    }
     fields = [];
     recordLine = line + 1;
     hasContent = false;
+    recordHasQuote = false;
   };
 
-  let index = 0;
+  const skipBlankLine = (): void => {
+    fields = [];
+    field = "";
+    afterQuote = false;
+    hasContent = false;
+    recordHasQuote = false;
+    recordLine = line + 1;
+  };
+
+  const endRecord = (): void => {
+    const blank = fields.length === 0 && !recordHasQuote && field.trim() === "";
+    if (blank) skipBlankLine();
+    else if (hasContent || field.length > 0 || fields.length > 0) pushRecord();
+    else skipBlankLine();
+  };
+
+  let index = text.charCodeAt(0) === 0xfeff ? 1 : 0;
   while (index < text.length) {
     const char = text[index]!;
 
@@ -132,9 +178,21 @@ function parseRecords(input: string): RawRecord[] {
         index += 1;
         continue;
       }
-      if (char === "\r" || char === "\n") {
-        pushRecord();
-        index += char === "\r" && text[index + 1] === "\n" ? 2 : 1;
+      if (char === "\r") {
+        if (text[index + 1] !== "\n") {
+          throw new CsvParseError("bare CR outside a quoted field", {
+            row: line,
+            field: "csv",
+          });
+        }
+        endRecord();
+        index += 2;
+        line += 1;
+        continue;
+      }
+      if (char === "\n") {
+        endRecord();
+        index += 1;
         line += 1;
         continue;
       }
@@ -148,15 +206,14 @@ function parseRecords(input: string): RawRecord[] {
       if (field.length === 0) {
         inQuotes = true;
         hasContent = true;
+        recordHasQuote = true;
         index += 1;
         continue;
       }
-      // Lenient for real-world text: a quote inside an unquoted field is
-      // literal, not a structural failure.
-      field += char;
-      hasContent = true;
-      index += 1;
-      continue;
+      throw new CsvParseError(`unexpected quote in unquoted field on line ${line}`, {
+        row: line,
+        field: "csv",
+      });
     }
 
     if (char === ",") {
@@ -166,15 +223,22 @@ function parseRecords(input: string): RawRecord[] {
       continue;
     }
 
-    if (char === "\r" || char === "\n") {
-      if (hasContent || field.length > 0 || fields.length > 0) {
-        pushRecord();
-      } else {
-        fields = [];
-        field = "";
-        recordLine = line + 1;
+    if (char === "\r") {
+      if (text[index + 1] !== "\n") {
+        throw new CsvParseError("bare CR outside a quoted field", {
+          row: line,
+          field: "csv",
+        });
       }
-      index += char === "\r" && text[index + 1] === "\n" ? 2 : 1;
+      endRecord();
+      index += 2;
+      line += 1;
+      continue;
+    }
+
+    if (char === "\n") {
+      endRecord();
+      index += 1;
       line += 1;
       continue;
     }
@@ -187,7 +251,7 @@ function parseRecords(input: string): RawRecord[] {
   if (inQuotes) {
     throw new CsvParseError("unclosed quoted field", { row: line, field: "csv" });
   }
-  if (hasContent || field.length > 0 || fields.length > 0) pushRecord();
+  endRecord();
   return records;
 }
 
@@ -247,12 +311,21 @@ export function previewArticleCsv(input: string): CsvPreview {
   if (typeof input !== "string") {
     throw new CsvParseError("CSV input must be a string", { row: 1, field: "csv" });
   }
-  if (input.replace(/^\uFEFF/, "").trim().length === 0) {
+  if (Buffer.byteLength(input, "utf8") > CSV_MAX_BYTES) {
+    throw new CsvParseError(`CSV is larger than ${CSV_MAX_BYTES} bytes`, {
+      row: 1,
+      field: "bytes",
+    });
+  }
+  if (!hasNonWhitespace(input)) {
     throw new CsvParseError("CSV is empty", { row: 1, field: "header" });
   }
 
-  const records = parseRecords(input);
+  const records = parseRecords(input, CSV_MAX_ROWS);
   assertHeader(records);
+  if (records.length === 1) {
+    throw new CsvParseError("CSV has no data rows", { row: 1, field: "rows" });
+  }
 
   const data = records.slice(1);
   if (data.length > CSV_MAX_ROWS) {
@@ -283,12 +356,14 @@ export function previewArticleCsv(input: string): CsvPreview {
     const rowErrors: CsvRowError[] = [];
 
     let topicKey = rawTopic.trim();
+    let topicValid = false;
     let title: string | undefined;
     let language: ArticleLanguage | undefined;
     let body: string | null | undefined;
 
     try {
       topicKey = validateTopicKey(rawTopic);
+      topicValid = true;
     } catch (error) {
       rowErrors.push(rowError(row, "topic_key", error));
     }
@@ -308,7 +383,7 @@ export function previewArticleCsv(input: string): CsvPreview {
       rowErrors.push(rowError(row, "body", error));
     }
 
-    if (topicKey.length > 0) {
+    if (topicValid) {
       if (seenTopics.has(topicKey)) {
         rowErrors.push({
           row,

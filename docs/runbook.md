@@ -512,7 +512,7 @@ $ npm run typecheck && npm run lint && npm run build   # all clean
 ```
 ## S03-01 - Article editor + immutable versioning (2.00d)
 
-**AC (verbatim):** Edit an article, old version stays retrievable only as history, new version is the one used.
+**AC (verbatim):** Editing never alters a historical version.
 
 **Status: DONE (2026-10-24).** `src/knowledge/articles.ts` is the tenant-scoped authoring service: create, edit, list, version list and version detail. Edits append a new retired version; publishing stays in S04-01. No schema change, no HTTP route, no `requireRole` (S04-01 owns the guard).
 

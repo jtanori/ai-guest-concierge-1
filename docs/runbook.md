@@ -532,3 +532,22 @@ $ npm run db:test                                      # 95 passed (95), incl. 1
 $ npm test                                             # 120 passed (120), incl. 8 article validation
 $ npm run typecheck && npm run lint && npm run build   # all clean
 ```
+## S03-02 - CSV bulk import (2.00d)
+
+**AC (verbatim):** A 100-row CSV imports with a preview step and no silent failures.
+
+**Status: DONE (2026-10-24).** `src/knowledge/csv.ts` is a dependency-free parser/preview; `src/knowledge/import.ts` commits through S03-01's `createArticle`/`editArticle` inside the caller's transaction. No schema change, no HTTP route, no `requireRole` (S04-01 owns the guard).
+
+- [x] `previewArticleCsv(text)` is pure (no DB): UTF-8 optional BOM, `\n`/`\r\n`, RFC 4180 quoting with escaped quotes and embedded newlines, blank lines skipped. Header is exactly `topic_key,title,language,body`, case-insensitive after trim, fixed order; empty file, wrong column count, missing/duplicate/unknown/reordered headers, unclosed quote, and >500 data rows throw `CsvParseError` with row/field where available.
+- [x] Row validation delegates to S03-01's exported validators (`validateTopicKey`, `validateTitle`, `validateBody`, `validateLanguage`, `validateSourceId`). A row reports every bad field, not just the first; `body` may contain newlines but not be empty; `language` is `es|en`; a later duplicate `topic_key` is a row error. `CsvPreview` returns only valid drafts plus `{total, valid, invalid}`.
+- [x] `importArticleCsv(client, context, actor, text)` revalidates, then looks up each property-scope topic and calls `editArticle` for an existing article or `createArticle` for a new one. It returns `{imported, created, updated, preview}`; validation failures throw `CsvImportValidationError` carrying the full preview before any write.
+- [x] All-or-nothing is the caller transaction: a DB failure mid-file rolls back every prior row (articles, versions, audit). No duplicate articles on re-import; a no-op identical row still counts as `updated` but creates no version, per S03-01.
+- [x] Tests: `tests/knowledge/csv.test.ts` (13: 100-row preview, BOM/CRLF/header case, quoted comma/quote/newline, all-field errors, duplicate topic, wrong columns, blank lines, header-only, empty/malformed headers, unclosed quote, 500-row cap, empty body/language, determinism). `tests/db/import.db.test.ts` (6: 100 rows -> 100 articles + 100 retired versions, re-import -> 200 versions no duplicates, validation failure writes nothing, mixed create/update in one file, per-tenant isolation, forced DB failure mid-file rolls back all). The 100-row import completed in ~2.8s in the DB suite.
+- [x] No `requireRole` call: S04-01's first staff route will call `session.requireRole("knowledge", "write")` and close S02-06.
+
+**Evidence (local, verified):**
+```text
+$ npm run db:test                                      # 101 passed (101), incl. 6 import
+$ npm test                                             # 133 passed (133), incl. 13 CSV
+$ npm run typecheck && npm run lint && npm run build   # all clean
+```

@@ -34,6 +34,7 @@ const toJose = (ints: Buffer[]): Buffer => {
     b.length === 32 ? b : Buffer.concat([Buffer.alloc(32 - b.length), b]);
   return Buffer.concat([pad(value(ints[0]!)), pad(value(ints[1]!))]);
 };
+const joseFromDer = (der: Buffer): Buffer => toJose(parseDerInts(der));
 
 const EC_JWK_ENTRY: KeyMaterial = (() => {
   const { privateKey, publicKey } = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
@@ -161,13 +162,7 @@ describe("Neon Auth token verification (S02-01)", () => {
   it("verifies tokens whose JOSE signature arrives in fixed-width form", () => {
     // A JOSE-style signer (fixed-width r||s, as real JWKS-verified tokens use).
     const { privateKey, publicKey } = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
-    const joseSign = (data: string): Buffer => {
-      const der = crypto.sign("sha256", Buffer.from(data), privateKey);
-      const ints = parseDerInts(der);
-      const pad = (b: Buffer): Buffer =>
-        b.length === 32 ? b : Buffer.concat([Buffer.alloc(32 - b.length), b]);
-      return Buffer.concat([pad(ints[0]!), pad(ints[1]!)]);
-    };
+    const joseSign = (data: string): Buffer => joseFromDer(crypto.sign("sha256", Buffer.from(data), privateKey));
     const joseEntry: KeyMaterial = {
       jwk: publicKey.export({ format: "jwk" }) as Record<string, unknown>,
       sign: joseSign,
@@ -175,5 +170,14 @@ describe("Neon Auth token verification (S02-01)", () => {
     joseEntry.jwk.kid = "test-ec-jose";
     joseEntry.jwk.alg = "ES256";
     expect(verifyWithJwk(mint(joseEntry), joseEntry.jwk as never).displayName).toBe("Front Manager");
+    // The signer signs the token's actual signing input; vary the payload so
+    // each iteration is a coin flip for the high-bit-pad JOSE form (~50%).
+    const header = Buffer.from(JSON.stringify({ alg: "ES256", typ: "JWT", kid: "test-ec-jose" })).toString("base64url");
+    for (let i = 0; i < 60; i++) {
+      const payload = Buffer.from(JSON.stringify({ sub: "auth0|507f1f77bcf86cd799439011", email: "gm@hotelparaiso.mx", exp: 2_000_000_000, note: `case ${i}` })).toString("base64url");
+      const signingInput = `${header}.${payload}`;
+      const token = `${signingInput}.${joseSign(signingInput).toString("base64url")}`;
+      expect(verifyWithJwk(token, joseEntry.jwk as never).email).toBe("gm@hotelparaiso.mx");
+    }
   });
 });

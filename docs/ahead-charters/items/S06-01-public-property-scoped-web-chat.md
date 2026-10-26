@@ -9,14 +9,14 @@ priority: P0
 depends_on: [S05-01]
 labels: [sprint:S06, track:foundation, prio:P0]
 milestone: S06 - Guest chat and evaluation
-status: draft
+status: done
 issue: https://github.com/jtanori/ai-guest-concierge-1/issues/76
-pickup: decision
+pickup: ready
+approved: 2026-10-25
+done: 2026-10-25
 ---
 
 # S06-01 — Public property-scoped web chat
-
-> **DRAFT — not approved.** Generated from the master backlog, `docs/01-development-plan.md` and the code at `main` + PR #32 head `81b19bb`. `docs/charters/README.md` says **"No item starts until its charter is approved"** — this file is a proposed contract, not permission to start. File paths, migration numbers and signatures are calculated from the current tree; rebase them on whatever merges first.
 
 | | |
 |---|---|
@@ -69,17 +69,27 @@ A stranger can hold a full conversation on staging — the pilot surface.
 
 ## 8. Pickup status, blockers and decisions
 
-**NEEDS DECISION — see §8. Calculations are complete where possible; the named decision must close first.**
+**CLOSED.** Both blockers named here resolved before pickup:
 
-Open decisions / blockers:
-
-- **DEC-1 (UI framework)** — default zero-dependency server-rendered HTML; a framework needs dependency approval. Route/service calculations are complete.
-- Depends on S05-01 (and transitively DEC-2). Start the service layer before the framework decision closes.
+- **DEC-1 (UI framework) — closed as React 19 + Next.js 15 + Tailwind + shadcn/ui**, the stack S04-01 already shipped in `web/`. This charter's "no framework by default" line was written before DEC-1 closed; the file was overruled by the decision, and the guest page is a Next.js route (`web/app/c/[slug]/page.tsx`) rather than server-rendered HTML plus a hand-written `public/chat.js`. Everything else in §4 held: the slug lookup is a privileged read-only resolution, the service persists both messages in one transaction, and the tenant never comes from the body.
+- **S05-01 / DEC-2 (provider)** — closed: Google Gemini over plain `fetch` (pinned primary + fallback), consumed through `AnswerDeps.ai`.
 
 ## 9. Definition of done
 
-- [ ] CI green: `lint`, `typecheck`, `test`, `db-test`, `preview` (and `eval` once S06-03 lands).
-- [ ] Runbook entry in `docs/runbook.md` with the exact commands and counts.
-- [ ] Workbook ticked via `node scripts/update-workbook-status.mjs <ID> "✅ Done (<evidence>)"` only after the AC is objectively met.
-- [ ] Cross-tenant isolation suite extended for any new table or route; no new runtime dependency without explicit approval.
-- [ ] Review threads resolved; charter §9 decisions recorded in the runbook.
+- [x] CI green: `lint`, `typecheck`, `test`, `db-test`, `preview`, `web-build`.
+- [x] Runbook entry in `docs/runbook.md` with the exact commands and counts.
+- [x] Workbook ticked via `node scripts/update-workbook-status.mjs` — **`🚧`, not `✅`**: the "on staging" half of AC-1 is unverified (see §10).
+- [x] Cross-tenant isolation suite extended for the new route; no new runtime dependency (Next.js was already approved under DEC-1).
+- [x] Review threads resolved; §8 decisions recorded in the runbook.
+
+## 10. Outcome (2026-10-25)
+
+**AC-1, AC-2 and AC-3 met as a working surface; the deployed-staging half of AC-1 is not verified from the build environment.** A real `http.createServer` wrapped around `handleGuestRequest` serves `POST /api/chat/messages` and `GET /api/chat/property`, two turns ride one signed cookie into one conversation, and the transcript replays from the cookie alone. `GET /c/:propertySlug` is a Next.js server component that 404s an unknown slug on the server side.
+
+AC-2 is proven by writing, not reading: a POST carrying a foreign `orgId`/`propertyId`/`conversationId` lands its rows in the slug's property and leaves the other property untouched. The tenant comes from the URL and nowhere else.
+
+AC-3 ships both halves: `guest.ai_disclosure` is rendered above the composer before any answer, and "Talk to a person" posts the catalogue string `guest.talk_to_person`, which S05-02's classifier escalates as `guest_asked_human` — so the handoff is a row in the transcript, not a tooltip.
+
+Evidence: 27 unit files / 374 tests, 22 db files / 195 tests (9 guest-chat + 2 guest-chat-over-HTTP are new), `web:build` green.
+
+**Deliberately not done here:** staging deployment (an operator step), rate limiting / spend enforcement (S07-04 consumes the counters), the S07-02 handoff UI, the staff inbox (S08), and the WhatsApp adapter. Residual risk recorded in the runbook: `concierge_public` inherits PUBLIC `EXECUTE` on SECURITY DEFINER functions because only their owner can revoke it — a dedicated hardening item.

@@ -20,6 +20,8 @@ import { loadConfig, type AppConfig } from "./config/env.ts";
 import { postgresStatus, closePool, getPool } from "./neon/postgres.ts";
 import { loadAuthConfig, verifyIdentityToken } from "./auth/session.ts";
 import { handleReviewRequest, ownsReviewPath, type ReviewHttpDeps } from "./staff/http.ts";
+import { handleGuestRequest, ownsGuestPath, type GuestHttpDeps } from "./guest/http.ts";
+import { guestRuntimeFromEnv } from "./guest/runtime.ts";
 import { authStatus } from "./neon/auth.ts";
 import {
   getS3Client,
@@ -118,8 +120,55 @@ function reviewDeps(client: ReviewHttpDeps["client"]): ReviewHttpDeps {
   };
 }
 
+/**
+ * S06-01 — the guest surface's dependencies, resolved once and reused: building
+ * two provider adapters per request would be waste, and the guest path is the
+ * one with strangers on it. A host with no `GUEST_COOKIE_SECRET` or no LLM
+ * configuration answers 503 with the reason instead of refusing to boot, which
+ * is the same degraded-host contract the health routes follow.
+ */
+type GuestRuntimeState =
+  | { ok: true; value: Omit<GuestHttpDeps, "client"> }
+  | { ok: false; error: string };
+
+let guestRuntime: GuestRuntimeState | null = null;
+
+function guestDeps(): GuestRuntimeState {
+  if (guestRuntime === null) {
+    try {
+      guestRuntime = { ok: true, value: guestRuntimeFromEnv(process.env) };
+    } catch (error) {
+      guestRuntime = { ok: false, error: (error as Error).message };
+    }
+  }
+  return guestRuntime;
+}
+
 const server = createServer((req: IncomingMessage, res: ServerResponse) => {
   const path = new URL(req.url ?? "/", `http://${req.headers.host}`).pathname;
+
+  if (ownsGuestPath(path)) {
+    void (async () => {
+      const runtime = guestDeps();
+      if (!runtime.ok) {
+        send(res, 503, { status: "error", path, detail: runtime.error });
+        return;
+      }
+      let client: pg.PoolClient;
+      try {
+        client = await getPool().connect();
+      } catch (error) {
+        send(res, 503, { status: "error", path, detail: (error as Error).message });
+        return;
+      }
+      try {
+        await handleGuestRequest(req, res, { client, ...runtime.value });
+      } finally {
+        client.release();
+      }
+    })();
+    return;
+  }
 
   if (ownsReviewPath(path)) {
     // One checked-out client per request: withStaffSession runs BEGIN/COMMIT,

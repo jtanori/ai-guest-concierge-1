@@ -772,3 +772,39 @@ $ npm run typecheck && npm run lint && npm run build   # clean
 The four new db cases are end-to-end, not unit: a fabricated quote → `escalate` / `quote_not_in_cited_version` with `usage.guard` set and **zero** citation rows; an invented price → `policy_block` / `banned_content:currency_amount` with the price absent from the guest's text; a refund question → `sensitive_topic` / `sensitive:money_and_refunds` with `provider.requests.length === 0` and **no** `ai_runs` row (the model was never asked); and `"xyzzyqqq"` → `no_answer` plus an open `knowledge_gaps` row.
 
 **Not done, by charter:** the 50/week manual accuracy audit (S12), golden-set content (G1), and therefore **AC-3**. Also not done, and named rather than hidden: semantic entailment (substring containment only), a topic classifier (topic-scoped policy stays unevaluated until one exists), and the spend counter itself (S07-04). The verbatim `quote` still has no `citations` column (S05-03's recorded gap), so verification is reproducible only from the answer text and version bodies, not from the quote alone.
+
+## S06-01 - Public property-scoped web chat (2.00d)
+
+**AC (verbatim):** A stranger holds a full conversation on staging.
+
+- **AC-1** `GET /c/:propertySlug` serves a working chat; `POST /api/chat/messages` persists inbound + outbound `messages`.
+- **AC-2** Tenant comes from the URL slug only — never from a request body.
+- **AC-3** First message shows `guest.ai_disclosure` and a route to a human (S07-02).
+
+**Status: DONE for AC-1, AC-2 and AC-3 as a working surface (2026-10-25); the "on staging" half of AC-1 is NOT verified from this environment** — there is no deployed target reachable here, so the evidence below is a real HTTP round trip against a locally booted server plus the CI `preview`/`web-build` jobs. Treat the deploy as the remaining operator step, not as something the code has yet proven.
+
+**Where the pieces are.** `db/migrations/0015_guest_chat.sql` (the lookup role), `src/guest/{session,cookie,service,http,runtime}.ts` (tenant resolution, ticket, turn, wire, wiring), `web/app/c/[slug]/page.tsx` (the page), `web/components/guest-chat.tsx` (the client), `web/app/api/chat/[...path]/route.ts` (the proxy that carries the cookie both ways).
+
+**The decisions that shaped the code:**
+
+- *Tenant resolution is a role switch, not a query.* `properties` is FORCE-RLS, so neither the app role nor a SECURITY DEFINER helper owned by the table owner can read a row without tenant GUCs — FORCE applies to the owner too, and BYPASSRLS needs a superuser Neon does not give us. So 0015 creates `concierge_public`: NOLOGIN, no grants on any tenant table, **column-level** SELECT on six public columns of `properties`, and a policy whose only row is the one matching `app.property_slug`. The request switches DOWN for exactly one SELECT, then UP to `concierge_app` with the GUCs taken from the row it just read. The test pins all three limits: another slug is invisible, `settings` is a 42501, `messages` is a 42501, and no slug means no rows at all.
+- *A bad slug is a 404, never a 400.* Distinguishing "malformed" from "unknown" tells a stranger which strings are worth guessing. Both land on `UnknownPropertyError`.
+- *The forged-tenant test writes rather than reads.* `POST`ing with a foreign `orgId`/`propertyId`/`conversationId` in the body lands rows in the slug's property and leaves the other property's message count unchanged. The API never reads those fields — ignoring them is stronger than rejecting them, because a rejection is also information.
+- *The cookie is signed, scoped and dull.* `base64url(claims).base64url(HMAC-SHA256)` behind `HttpOnly`, `SameSite=Lax`, `Secure` derived from the request scheme (not `APP_ENV`), 30 days. Claims: identity, conversation, **property** — a ticket harvested on hotel A is inert on hotel B (tested), and a guest who edits it gets a new conversation rather than someone else's.
+- *`clock_timestamp()`, not the column default, for `messages.created_at`.* Both messages of a turn are written in one transaction, and `now()` is the transaction's start time — inbound and outbound tied to the microsecond and "order by created_at" fell through to a random UUID. The transcript test caught it; the fix is one column reference, and the reason is in the code.
+- *The handoff button sends a message.* "Talk to a person" posts the catalogue string (`guest.talk_to_person`), which S05-02's classifier escalates as `guest_asked_human`. The handoff therefore lives in the same transcript the staff inbox will read (S08) instead of vanishing into a tooltip. A test asserts the reason code and that the guest sees the catalogue string, not model text.
+- *The guest page no longer inherits staff chrome.* The review/session pages moved into an `app/(staff)/` route group (URLs unchanged) so `/c/:slug` does not render a "Review queue" header or a staff language chip.
+- *The page 404s on the server.* The slug is resolved in the server component, so an unknown property is a real 404 rather than a spinner that never resolves.
+- *A failed embedding is not a failed answer.* If the optional embedding call fails, the turn continues on lexical + trigram retrieval instead of escalating — worse retrieval, not a broken guest.
+- *The outage path persists too.* Both providers down → the turn still writes an outbound message (`guest.unavailable`) and a `messages` pair; the guest never sees a 500 and the transcript never has a hole.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector + pg_trgm, stub provider — no key, no network):**
+```text
+$ npm test             # 27 files / 374 passed - incl. 18 guest checks (cookie + HTTP seam)
+$ npm run db:test      # 22 files / 195 passed - incl. 9 guest-chat + 2 guest-chat-over-HTTP
+$ npm run web:build    # Next 15.5 builds /c/[slug] and /api/chat/[...path]
+$ npm run typecheck && npm run lint && npm run build   # clean
+```
+The HTTP suite boots a real `http.createServer` around `handleGuestRequest`, posts two turns through `fetch`, keeps only the `Set-Cookie` value the browser would keep, and replays a four-message transcript from it — which is the closest thing to "a stranger holds a conversation" that can be executed here.
+
+**Not done, by charter:** the staff inbox (S08), the WhatsApp adapter (WA track), rate limiting and spend caps enforcement (S07-04 — `policyGate` consumes the counters but nothing produces them yet), and the S07-02 handoff *UI* (this item ships the route to a human as a classified message, which is what S07-02 will build on). Also recorded: `concierge_public` could in principle call `provision_user`, because SECURITY DEFINER functions still carry PostgreSQL's default `EXECUTE` to PUBLIC and only the function's owner may revoke it — that belongs in a dedicated hardening item, not in a silent ACL change here.

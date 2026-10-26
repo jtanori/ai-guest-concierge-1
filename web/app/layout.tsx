@@ -1,11 +1,17 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
-import { currentLang, translator } from "@/lib/i18n";
+import { currentLang } from "@/lib/i18n";
 import "./globals.css";
 
+/**
+ * S06-01 moved the staff chrome into `app/(staff)/layout.tsx`: the guest chat is
+ * a PUBLIC page and must not inherit a header that says "Review queue" and a
+ * language chip a stranger did not choose. The root layout keeps only what both
+ * surfaces agree on — the document, the language and the theme.
+ */
 export const metadata: Metadata = {
-  title: "Concierge · Staff",
-  description: "Review queue for the hotel's AI concierge",
+  title: "Concierge",
+  description: "Ask the hotel's concierge",
 };
 
 export default async function RootLayout({
@@ -14,18 +20,9 @@ export default async function RootLayout({
   children: ReactNode;
 }): Promise<React.ReactElement> {
   const lang = await currentLang();
-  const tr = translator(lang);
   return (
     <html lang={lang}>
-      <body className="min-h-dvh bg-background text-foreground antialiased">
-        <header className="border-b">
-          <div className="mx-auto flex max-w-4xl items-center justify-between px-6 py-4">
-            <span className="text-sm font-semibold tracking-tight">{tr("staff.review.title")}</span>
-            <span className="text-xs text-muted-foreground">{lang.toUpperCase()}</span>
-          </div>
-        </header>
-        <main className="mx-auto max-w-4xl px-6 py-8">{children}</main>
-      </body>
+      <body className="min-h-dvh bg-background text-foreground antialiased">{children}</body>
     </html>
   );
 }

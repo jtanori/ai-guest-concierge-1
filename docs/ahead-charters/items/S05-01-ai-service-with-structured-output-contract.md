@@ -9,9 +9,11 @@ priority: P0
 depends_on: [S04-03]
 labels: [sprint:S05, track:foundation, prio:P0]
 milestone: S05 - AI core and evaluation
-status: draft
+status: done
 issue: https://github.com/jtanori/ai-guest-concierge-1/issues/73
 pickup: decision
+approved: 2026-10-25
+done: 2026-10-25
 ---
 
 # S05-01 — AI service with structured output contract
@@ -69,7 +71,25 @@ Provider calls carry no tenant id in the prompt; log only `org_id/property_id/co
 
 ## 8. Pickup status, blockers and decisions
 
-**NEEDS DECISION — see §8. Calculations are complete where possible; the named decision must close first.**
+**DELIVERED 2026-10-25.** **DEC-2 CLOSED 2026-10-25** by the operator: **Google Gemini**, reached over plain `fetch` (no SDK, consistent with DEC-3). Pinned pair `gemini-2.5-flash` (primary) / `gemini-2.5-flash-lite` (fallback), both required as env values — `loadLlmConfig` has no default model id and refuses `-latest`/`@latest`.
+
+Delivered without it (all provider-agnostic, all tested):
+
+- `src/ai/contract.ts` — Appendix B types plus `parseAiOutput`, a hand-written validator that rejects unknown/missing fields, an undefined decision, an answer with no citations, a citation outside the retrieved set, a bad quote, an out-of-range confidence, an unknown `reason_code`, prose attached to a non-answer, and unretrieved topic keys. It reports EVERY violation in one error rather than the first, and it refuses to map `needs_human` to the table's `escalate` anywhere but `toRunDecision`.
+- `src/ai/prompt.ts` — `PROMPT_VERSION = "answer-v1"`, a pure `buildPrompt`, and `AI_OUTPUT_JSON_SCHEMA` for provider-native structured outputs. Articles are labelled with `article_version_id` only (never `article_id`), and `no_answer` is offered to the model explicitly.
+- `src/ai/provider.ts` — `AiProvider` + `withResilience`: 8s/3s timeouts enforced on the caller side too, two jittered retries on 429/5xx only, a 60s circuit break to the secondary, `AiUnavailableError` when both fail, and a refusal to accept the same pinned model twice as primary and fallback.
+- `src/config/env.ts` — `loadLlmConfig`: no default model ids, `-latest`/`@latest` refused, key required outside `local`.
+- `src/providers/gemini.ts` — the DEC-2 adapter: `x-goog-api-key` header, temperature 0, `responseMimeType: "application/json"` with the JSON schema translated to Gemini's OpenAPI subset (`type: ["string","null"]` → `nullable: true`; nulls dropped from `enum`; nullable fields dropped from `required`), and a retryable-vs-fatal classification (429/5xx retryable; `SAFETY`/`RECITATION`/`MAX_TOKENS` not). It returns TEXT, so `parseAiOutput` remains the only validator.
+- `src/ai/stub.ts` — `createScriptedProvider` / `createFixedProvider` for CI and tests: no network, no key, and no `APP_ENV` switch that could select a stub in production.
+- Tests: `tests/ai/contract.test.ts` (16), `tests/ai/transport.test.ts` (8), `tests/ai/gemini.test.ts` (11), `src/config/env.test.ts` (+4).
+
+Two defects found by these tests and fixed: the adapter was echoing a provider error body verbatim (a gateway that echoes headers would have leaked the key — now scrubbed from every string that can reach a log), and `loadLlmConfig`'s default base URL still pointed at OpenAI.
+
+- `src/ai/answer.ts` — the pipeline: policy → verified facts → hybrid retrieval → retrieve-gate → generate → `parseAiOutput` → persist `ai_runs` + `citations` → emit `ai_run_completed` / `ai_answer_sent` / `ai_escalated` / `no_answer_emitted`.
+- `src/ai/runs.ts` — `recordAiRun` / `recordCitations` in the caller's transaction; D5 enforced by the FK as well as by the contract.
+- `tests/db/ai-runs.db.test.ts` — 8 cases: one run per call with pinned model + prompt version, malformed output escalated and still recorded (with zero citations), a citation outside the retrieved set rejected, policy escalation before any model call, unenabled topic escalated, no-retrieval `no_answer`, fact answer with no model call, article-id citation refused.
+
+Remaining by charter, not by omission: guardrails (S05-02), eval harness (S06-03), state machine (S06-02), and topic classification — the caller may pass `topicKey`; when absent, topic-scoped policy is skipped and said so in code.
 
 Open decisions / blockers:
 

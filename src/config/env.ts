@@ -164,3 +164,76 @@ export function loadEmbeddingConfig(source: Record<string, string | undefined>):
     batchSize,
   };
 }
+
+/**
+ * S05-01 / DEC-2 — LLM configuration.
+ *
+ * There is NO default model id, and that is the point. "Pin model versions
+ * explicitly; never call a floating alias" is a rule that a default violates by
+ * existing: `gpt-4o` today and `gpt-4o` in six months are different models, and
+ * the only way to notice is to have written the dated id down. So both ids are
+ * required wherever the AI layer runs, and a name that looks like a floating
+ * alias is refused here rather than discovered in a diff of guest answers.
+ *
+ * The key is required only outside `local`: CI and a developer's shell run with
+ * a stub provider (no network, no cost), production must not boot without a
+ * key and then fail on the first guest message.
+ */
+export interface LlmConfig {
+  apiKey: string;
+  primaryModel: string;
+  fallbackModel: string;
+  baseUrl: string;
+  timeoutMs: number;
+}
+
+export const DEFAULT_LLM_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
+
+/** `-latest`, `@latest`, or a bare family name: all float. */
+function assertPinnedModel(name: string, variable: string): void {
+  if (name === "") throw new ConfigError(`${variable} is required: model ids are pinned, never defaulted`);
+  if (/-latest$|@latest$/i.test(name)) {
+    throw new ConfigError(`${variable} must be a dated, pinned model id, not the floating alias "${name}"`);
+  }
+}
+
+export function loadLlmConfig(
+  source: Record<string, string | undefined>,
+  appEnv: EnvName = "local",
+): LlmConfig {
+  const primaryModel = (source["LLM_PRIMARY_MODEL"] ?? "").trim();
+  const fallbackModel = (source["LLM_FALLBACK_MODEL"] ?? "").trim();
+  assertPinnedModel(primaryModel, "LLM_PRIMARY_MODEL");
+  assertPinnedModel(fallbackModel, "LLM_FALLBACK_MODEL");
+  if (primaryModel === fallbackModel) {
+    throw new ConfigError(
+      "LLM_FALLBACK_MODEL must differ from LLM_PRIMARY_MODEL; the same model twice is the same failure twice",
+    );
+  }
+
+  const apiKey = (source["LLM_API_KEY"] ?? "").trim();
+  if (apiKey === "" && appEnv !== "local") {
+    throw new ConfigError(
+      `LLM_API_KEY is required when APP_ENV=${appEnv}. Refusing to boot into a ` +
+        "configuration that cannot answer a single guest message.",
+    );
+  }
+
+  const baseUrl = (source["LLM_BASE_URL"] ?? DEFAULT_LLM_BASE_URL).trim();
+  if (!/^https?:\/\//.test(baseUrl)) {
+    throw new ConfigError(`LLM_BASE_URL must be an http(s) URL, got "${baseUrl}"`);
+  }
+
+  const timeoutMs = Number(source["LLM_TIMEOUT_MS"] ?? 8_000);
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1) {
+    throw new ConfigError("LLM_TIMEOUT_MS must be a positive integer");
+  }
+
+  return {
+    apiKey,
+    primaryModel,
+    fallbackModel,
+    baseUrl: baseUrl.replace(/\/+$/, ""),
+    timeoutMs,
+  };
+}

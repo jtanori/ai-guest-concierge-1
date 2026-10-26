@@ -3,6 +3,7 @@ import {
   ConfigError,
   isEnvName,
   loadConfig,
+  loadLlmConfig,
   resolveDeploymentEnvironments,
 } from "./env.ts";
 
@@ -85,5 +86,47 @@ describe("resolveDeploymentEnvironments — the no-shared-database gate (W00-13)
     expect(() =>
       resolveDeploymentEnvironments({ stagingUrl: "mysql://x", prodUrl: PG("p") }),
     ).toThrow(/not Postgres/);
+  });
+});
+
+describe("loadLlmConfig (S05-01 / DEC-2)", () => {
+  const base = {
+    LLM_PRIMARY_MODEL: "gpt-4.1-mini-2025-04-14",
+    LLM_FALLBACK_MODEL: "gpt-4o-mini-2024-07-18",
+  };
+
+  it("never defaults a model id: both are required", () => {
+    expect(() => loadLlmConfig({})).toThrow(/LLM_PRIMARY_MODEL is required/);
+    expect(() => loadLlmConfig({ LLM_PRIMARY_MODEL: base.LLM_PRIMARY_MODEL })).toThrow(
+      /LLM_FALLBACK_MODEL is required/,
+    );
+  });
+
+  it("rejects a floating alias, which is the whole point of pinning", () => {
+    expect(() =>
+      loadLlmConfig({ ...base, LLM_PRIMARY_MODEL: "gpt-4.1-mini-latest" }),
+    ).toThrow(/floating alias/);
+    expect(() => loadLlmConfig({ ...base, LLM_FALLBACK_MODEL: "gemini-pro@latest" })).toThrow(
+      /floating alias/,
+    );
+  });
+
+  it("rejects the same model twice, and a non-http base URL", () => {
+    expect(() =>
+      loadLlmConfig({ ...base, LLM_FALLBACK_MODEL: base.LLM_PRIMARY_MODEL }),
+    ).toThrow(/must differ/);
+    expect(() => loadLlmConfig({ ...base, LLM_BASE_URL: "api.openai.com" })).toThrow(
+      /http\(s\) URL/,
+    );
+  });
+
+  it("allows a missing key locally (stub provider) but not in prod", () => {
+    const local = loadLlmConfig(base, "local");
+    expect(local.apiKey).toBe("");
+    expect(local.baseUrl).toBe("https://generativelanguage.googleapis.com/v1beta");
+    expect(local.timeoutMs).toBe(8000);
+    expect(() => loadLlmConfig(base, "staging")).toThrow(/LLM_API_KEY is required/);
+    expect(() => loadLlmConfig(base, "prod")).toThrow(/LLM_API_KEY is required/);
+    expect(loadLlmConfig({ ...base, LLM_API_KEY: "sk-test" }, "prod").apiKey).toBe("sk-test");
   });
 });

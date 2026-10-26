@@ -686,3 +686,30 @@ $ npm run eval:retrieval -- --org <uuid> --property <uuid> --stub
 **AC-3 is not met and is not claimed.** The repository has golden set **v1** (20 rows, 13 with a `target_topic`), and v1 asks about topics the demo corpus does not carry (`transport.airport`, `room.amenities`, `checkin.hours`, `policy.pets`, …) in English, while the fixture bodies are English prose filed under Spanish topic keys. The 23.1% above is a harness check, not a retrieval measurement: with `--stub` the only cross-lingual branch (vector) is switched off, and cross-lingual matching is precisely what a real embedding provides. The eval script says so in its own output and exits non-zero (`2`) rather than printing a green number over five questions. Closing AC-3 needs the hotel's ≥40-question v2 (G1) and a corpus that covers the target topics; `--stub` runs skip the vector branch entirely, because a hash-based fake vector ranks arbitrary chunks and would quietly depress two real branches.
 
 **Not done / next:** nothing in S04-03 itself. G1 content (golden v2 + ≥25 approved articles) is the gate for the recall number; S05-01 consumes `RetrievalHit.matchedChunk` for citation.
+## S05-01 - AI service with structured output contract (2.00d)
+
+**AC (verbatim):** Malformed output rejected server-side, never sent.
+
+**Status: DONE (2026-10-25).** DEC-2 closed by the operator: **Google Gemini over plain `fetch`, no SDK** (same reasoning as DEC-3 — no new runtime dependency). Pinned pair `gemini-2.5-flash` / `gemini-2.5-flash-lite`, both required from the environment.
+
+**The pipeline, in order, and why each step is where it is.** `src/ai/answer.ts`: policy → verified facts → retrieval → generate → validate → persist → emit. Policy first because "this property is not allowed to answer" must cost nothing and leave no AI trace; facts before retrieval because a verified number outranks prose (S03-03/S04-03); retrieval before generation because answering from nothing is how models invent; and validation between generation and persistence so a rejected answer never gets a row that looks like a sent one — the rejected call still gets a row, with `usage.contract_violations`, which is exactly how the parse-failure rate (S07-06) is computed.
+
+**The decisions that shaped the code:**
+
+- *The validator is hand-written and is the AC.* `parseAiOutput` rejects unknown and missing fields, an undefined decision, an answer with no citations, a citation the retrieval did not return, a non-UUID or empty quote, a confidence outside 0..1, an unknown `reason_code`, prose attached to a non-answer, and topic keys that were not retrieved. It reports **every** violation in one error, because "invalid output" with no field name is unoperable at 2am. Provider-native JSON mode is asked for as well, but it is not trusted: `responseSchema` constrains generation, `parseAiOutput` is the control.
+- *Two vocabularies, one mapping.* Appendix B says `answer | needs_human | no_answer`; `ai_runs.decision` (0001) says `answer | escalate | no_answer`. The model never sees the table's word — it does not get to decide whether an escalation is a handoff, a draft or a refusal — and `toRunDecision` is the only place the mapping happens.
+- *No `ai_runs` row for a fact answer, deliberately.* `ai_runs` means "a model was invoked". A verified fact (S03-03) writes none, and the `ai_answer_sent` event carries `source: "fact"` instead. Counting a deterministic lookup as a model call would make every per-model number meaningless.
+- *The retrieve-gate is "nothing was retrieved", not a score threshold.* RRF scores are rank-derived (`Σ w/(60+rank)`), so an absolute cutoff invented today would be a number with no evidence behind it. Calibration is S06-03's job, where the golden set can measure it. Until then a query with no lexical or trigram match is the honest trigger.
+- *Policy causes are evaluated individually, not through `escalationDecision`.* The pipeline has to report WHICH rule blocked (`mode_human_only` vs `after_hours` vs `topic_disabled`) and classification may not have produced a topic key yet, so `escalationDecision`'s single boolean would lose information the operator needs.
+- *The fallback is a model choice, the mechanism lives once.* `withResilience`: 8s/3s timeouts enforced on the caller side too (an adapter that ignores `timeoutMs` must not hold a guest's request open), two jittered retries on 429/5xx only (a 400 is our bug and will stay our bug), then a real 60s circuit that SKIPS the primary rather than paying the retry budget again, then `AiUnavailableError` → the outage path (S07-05), never a 500.
+- *Gemini's schema subset is translated, not assumed.* `type: ["string","null"]` → `{type:"string", nullable:true}`, nulls dropped from `enum`, nullable fields dropped from `required`. The adapter returns TEXT; `parseAiOutput` remains the only validator, so a vendor that degrades its schema fails in one place.
+- *Errors cannot carry the key.* The adapter sends `x-goog-api-key` and scrubs that value from every string that can reach a log or an exception — a gateway that echoes request headers was leaking it into `AiProviderError.message` before that fix.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector + pg_trgm, stub provider — no key, no network):**
+```text
+$ npm run db:test    # 19 files / 174 passed - incl. 8 ai-runs cases
+$ npm test           # 333 passed - incl. 16 contract, 8 transport, 11 gemini
+$ npm run typecheck && npm run lint && npm run build   # clean
+```
+
+**Not in this item, by charter:** the guardrail pass (S05-02), the eval harness (S06-03), the conversation state machine (S06-02). **Topic classification does not exist yet**: the caller may pass `topicKey` (golden-set harness, or a future classifier); when it is absent, topic-scoped policy cannot be evaluated and is skipped — stated in the code, not silently assumed to pass.

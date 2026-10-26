@@ -101,9 +101,25 @@ describe("describeDrift", () => {
     ]);
     expect(drifted.drifted).toHaveLength(2);
     expect(describeDrift(drifted)).toBe(
-      "conversations: 2 business rows vs 1 conversation_started events (delta +1); " +
-        "answer_flags: 4 business rows vs 1 answer_flagged_wrong events (delta +3)",
+      "conversations: 2 business rows vs 1 conversation_started event (delta +1); " +
+        "answer_flags: 4 business rows vs 1 answer_flagged_wrong event (delta +3)",
     );
+  });
+
+  it("pluralises for the person reading a page at 3am", () => {
+    // Cosmetic until it is not: this is the string whoever gets paged reads, and
+    // "1 business rows" is the kind of thing that makes a reader distrust the rest
+    // of the sentence. Singular on both nouns, independently.
+    expect(
+      describeDrift(
+        result([metric({ metric: "answer_flags", businessRows: 1, events: 0, countsEvent: "answer_flagged_wrong" })]),
+      ),
+    ).toBe("answer_flags: 1 business row vs 0 answer_flagged_wrong events (delta +1)");
+    expect(
+      describeDrift(
+        result([metric({ metric: "answer_flags", businessRows: 0, events: 1, countsEvent: "answer_flagged_wrong" })]),
+      ),
+    ).toBe("answer_flags: 0 business rows vs 1 answer_flagged_wrong event (delta -1)");
   });
 
   it("describes the ai_runs metric by what it actually counts", () => {

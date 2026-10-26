@@ -145,6 +145,54 @@ one changes what a future reader would otherwise assume.
   emitted on paths that never record a run. All four carry `ai_run_id` in the payload,
   so the reconciliation counts **distinct `payload->>'ai_run_id'`**, which is the exact
   image of the table.
+- **DEC-5 — review round (issue #147): the windowed `reconcile()` compares two
+  different clocks, and that is documented and pinned rather than fixed here.** Found
+  in review of PR #146. Business tables declare `created_at timestamptz NOT NULL
+  DEFAULT now()` (0001:107/126/158/176/299/344), i.e. the Postgres **transaction**
+  timestamp, while the paired event takes a **JS-side** timestamp (`captureRequest`'s
+  `const at = input.at ?? new Date()` at `src/requests/capture.ts:109`, passed as
+  `createdAt` at :184; no business INSERT in `src/` supplies `created_at` explicitly).
+  A `from`/`to` falling between those two readings yields `delta ±1` — a timing
+  artifact, not missing instrumentation.
+  - **This is not a defect in what S10-01 shipped.** The unwindowed reconciliation is
+    the authoritative one, reconciles exactly, and is all that runs today: `reconcile()`
+    has no production caller until S10-02/S10-03. It is latent, and it is recorded
+    because it becomes live the moment something windows it.
+  - **Why the test suite did not catch it, which is itself the finding:** the original
+    window test passed the *same* timestamp to both rows, and a test that makes both
+    sides agree by construction cannot detect a skew between them. `tests/db/events.db.test.ts`
+    now also pins the artifact with a pair whose two rows carry deliberately different
+    timestamps, asserting `delta -1` and that the artifact is confined to the pair that
+    straddles the boundary.
+  - **Resolution is the owner's decision, not the implementer's**, because the three
+    options in #147 differ by an order of magnitude in reach. Option 3 — producers pass
+    their business row's `created_at` from `INSERT ... RETURNING` into the event context —
+    is arguably the right answer for D10's *reconcile exactly* promise, and it touches
+    every emission site. Sequencing: **resolve before or alongside S10-02 (#95)**, which
+    is the first consumer of the windowed path; the S10-02 charter now carries that as a
+    blocker. S10-01's AC-1 is unaffected either way.
+- **DEC-6 — review round (issue #148): AC-1's coverage scan is a TypeScript AST walk,
+  not a text search.** The original scan matched `emitEvent(` over raw source, which
+  counted commented-out calls and calls inside strings as producers. That is unsafe in
+  the direction that matters: a commented-out emit satisfied AC-1's exact-set assertion,
+  so the suite could read green with nothing emitting. The reverse was merely annoying —
+  a `// TODO(DF-02): emitEvent(...)` planning note tripped the deferral guard.
+  - Fix chosen is #148's option 3, `ts.createSourceFile` plus `isCallExpression`, in
+    `tests/events/emission-coverage.test.ts`. The review called the compiler API "a
+    heavier dependency"; **it costs nothing here**, because `typescript@5.9.3` is
+    already a devDependency that CI runs (`package.json:38`). It also closes a gap the
+    other two options leave open: resolving the *local* name from
+    `element.propertyName ?? element.name` means an aliased import
+    (`import { emitEvent as emit }`) is still recognised. No alias exists today — all
+    eight importers use the plain name — and the literal-identifier failure mode was the
+    loud one, so this was not urgent, only correct.
+  - The scan moved out of `tests/db/` into the pure suite: it parses source and needs no
+    database, so it should run on every `npm test` rather than only when a Postgres is
+    available. What stayed in `tests/db/events.db.test.ts` is the half that does need
+    one — that the taxonomy and 0001's CHECK constraint agree via `pg_get_constraintdef`.
+  - The AST walk found exactly the same 16 names the regex did, so AC-1's count is
+    unchanged at 16/18 and DEC-1 still stands.
+
 - **CAVEAT — the demo seed does not reconcile, and cannot.** `src/seed/demo.ts` has
   **zero** `emitEvent` calls: it writes business rows (including `knowledge_gaps`)
   directly. A demo property's dashboard numbers will therefore not reconcile to its
@@ -161,7 +209,7 @@ one changes what a future reader would otherwise assume.
 - [x] Runbook entry in `docs/runbook.md` (`## S10-01`) with the exact commands and counts.
 - [x] Workbook updated via `scripts/update-workbook-status.mjs` — to 🚧, **not** ✅, per DEC-2: AC-1 is 16/18 until DF-01/DF-02 give the last two events a producer.
 - [x] No new table, no new route, no new runtime dependency. Tenancy is asserted in `reconcile()` (a neighbour's rows cannot mask a gap) and by 0029's REVOKE.
-- [ ] Review threads resolved. DEC-1…DEC-4 and the seed caveat are recorded above and summarised in the runbook.
+- [x] Review threads resolved. DEC-1…DEC-4 and the seed caveat are recorded above; DEC-5 and DEC-6 record the two review findings (#147, #148). All four smaller notes are addressed in code: the `describeDrift` pluralisation, the 0029 locking window, the stated absence of a production `reconcile()` caller, and the AC-1 scanner rewrite. Summarised in the runbook.
 
 ## Limited package authorization
 

@@ -56,3 +56,29 @@ ALTER TABLE events
 -- product's analytics source of truth.
 CREATE INDEX events_property_type_time
   ON events (property_id, event_type, created_at DESC);
+
+-- ---------- The locking this migration takes, stated rather than discovered ----------
+--
+-- Both statements above block writes to `events` while they run:
+--   * ADD CONSTRAINT ... CHECK validates every existing row under ACCESS EXCLUSIVE.
+--   * A plain CREATE INDEX takes SHARE, which blocks INSERT.
+--
+-- `CREATE INDEX CONCURRENTLY` would avoid the second, and it is NOT available here:
+-- src/db/migrate.ts wraps each migration file in one BEGIN/COMMIT transaction, and
+-- CONCURRENTLY cannot run inside a transaction block. That is a property of the
+-- runner, not a choice made by this migration, and changing the runner is not this
+-- item's business.
+--
+-- This repository does have a `NOT VALID` precedent with a written rationale
+-- (0009 lines 29-33 and 89, 0017 line 87), which would take the validation out of
+-- the ACCESS EXCLUSIVE window and leave a separate VALIDATE CONSTRAINT step. It is
+-- deliberately NOT used here: existing rows *should* be proven to be objects before
+-- the constraint is trusted, and `events.payload` defaults to '{}' with `emitEvent`
+-- refusing a non-object payload, so the validation is expected to scan a table that
+-- already satisfies it and find nothing. A NOT VALID constraint that is never
+-- validated is worse than a short lock — it silently stops constraining anything.
+--
+-- So: a write-blocking window on the one table that only ever grows, accepted at MVP
+-- scale and recorded here so that whoever runs this against a large production
+-- `events` table knows to expect it, and knows the two ways out (NOT VALID +
+-- VALIDATE, or a runner that can do CONCURRENTLY) if the table has grown by then.

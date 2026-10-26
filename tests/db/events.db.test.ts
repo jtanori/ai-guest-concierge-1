@@ -20,8 +20,6 @@
  * paths, not just tests", and the only way to make that executable is to read the
  * production paths. A DB test can only ever prove the events it happened to drive.
  */
-import { readdir, readFile } from "node:fs/promises";
-import path from "node:path";
 import pg from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { emitEvent } from "../../src/events/emit.ts";
@@ -32,7 +30,6 @@ import {
 } from "../../src/events/reconcile.ts";
 import { EVENT_NAMES, type EventContext } from "../../src/events/taxonomy.ts";
 import { captureRequest, REQUEST_TOPICS } from "../../src/requests/capture.ts";
-import { REQUEST_STATUSES } from "../../src/requests/lifecycle.ts";
 import { recordGap } from "../../src/gaps/queue.ts";
 import type { TenantContext } from "../../src/db/tenant.ts";
 import {
@@ -100,13 +97,17 @@ async function seedGraph(): Promise<Graph> {
  * `events` is append-only, so a row's created_at cannot be updated after the fact.
  * The timestamp is supplied at emission, which is what production does anyway.
  */
-async function addConversation(graph: Graph, at = new Date()): Promise<string> {
+async function addConversation(
+  graph: Graph,
+  at = new Date(),
+  eventAt: Date = at,
+): Promise<string> {
   const row = await client.query<{ conversation_id: string }>(
     "INSERT INTO conversations (org_id, property_id, connection_id, created_at) VALUES ($1, $2, $3, $4) RETURNING conversation_id",
     [graph.context.orgId, graph.context.propertyId, graph.channelId, at],
   );
   const conversationId = row.rows[0]!.conversation_id;
-  await emitEvent(client, graph.context, "conversation_started", ctx(graph, conversationId, at), {
+  await emitEvent(client, graph.context, "conversation_started", ctx(graph, conversationId, eventAt), {
     channel: "web",
     anonymous: true,
   });
@@ -413,7 +414,7 @@ describe("S10-01 — reconcile()", () => {
     expect(after.ok).toBe(false);
     expect(after.drifted.map((m) => m.metric)).toEqual(["service_requests"]);
     expect(after.drifted[0]!.delta).toBe(1);
-    expect(describeDrift(after)).toMatch(/service_requests: 1 business rows vs 0 request_created events \(delta \+1\)/);
+    expect(describeDrift(after)).toMatch(/service_requests: 1 business row vs 0 request_created events \(delta \+1\)/);
   });
 
   it("counts one tenant only, so a neighbour cannot mask a gap", async () => {
@@ -469,88 +470,62 @@ describe("S10-01 — reconcile()", () => {
       reconcile(client, graph.context, { from: new Date(), to: past }),
     ).rejects.toThrow(/earlier than/);
   });
+
+  it("PINS the clock skew of issue #147: a windowed delta of -1 that is not drift", async () => {
+    // The case above passes the SAME timestamp to the business row and its event,
+    // which is the right way to test the window predicate in isolation and the reason
+    // the suite could not see #147. Production does not do that: `conversations`
+    // takes its created_at from DEFAULT now() (the Postgres transaction clock) while
+    // the event takes a JS-side `new Date()`, so the two are independently derived
+    // and differ by whatever elapsed between them.
+    //
+    // Here the gap is exaggerated to ten seconds to make the boundary deterministic.
+    // A window cut between the two readings excludes the business row and includes
+    // its event, and the metric reports delta -1 with nothing missing: the exact
+    // false alarm a reconciliation must not page anyone for. This asserts the
+    // artifact exists so that no future caller can discover it as a surprise, and so
+    // that removing it (issue #147's option 3) fails a test and gets recorded.
+    const graph = await seedGraph();
+    const businessAt = new Date(Date.now() - 60 * 60 * 1000);
+    const eventAt = new Date(businessAt.getTime() + 10 * 1000);
+    await addConversation(graph, businessAt, eventAt);
+
+    // Unwindowed: both sides counted, no artifact, no drift.
+    const whole = await reconcile(client, graph.context);
+    expect(whole.ok, describeDrift(whole)).toBe(true);
+    expect(whole.metrics.find((m) => m.metric === "conversations")!.businessRows).toBe(1);
+
+    // A cut between the two clocks. The business row (older) falls outside; its event
+    // (newer) falls inside.
+    const cut = new Date(businessAt.getTime() + 5 * 1000);
+    const skewed = await reconcile(client, graph.context, { from: cut });
+    const metric = skewed.metrics.find((m) => m.metric === "conversations")!;
+    expect(metric.businessRows).toBe(0);
+    expect(metric.events).toBe(1);
+    expect(metric.delta).toBe(-1);
+    expect(skewed.ok).toBe(false);
+    expect(describeDrift(skewed)).toBe(
+      "conversations: 0 business rows vs 1 conversation_started event (delta -1)",
+    );
+    // Every other metric is untouched, so the artifact is confined to the pair that
+    // straddles the boundary rather than smearing across the report.
+    expect(skewed.drifted.map((m) => m.metric)).toEqual(["conversations"]);
+  });
 });
 
-/* ---------- AC-1: coverage of the canonical 18, by reading production ---------- */
+/* ---------- AC-1's database half ----------
+ * The emission-coverage scan itself lives in tests/events/emission-coverage.test.ts,
+ * in the pure suite: it parses source and needs no database, so it should run on
+ * every `npm test` rather than only when a Postgres is available. What is asserted
+ * here is the half that does need one — that the taxonomy and 0001's CHECK
+ * constraint agree, because a name the code emits and the constraint refuses is a
+ * failed guest request rather than a lost row.
+ */
 
-describe("S10-01 AC-1 — emission coverage across production paths", () => {
-  /**
-   * The two names with no producer, deferred by owner decision on 2026-10-26:
-   * `booking_link_clicked` belongs to DF-02 (opportunity click tracking) and
-   * `outbound_webhook_delivered` to DF-01 (outbound webhook per property), both
-   * deferred to MVP-1.5 and neither started. They stay in EVENT_NAMES and in 0001's
-   * CHECK constraint as reserved taxonomy — deleting them would churn the taxonomy
-   * and lose the names DF-01/DF-02 will need.
-   */
-  const DEFERRED = ["booking_link_clicked", "outbound_webhook_delivered"] as const;
-
-  async function sourceFiles(dir: string, out: string[] = []): Promise<string[]> {
-    for (const entry of await readdir(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) await sourceFiles(full, out);
-      else if (entry.name.endsWith(".ts")) out.push(full);
-    }
-    return out;
-  }
-
-  /** Every event name an emitEvent call in src/ can produce, templates expanded. */
-  async function emittedNames(): Promise<Set<string>> {
-    const root = path.join(process.cwd(), "src");
-    const found = new Set<string>();
-    for (const file of await sourceFiles(root)) {
-      // src/events/ is the taxonomy and its writer: emitting from there would be
-      // the definition of "not a production path".
-      if (file.includes(`${path.sep}events${path.sep}`)) continue;
-      const text = await readFile(file, "utf8");
-      const re = /emitEvent\(\s*[\w.]+\s*,\s*[\w.]+\s*,\s*(?:"([a-z_]+)"|`([^`]*)`)/g;
-      for (const m of text.matchAll(re)) {
-        const literal = m[1];
-        const template = m[2];
-        if (literal) {
-          found.add(literal);
-        } else if (template === "request_${to}") {
-          // lifecycle.ts emits a computed name and guards it with
-          // `if (to !== "cancelled")`, and rejects `new` as a target earlier, so the
-          // reachable set is the statuses that are legal transition targets.
-          for (const status of REQUEST_STATUSES) {
-            if (status === "new" || status === "cancelled") continue;
-            found.add(`request_${status}`);
-          }
-        } else if (template !== undefined) {
-          throw new Error(
-            `unhandled template event name in ${file}: \`${template}\` — teach this test to expand it`,
-          );
-        }
-      }
-    }
-    return found;
-  }
-
-  it("emits 16 of the 18 canonical events from production paths", async () => {
-    const emitted = await emittedNames();
-    const expected = EVENT_NAMES.filter((n) => !(DEFERRED as readonly string[]).includes(n));
-    expect(expected).toHaveLength(16);
-    // Exact equality in both directions: a missing name is an uninstrumented path,
-    // and an extra name is an event the taxonomy does not allow, which 0001's CHECK
-    // constraint would refuse at runtime and 42501 would turn into a failed request.
-    expect([...emitted].sort()).toEqual([...expected].sort());
-  });
-
-  it("keeps the two deferred names declared but unemitted", async () => {
-    // This is the deferral made executable. If someone wires a producer for either
-    // name, this fails and the charter's AC-1 note becomes stale — which is the
-    // intended outcome: the record should have to be updated on purpose.
-    const emitted = await emittedNames();
-    for (const name of DEFERRED) {
-      expect(EVENT_NAMES, `${name} must stay reserved in the taxonomy`).toContain(name);
-      expect(emitted.has(name), `${name} must have no production producer yet`).toBe(false);
-    }
-  });
-
+describe("S10-01 AC-1 — the taxonomy and the database agree", () => {
   it("pins the canonical 18 to 0001's CHECK constraint", async () => {
-    // The taxonomy and the database must agree, or an event the code emits is
-    // refused by the constraint at runtime. Read the constraint rather than
-    // restating the list: a restated list drifts from both.
+    // Read the constraint rather than restating the list: a restated list drifts
+    // from both the taxonomy and the database, and drifts silently.
     const con = await client.query<{ consrc: string }>(
       `SELECT pg_get_constraintdef(oid) AS consrc FROM pg_constraint
         WHERE conrelid = 'events'::regclass AND contype = 'c'
@@ -561,5 +536,19 @@ describe("S10-01 AC-1 — emission coverage across production paths", () => {
       expect(con.rows[0]!.consrc, `${name} in the events CHECK`).toContain(name);
     }
     expect(EVENT_NAMES).toHaveLength(18);
+  });
+
+  it("keeps the two deferred names reserved in the constraint too", async () => {
+    // DEC-1: they have no producer, but they stay valid values so DF-01/DF-02 can
+    // emit them without a migration. A constraint that had been tightened to the 16
+    // would turn that future work into a schema change.
+    const con = await client.query<{ consrc: string }>(
+      `SELECT pg_get_constraintdef(oid) AS consrc FROM pg_constraint
+        WHERE conrelid = 'events'::regclass AND contype = 'c'
+          AND pg_get_constraintdef(oid) LIKE '%event_type%'`,
+    );
+    for (const name of ["booking_link_clicked", "outbound_webhook_delivered"]) {
+      expect(con.rows[0]!.consrc, `${name} still accepted by the CHECK`).toContain(name);
+    }
   });
 });

@@ -47,7 +47,35 @@
 import type pg from "pg";
 import { assertTenantShape, type TenantContext } from "../db/tenant.ts";
 
-/** Inclusive lower bound, exclusive upper bound; either may be omitted. */
+/**
+ * Inclusive lower bound, exclusive upper bound; either may be omitted.
+ *
+ * **READ THIS BEFORE WINDOWING — issue #147.** The two sides of a windowed
+ * reconciliation are not on the same clock, so a boundary can produce a delta that is
+ * a timing artifact rather than missing instrumentation:
+ *
+ * - every business table here declares `created_at timestamptz NOT NULL DEFAULT
+ *   now()` (0001), which is the Postgres **transaction** timestamp;
+ * - the paired event takes a **JS-side** timestamp — `captureRequest` does
+ *   `const at = input.at ?? new Date()` and no business INSERT in `src/` supplies
+ *   `created_at` explicitly.
+ *
+ * A `from`/`to` falling between those two readings puts the business row inside the
+ * window and its event outside it, or the reverse, and the metric reports `delta ±1`.
+ * The skew is sub-millisecond today, so this is latent rather than active — but
+ * `CaptureRequestInput.at` moves *only* the event's timestamp, so any caller that
+ * starts supplying it widens the skew arbitrarily.
+ *
+ * Therefore: **an unwindowed call is the authoritative reconciliation.** A windowed
+ * delta of ±1 at a boundary is advisory and must not page anyone on its own. S10-02's
+ * rollups are the first consumer of the windowed path and carry this caveat in their
+ * charter; #147 records the three ways to remove it properly, of which making the
+ * producers pass their business row's `created_at` through to the event context is the
+ * one that actually honours D10's "reconcile exactly" promise.
+ *
+ * `tests/db/events.db.test.ts` pins the artifact with a pair whose two rows carry
+ * deliberately different timestamps, so the behaviour is asserted rather than assumed.
+ */
 export interface ReconcileWindow {
   from?: Date | null;
   to?: Date | null;
@@ -187,6 +215,11 @@ const PAIRS: ReadonlyArray<{
  * rows. Tenant scoping is by explicit predicate as well as RLS, matching the rest of
  * the codebase, so the query is correct even on a connection that never set a role.
  */
+/**
+ * No production caller yet, and that is stated rather than left to be discovered:
+ * `reconcile()` is exercised by tests until S10-02's rollups or S10-03's dashboard
+ * consumes it. Both are out of scope for S10-01 by charter §3.
+ */
 export async function reconcile(
   client: pg.Client | pg.PoolClient,
   context: TenantContext,
@@ -229,12 +262,18 @@ export async function reconcile(
  * Named per metric: "reconciliation failed" sends whoever is paged looking at all
  * eight pairs instead of the one that moved.
  */
+function plural(count: number, noun: string): string {
+  return count === 1 ? noun : `${noun}s`;
+}
+
 export function describeDrift(result: ReconcileResult): string {
   if (result.ok) return "reconciled: every metric delta is zero";
   return result.drifted
     .map(
       (m) =>
-        `${m.metric}: ${m.businessRows} business rows vs ${m.events} ${m.countsEvent} events (delta ${m.delta > 0 ? "+" : ""}${m.delta})`,
+        `${m.metric}: ${m.businessRows} business ${plural(m.businessRows, "row")} vs ` +
+        `${m.events} ${m.countsEvent} ${plural(m.events, "event")} ` +
+        `(delta ${m.delta > 0 ? "+" : ""}${m.delta})`,
     )
     .join("; ");
 }

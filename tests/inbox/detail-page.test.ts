@@ -53,6 +53,21 @@ describe("conversation detail page", () => {
     expect(source).toContain("data-ai-run-id");
   });
 
+  it("posts the S08-03 actions as server-action forms, not client fetches", () => {
+    // A form works before hydration and keeps the bearer token in the HttpOnly
+    // cookie; a client fetch here would need the token in the browser.
+    for (const action of ["replyAction", "takeOverAction", "resolveAction", "assignToMeAction"]) {
+      expect(source).toContain(`action={${action}}`);
+    }
+    // The mutations live in a `"use server"` module: nothing in the page itself
+    // posts with a token, so the browser never holds one.
+    const actions = readFileSync(
+      new URL("../../web/app/(staff)/inbox/[conversationId]/actions.ts", import.meta.url),
+      "utf8",
+    );
+    expect(actions.startsWith('"use server";')).toBe(true);
+  });
+
   it("labels a citation whose version is no longer current, rather than hiding it", () => {
     // AC-2's twin: an answer that cites history is history working, and staff
     // need to see that the source moved on without the answer being wrong.

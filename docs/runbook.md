@@ -1244,3 +1244,46 @@ $ npm run web:build    # green; /inbox/[conversationId] in the manifest
 2. In `/c/<slug>`, ask the demo guest something the knowledge base answers (pool hours, wifi), so an `ai_runs` row exists with citations.
 3. Open `/inbox` → the conversation → screenshot the AI message with its Sources pane (quote visible, body expanded once) at 390px width.
 4. Paste the screenshot here with property, date and the AI run id.
+
+## S08-03 - Reply, take over, assign, resolve (1.50d)
+
+**AC (verbatim):** No race where AI replies after a takeover.
+
+- **AC-1** Takeover, reply, assign and resolve are atomic under a `FOR UPDATE` conversation lock.
+- **AC-2** An AI writer that started before a takeover loses the race deterministically.
+
+**Status: DONE (2026-10-26).** `src/inbox/actions.ts` (new), `src/conversation/state.ts` (`readState`, `lockStateWith`, lock-strength split), `src/guest/service.ts` (no lock across the model call; `assertModelMaySpeak` after it), `src/staff/http.ts` (four routes + status mapping), `src/i18n/catalog.ts` (action copy, en+es), `db/migrations/0023_staff_action_guards.sql` (new), `web/app/(staff)/inbox/[conversationId]/page.tsx` (action bar), `web/app/(staff)/inbox/[conversationId]/actions.ts` (new, server actions); tests `tests/db/takeover-race.db.test.ts` (new), `tests/db/inbox-actions.db.test.ts` (new), `tests/inbox/actions.test.ts` (new).
+
+**The finding that changed the design.** The charter said both writers take `FOR UPDATE` on the conversation row. That satisfies "mutually exclusive" and fails the actual AC, because S06-02 held that lock for the *entire guest turn*, model call included: an agent clicking "take over" waited for the provider, and the turn that started first still spoke last.
+
+Removing the early lock is necessary but not sufficient. Inserting the guest's inbound message takes a **`FOR KEY SHARE`** lock on the conversation row (its foreign-key check), and `FOR KEY SHARE` conflicts with `FOR UPDATE`. So the takeover still blocked — for the whole model call — until the lock strengths were split:
+
+| writer | lock | effect |
+|---|---|---|
+| staff actions | `FOR NO KEY UPDATE` | does not conflict with the guest turn's `FOR KEY SHARE`, so a takeover commits mid-model-call; conflicts with itself, so two agents serialise |
+| `assertModelMaySpeak` (the AI's pre-write check) | `FOR UPDATE` | waits for a committing takeover, then reads `awaiting_staff` and aborts |
+
+PostgreSQL's row-lock matrix is the authority here; anyone changing either mode must keep the pair asymmetric, or AC-2 flips back to "the bot wins".
+
+**What a lost race looks like to a guest.** The model's answer is discarded, the catalogue's `guest.staff_reply_pending` line is sent instead, and a `needs_human` request is opened in the same transaction — a promise with no queue row behind it is the failure S07-03 exists to prevent. The `ai_runs` row is kept: the call happened and it cost money.
+
+**The actions.** Every one locks the conversation, re-reads `ai_state` from the locked row, then writes. Reply takes over *first* in the same transaction (otherwise there is a window where the model answers and a human answers the same question). Assignment is one `INSERT ... ON CONFLICT DO NOTHING` against the new unique index — `created: false` on a replay, and no second `request_assigned` event. Resolve closes the conversation and **every** open request on it. Takeover is idempotent (`alreadyOwned: true`) and audits with the acting user.
+
+**Route shape:** `POST /api/inbox/conversations/:id/{takeover,reply,assign,resolve}`, `queue: write` (observer is 403 on all four, and the pure tests assert the denial costs zero queries). 400 invalid · 403 role · 404 foreign/unknown · 409 `assignee_not_member` / `request_not_open` / `illegal_transition`.
+
+**Migration 0023 — and the charter's index that could not work.** The proposed `UNIQUE (org_id, property_id, request_id, assigned_to, created_at)` cannot stop a replay, because `created_at` defaults to `now()`: a retried request inserts a second row that looks legitimately new. The shipped index drops `created_at`. 0023 also adds `service_requests_acknowledged_shape` (`acknowledged_at IS NULL OR status <> 'new'`, no backfill) and widens `handoff_reasons.reason_code` with `staff_takeover`, so a proactive human takeover stops being recorded as `guest_asked_human`.
+
+**UI:** three plain forms posting to server actions — works before hydration, keeps the bearer token in the HttpOnly cookie. "Assign to me" is the only assignment offered; a colleague picker is a settings surface and the API already takes any `assigneeUserId`.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector 0.6.2 + pg_trgm):**
+```text
+$ npm run db:migrate   # 23 applied (0023 lands)
+$ npm run db:test      # 32 files / 272 passed (race: 2, actions: 9)
+$ npm test             # 41 files / 523 passed (actions: 5, detail page: 5)
+$ npx tsc --noEmit && npm run lint   # clean (root and web/)
+$ npm run web:build    # green; /inbox/[conversationId] in the manifest
+```
+
+**The race case, in one line:** a scripted provider parks inside `generate`, the takeover runs on a *second connection*, the takeover must commit within 3s (if it blocked, the test errors rather than hanging), and exactly one outbound message exists afterwards — the pending line, never the model's answer.
+
+**Not done, by charter:** operating modes (S08-04), notification email (S09-05), internal notes, reassignment to another user from the UI.

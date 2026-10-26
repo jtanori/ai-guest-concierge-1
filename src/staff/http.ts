@@ -39,6 +39,16 @@ import {
 } from "../knowledge/facts.ts";
 import { InboxInputError, listInbox } from "../inbox/queries.ts";
 import { ConversationNotFoundError, getConversationDetail } from "../inbox/detail.ts";
+import { ConversationNotFoundError as StateConversationNotFoundError, IllegalTransitionError } from "../conversation/state.ts";
+import {
+  ActionInputError,
+  AssigneeNotMemberError,
+  RequestNotActionableError,
+  assignRequest,
+  replyToConversation,
+  resolveConversation,
+  takeOverConversation,
+} from "../inbox/actions.ts";
 import {
   ContradictionGroupNotFoundError,
   ContradictionWinnerError,
@@ -81,7 +91,7 @@ export function classifyError(error: unknown): Failure {
   if (error instanceof RoleNotOnSurfaceError) {
     return { status: 403, error: "role_not_on_surface", extra: { detail: error.message } };
   }
-  if (error instanceof ConversationNotFoundError) {
+  if (error instanceof ConversationNotFoundError || error instanceof StateConversationNotFoundError) {
     // S08-02: one 404 for "no such conversation" and "not yours" — the same
     // reason the guest surface does not distinguish them.
     return { status: 404, error: "not_found", extra: { detail: error.message } };
@@ -96,6 +106,31 @@ export function classifyError(error: unknown): Failure {
   }
   if (error instanceof FactContradictionError) {
     return { status: 409, error: "contradiction", extra: { detail: error.message } };
+  }
+  if (error instanceof AssigneeNotMemberError) {
+    // 409, not 403: the caller is allowed to assign, they simply named someone
+    // who is not on this property's staff. A 403 would read like a role problem.
+    return { status: 409, error: "assignee_not_member", extra: { detail: error.message } };
+  }
+  if (error instanceof RequestNotActionableError) {
+    return {
+      status: error.reason === "not_open" ? 409 : 404,
+      error: error.reason === "not_open" ? "request_not_open" : "request_not_found",
+      extra: { detail: error.message },
+    };
+  }
+  if (error instanceof IllegalTransitionError) {
+    // The state machine refused the write (e.g. closing a thread the model is
+    // answering). 409 with the two states, because the caller's next move
+    // depends on which one it was.
+    return {
+      status: 409,
+      error: "illegal_transition",
+      extra: { detail: error.message, from: error.from, to: error.to },
+    };
+  }
+  if (error instanceof ActionInputError) {
+    return { status: 400, error: "invalid_request", extra: { detail: error.message } };
   }
   if (error instanceof InboxInputError) {
     return { status: 400, error: "invalid_request", extra: { detail: error.message } };
@@ -238,6 +273,57 @@ const INBOX_ROUTES: Route[] = [
     pattern: /^\/api\/inbox\/conversations\/([0-9a-f-]{36})$/i,
     run: (m, _d, session, scoped, context) =>
       getConversationDetail(scoped, context, session, m[1]!),
+  },
+  // ---- S08-03: the four staff actions -----------------------------------
+  // POST, one segment per action, no verbs in a body: a URL that names the
+  // action is one a proxy can log and a reviewer can read.
+  {
+    method: "POST",
+    pattern: /^\/api\/inbox\/conversations\/([0-9a-f-]{36})\/takeover$/i,
+    run: async (m, _d, session, scoped, context, req) => {
+      const body = await readJson(req);
+      return takeOverConversation(scoped, context, session, {
+        conversationId: m[1]!,
+        detail: body["detail"] === undefined || body["detail"] === null ? null : String(body["detail"]),
+      });
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/inbox\/conversations\/([0-9a-f-]{36})\/reply$/i,
+    run: async (m, _d, session, scoped, context, req) => {
+      const body = await readJson(req);
+      return replyToConversation(scoped, context, session, {
+        conversationId: m[1]!,
+        body: typeof body["body"] === "string" ? body["body"] : "",
+      });
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/inbox\/conversations\/([0-9a-f-]{36})\/assign$/i,
+    run: async (m, _d, session, scoped, context, req) => {
+      const body = await readJson(req);
+      return assignRequest(scoped, context, session, {
+        conversationId: m[1]!,
+        requestId: body["requestId"] === undefined || body["requestId"] === null ? null : String(body["requestId"]),
+        assigneeUserId:
+          body["assigneeUserId"] === undefined || body["assigneeUserId"] === null
+            ? null
+            : String(body["assigneeUserId"]),
+      });
+    },
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/inbox\/conversations\/([0-9a-f-]{36})\/resolve$/i,
+    run: async (m, _d, session, scoped, context, req) => {
+      const body = await readJson(req);
+      return resolveConversation(scoped, context, session, {
+        conversationId: m[1]!,
+        requestId: body["requestId"] === undefined || body["requestId"] === null ? null : String(body["requestId"]),
+      });
+    },
   },
   {
     method: "GET",

@@ -27,12 +27,18 @@
  *
  * ## Why the row lock matters (AC-2)
  *
- * `takeover` and the AI's outbound write both do `SELECT ... FOR UPDATE` on the
- * same conversation row, in the same transaction as their other work. That makes
- * the pair mutually exclusive: either the takeover commits first and the AI's
- * re-read sees `awaiting_staff` (so it stays silent), or the AI's turn commits
- * first and the takeover applies to the next message. There is no interleaving
- * where the model finishes a sentence after a human has taken the thread.
+ * A takeover and the AI's outbound write both lock the same conversation row, in
+ * the same transaction as their other work. That makes the pair mutually
+ * exclusive: either the takeover commits first and the AI's re-read sees
+ * `awaiting_staff` (so it stays silent), or the AI's turn commits first and the
+ * takeover applies to the next message. There is no interleaving where the model
+ * finishes a sentence after a human has taken the thread.
+ *
+ * The two locks are deliberately not the same strength (S08-03): a takeover takes
+ * `FOR NO KEY UPDATE`, the AI's pre-write check takes `FOR UPDATE`. See
+ * `lockStateWith` for why — the guest turn's inbound message holds a key-share
+ * lock on the row for as long as its transaction lives, and the weaker staff lock
+ * is what lets an agent take over while the model is still thinking.
  */
 import type pg from "pg";
 import { emitEvent } from "../events/emit.ts";
@@ -123,11 +129,70 @@ export async function lockState(
   context: TenantContext,
   conversationId: string,
 ): Promise<AiState> {
+  return lockStateWith(client, context, conversationId, "FOR NO KEY UPDATE");
+}
+
+/**
+ * Why `FOR NO KEY UPDATE` and not `FOR UPDATE` (S08-03).
+ *
+ * Inserting a message takes a `FOR KEY SHARE` lock on its conversation (the
+ * foreign key). `FOR UPDATE` conflicts with that, so a guest turn that had
+ * written its inbound row — and is now waiting on a model — would block every
+ * staff action until the provider answered. That is the race S08-03's AC is
+ * about, seen from the staff side: an agent clicks "take over" and the screen
+ * hangs behind a language model.
+ *
+ * `FOR NO KEY UPDATE` is the write lock that does not conflict with
+ * `FOR KEY SHARE`, so:
+ *
+ *  - a takeover lands while the model is thinking (the guest turn's inbound row
+ *    holds only the key-share lock);
+ *  - two staff actions still block each other, because `FOR NO KEY UPDATE`
+ *    conflicts with itself;
+ *  - `assertModelMaySpeak` uses the stronger `FOR UPDATE`, so the model's writer
+ *    still waits for a committing takeover and then reads `awaiting_staff`.
+ *
+ * Weakening the staff lock without strengthening the model's would be a race in
+ * the other direction; the pair is deliberate and `tests/db/takeover-race.db.test.ts`
+ * is what pins it.
+ */
+async function lockStateWith(
+  client: pg.Client | pg.PoolClient,
+  context: TenantContext,
+  conversationId: string,
+  mode: "FOR NO KEY UPDATE" | "FOR UPDATE",
+): Promise<AiState> {
   const result = await client.query<StateRow>(
     `SELECT ai_state
        FROM conversations
       WHERE org_id = $1 AND property_id = $2 AND conversation_id = $3
-      FOR UPDATE`,
+      ${mode}`,
+    [context.orgId, context.propertyId, conversationId],
+  );
+  const row = result.rows[0];
+  if (row === undefined) throw new ConversationNotFoundError(conversationId);
+  return row.ai_state;
+}
+
+/**
+ * The state, WITHOUT the lock.
+ *
+ * S08-03 needs this: the guest pipeline must not hold the conversation's row
+ * lock across a model call, because that would make a takeover wait for up to a
+ * provider timeout and would let a turn that started before a human clicked
+ * "take over" still speak afterwards. The turn reads the state here, calls the
+ * model, and then takes the lock (`assertModelMaySpeak`) before writing. The
+ * read is a hint; the write-time check is the truth.
+ */
+export async function readState(
+  client: pg.Client | pg.PoolClient,
+  context: TenantContext,
+  conversationId: string,
+): Promise<AiState> {
+  const result = await client.query<StateRow>(
+    `SELECT ai_state
+       FROM conversations
+      WHERE org_id = $1 AND property_id = $2 AND conversation_id = $3`,
     [context.orgId, context.propertyId, conversationId],
   );
   const row = result.rows[0];
@@ -232,7 +297,10 @@ export async function assertModelMaySpeak(
   context: TenantContext,
   conversationId: string,
 ): Promise<AiState> {
-  const state = await lockState(client, context, conversationId);
+  // `FOR UPDATE`, deliberately stronger than `lockState`'s `FOR NO KEY UPDATE`:
+  // this is the statement that must lose to a committing takeover, so it waits
+  // for one and then observes `awaiting_staff`.
+  const state = await lockStateWith(client, context, conversationId, "FOR UPDATE");
   if (!modelMaySpeak(state)) throw new StaffTookOverError(conversationId, state);
   return state;
 }

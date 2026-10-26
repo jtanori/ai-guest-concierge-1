@@ -362,15 +362,32 @@ export const FACT_LOOKUP_SQL = `
    LIMIT 1
 `;
 
-/** Groups are matched with IS NOT DISTINCT FROM so a NULL effective date works. */
+/**
+ * Groups are matched with IS NOT DISTINCT FROM so a NULL effective date works.
+ *
+ * S04-01: a group a human has already decided leaves the queue. The
+ * `fact_resolutions` row (0010) is what closes it — without that exclusion the
+ * rows keep disagreeing forever and G1's "zero unresolved contradictions" could
+ * never be met.
+ */
 export const FACT_CONTRADICTIONS_SQL = `
   WITH groups AS (
-    SELECT topic_key, fact_key, language, effective_from
-      FROM property_facts
-     WHERE org_id = $1
-       AND property_id = $2
+    SELECT f.topic_key, f.fact_key, f.language, f.effective_from
+      FROM property_facts f
+     WHERE f.org_id = $1
+       AND f.property_id = $2
+       AND NOT EXISTS (
+         SELECT 1
+           FROM fact_resolutions r
+          WHERE r.org_id = f.org_id
+            AND r.property_id = f.property_id
+            AND r.topic_key = f.topic_key
+            AND r.fact_key = f.fact_key
+            AND r.language = f.language
+            AND r.effective_from IS NOT DISTINCT FROM f.effective_from
+       )
      GROUP BY 1, 2, 3, 4
-    HAVING count(DISTINCT fact_value) > 1
+    HAVING count(DISTINCT f.fact_value) > 1
   )
   SELECT f.topic_key,
          f.fact_key,

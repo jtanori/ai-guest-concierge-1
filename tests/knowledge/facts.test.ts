@@ -236,11 +236,18 @@ describe("lookup is lookup, not generation (AC-1)", () => {
       expect(pattern.test(FACT_CONTRADICTIONS_SQL), pattern.source).toBe(false);
     }
     expect(FACT_CONTRADICTIONS_SQL).toMatch(
-      /GROUP BY 1, 2, 3, 4\s+HAVING count\(DISTINCT fact_value\) > 1/,
+      /GROUP BY 1, 2, 3, 4\s+HAVING count\(DISTINCT f\.fact_value\) > 1/,
     );
     expect(FACT_CONTRADICTIONS_SQL).toMatch(/IS NOT DISTINCT FROM/);
     expect(FACT_CONTRADICTIONS_SQL).toMatch(/f\.org_id = \$1/);
     expect(FACT_CONTRADICTIONS_SQL).toMatch(/f\.property_id = \$2/);
+    // S04-01: a group a human has already resolved must leave the queue, or
+    // "unresolved contradictions" can never reach zero (G1).
+    expect(FACT_CONTRADICTIONS_SQL).toMatch(/NOT EXISTS \(/);
+    expect(FACT_CONTRADICTIONS_SQL).toMatch(/FROM fact_resolutions r/);
+    expect(FACT_CONTRADICTIONS_SQL).toMatch(
+      /r\.effective_from IS NOT DISTINCT FROM f\.effective_from/,
+    );
   });
 });
 

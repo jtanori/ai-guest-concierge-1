@@ -19,7 +19,7 @@ import { dropScratch, recreateScratch, scratchUrl } from "./helpers.db.ts";
 /** The RLS policy name that marks a table as tenant-scoped (0002). */
 const TENANT_POLICY = "tenant";
 
-/** The 21 tenant tables: the plan's 25 minus organizations/users/roles/memberships. */
+/** The 23 tenant tables: the plan's 25 minus organizations/users/roles/memberships, plus S04-01's two. */
 const EXPECTED_TENANT_TABLES = [
   "properties",
   "channel_connections", "channel_identities",
@@ -28,6 +28,8 @@ const EXPECTED_TENANT_TABLES = [
   "knowledge_sources", "knowledge_articles", "article_versions", "property_facts",
   "ai_runs", "citations", "handoff_reasons", "knowledge_gaps",
   "events", "rollups", "audit_log", "outbox",
+  // S04-01 (0010)
+  "article_reviews", "fact_resolutions",
 ];
 /** users/memberships carry S02-01's own surfaces (staff_select/staff_update_name
  *  and membership_select/insert/update/delete);
@@ -68,12 +70,12 @@ describe("row-level security (db)", () => {
   it("S01-03: the suite derives the tenant-table list FROM the database (policies, not hardcoded drift)", async () => {
     const scoped = await tenantTablesByPolicy(owner);
     expect([...scoped].sort()).toEqual([...EXPECTED_TENANT_TABLES].sort());
-    // and the whole 25 split cleanly: scoped + global = plan tables
+    // and the whole 27 (25 plan + S04-01) split cleanly: scoped + global = all tables
     const allTables = await owner.query<{ tablename: string }>(
       "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename != 'schema_migrations'",
     );
     const names = allTables.rows.map((r) => r.tablename).sort();
-    expect(names).toHaveLength(25);
+    expect(names).toHaveLength(27);
     expect(names).toEqual(
       [...EXPECTED_TENANT_TABLES, ...EXPECTED_GLOBAL_TABLES].sort(),
     );
@@ -377,10 +379,25 @@ async function seedOneTenant(client: pg.Client, tag: "a" | "b"): Promise<SeedRes
 
   // 0009: only verify_property_fact() may write `verified`, so the leak sweep
   // seeds an ordinary unverified fact (the sweep counts rows, not verdicts).
-  await client.query(
+  const fact = await client.query<{ fact_id: string }>(
     `INSERT INTO property_facts (org_id, property_id, source_id, topic_key, fact_key, fact_value, language, unit, effective_from)
-     VALUES ($1, $2, $3, 'pool.hours', 'closing', '20:00', 'es', 'time-of-day', '2026-01-01')`,
+     VALUES ($1, $2, $3, 'pool.hours', 'closing', '20:00', 'es', 'time-of-day', '2026-01-01')
+     RETURNING fact_id`,
     [ORG, PROP, SRC],
+  );
+  const FACT = fact.rows[0]!.fact_id;
+
+  // S04-01 (0010): a decision and a resolution are tenant rows too, so the
+  // leak sweep must see them.
+  await client.query(
+    `INSERT INTO article_reviews (org_id, property_id, article_version_id, status, reviewer_user_id, decided_at)
+     VALUES ($1, $2, $3, 'approved', $4, now())`,
+    [ORG, PROP, VERSION, USER],
+  );
+  await client.query(
+    `INSERT INTO fact_resolutions (org_id, property_id, topic_key, fact_key, language, effective_from, winner_fact_id, resolved_by)
+     VALUES ($1, $2, 'pool.hours', 'closing', 'es', '2026-01-01', $3, $4)`,
+    [ORG, PROP, FACT, USER],
   );
 
   const run = await client.query<{ ai_run_id: string }>(

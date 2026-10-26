@@ -316,3 +316,25 @@ erDiagram
         uuid resolved_by FK
         timestamptz resolved_at
     }
+    article_chunks {
+        uuid chunk_id PK
+        uuid org_id FK
+        uuid property_id FK
+        uuid article_version_id FK
+        integer ordinal
+        text body
+        vector embedding
+        tsvector tsv
+        timestamptz created_at
+    }
+    article_chunks {
+        uuid chunk_id PK
+        uuid org_id FK
+        uuid property_id FK
+        uuid article_version_id FK
+        integer ordinal
+        text body
+        vector embedding
+        tsvector tsv
+        timestamptz created_at
+    }

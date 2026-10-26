@@ -46,6 +46,7 @@ async function counts(): Promise<Record<string, number>> {
     article_versions: string;
     property_facts: string;
     knowledge_gaps: string;
+    article_chunks: string;
   }>(
     `SELECT
        (SELECT count(*) FROM organizations WHERE org_id = $1) AS orgs,
@@ -56,7 +57,8 @@ async function counts(): Promise<Record<string, number>> {
        (SELECT count(*) FROM knowledge_articles WHERE property_id = $2) AS knowledge_articles,
        (SELECT count(*) FROM article_versions WHERE property_id = $2) AS article_versions,
        (SELECT count(*) FROM property_facts WHERE property_id = $2) AS property_facts,
-       (SELECT count(*) FROM knowledge_gaps WHERE property_id = $2) AS knowledge_gaps`,
+       (SELECT count(*) FROM knowledge_gaps WHERE property_id = $2) AS knowledge_gaps,
+       (SELECT count(*) FROM article_chunks WHERE property_id = $2) AS article_chunks`,
     [DEMO_ORG_ID, DEMO_PROPERTY_ID, DEMO_STAFF.map((staff) => staff.userId)],
   );
   const row = result.rows[0]!;
@@ -114,6 +116,9 @@ describe("demo seed (db)", () => {
       article_versions: 7,
       property_facts: 5,
       knowledge_gaps: 1,
+      // S04-02: the demo's published versions are chunked, so a fresh database
+      // satisfies AC-1 without an embedding API key.
+      article_chunks: 26,
     });
 
     const current = await client.query<{ count: string }>(
@@ -315,6 +320,9 @@ describe("demo seed (db)", () => {
       article_versions: 7,
       property_facts: 5,
       knowledge_gaps: 1,
+      // S04-02: the demo's published versions are chunked, so a fresh database
+      // satisfies AC-1 without an embedding API key.
+      article_chunks: 26,
     });
   });
 });

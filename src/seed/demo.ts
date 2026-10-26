@@ -1,5 +1,6 @@
 import type pg from "pg";
 import { FIXTURE_ARTICLES, FIXTURE_FACTS } from "../fixtures/fixture-hotel.ts";
+import { assertChunkShape, chunkBody } from "../knowledge/chunk.ts";
 import { DEFAULT_SETTINGS, mergeSettings } from "../settings/schema.ts";
 import { stubEmbedding } from "./embedding.ts";
 import {
@@ -21,6 +22,8 @@ export interface SeedSummary {
   article_versions: number;
   property_facts: number;
   knowledge_gaps: number;
+  /** S04-02: rows written for the fixture's published versions. */
+  article_chunks: number;
 }
 
 const BRAND_SCOPED = new Set(["art-pool-website"]);
@@ -37,6 +40,8 @@ const SUMMARY: SeedSummary = {
   article_versions: FIXTURE_ARTICLES.length,
   property_facts: FIXTURE_FACTS.length,
   knowledge_gaps: 1,
+  // Filled as chunks are written; a fixture body change changes the count.
+  article_chunks: 0,
 };
 
 function vectorLiteral(values: number[]): string {
@@ -180,6 +185,39 @@ export async function seedDemo(client: pg.Client): Promise<SeedSummary> {
     );
     if (!version.rows[0]!.is_current && version.rows[0]!.promoted_at === null) {
       await client.query("SELECT promote_article_version($1)", [article.articleVersionId]);
+    }
+
+    // S04-02: the demo database must satisfy AC-1 ("every is_current version
+    // has >= 1 chunk") without an API key, so the fixture is chunked with the
+    // same deterministic stub the seed already uses for its whole-body vector.
+    // Every fixture article has exactly one version, so there is no retired
+    // sibling to clear here; the conflict arm keeps a re-seed a no-op and the
+    // ordinal sweep removes chunks left behind by a shortened fixture body.
+    const chunks = chunkBody(article.body);
+    assertChunkShape(chunks);
+    await client.query(
+      "DELETE FROM article_chunks WHERE article_version_id = $1 AND ordinal >= $2",
+      [article.articleVersionId, chunks.length],
+    );
+    for (const [ordinal, chunk] of chunks.entries()) {
+      await client.query(
+        `INSERT INTO article_chunks
+           (org_id, property_id, article_version_id, ordinal, body, embedding)
+         VALUES ($1, $2, $3, $4, $5, $6::vector)
+         ON CONFLICT (article_version_id, ordinal) DO UPDATE
+            SET body = EXCLUDED.body, embedding = EXCLUDED.embedding
+          WHERE article_chunks.body IS DISTINCT FROM EXCLUDED.body
+             OR article_chunks.embedding IS DISTINCT FROM EXCLUDED.embedding`,
+        [
+          DEMO_ORG_ID,
+          DEMO_PROPERTY_ID,
+          article.articleVersionId,
+          ordinal,
+          chunk,
+          vectorLiteral(stubEmbedding(chunk)),
+        ],
+      );
+      SUMMARY.article_chunks += 1;
     }
   }
 

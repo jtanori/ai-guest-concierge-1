@@ -34,6 +34,8 @@ export const PLAN_TABLES = [
   "knowledge_gaps", "events", "rollups", "audit_log", "outbox",
   // S04-01 (0010): the plan's 25 plus the review queue's two tenant tables.
   "article_reviews", "fact_resolutions",
+  // S04-02 (0011): the retrieval unit.
+  "article_chunks",
 ] as const;
 
 async function publicTables(client: pg.Client): Promise<Array<string>> {
@@ -77,6 +79,7 @@ describe("schema (db)", () => {
       "0008_article_versions_body_nullable.sql",
       "0009_property_facts.sql",
       "0010_review_queue.sql",
+      "0011_article_chunks.sql",
     ]);
   });
 
@@ -85,7 +88,7 @@ describe("schema (db)", () => {
       (t) => t !== "schema_migrations",
     );
     expect(new Set(tables)).toEqual(new Set(PLAN_TABLES));
-    expect(tables).toHaveLength(27);
+    expect(tables).toHaveLength(28);
   });
 
   it("fails loudly when an applied migration's file content drifts (checksum guard)", async () => {
@@ -122,13 +125,18 @@ describe("schema (db)", () => {
       "SELECT table_name, column_name, udt_name FROM information_schema.columns WHERE column_name IN ('embedding', 'tsv') AND table_schema = 'public'",
     );
     const embeddings = cols.rows.filter((r) => r.column_name === "embedding");
-    expect(embeddings).toHaveLength(2);
+    // S04-02 added the retrieval unit: chunks carry both a vector and a tsv.
+    expect(embeddings).toHaveLength(3);
     embeddings.forEach((r) => {
-      expect(r.table_name).toBeOneOf(["article_versions", "property_facts"]);
+      expect(r.table_name).toBeOneOf(["article_versions", "property_facts", "article_chunks"]);
       expect(r.udt_name).toBe("vector");
     });
     const tsvs = cols.rows.filter((r) => r.column_name === "tsv");
-    expect(tsvs.map((r) => r.table_name).sort()).toEqual(["article_versions", "property_facts"]);
+    expect(tsvs.map((r) => r.table_name).sort()).toEqual([
+      "article_chunks",
+      "article_versions",
+      "property_facts",
+    ]);
 
     const exts = await client.query<{ extname: string }>(
       "SELECT extname FROM pg_extension WHERE extname IN ('vector', 'pg_trgm')",

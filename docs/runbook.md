@@ -619,3 +619,34 @@ $ npm run web:build                                     # Next.js 15 production 
 ```
 
 **Deploy note:** `web/` is its own npm project (`npm run web:install`, then `web:dev` / `web:build`), deployed as a Vercel project with `REVIEW_API_URL` pointing at the API deployment. The API refuses to start the review routes without auth configuration (503 on every `/api/review/*` request), which is deliberate: a misconfigured deployment fails closed.
+
+## S04-02 - Chunking + embeddings (1.00d)
+
+**AC (verbatim):** Every published version is chunked and embedded.
+
+**Status: DONE (2026-10-25).** DEC-3 closed by the operator: **OpenAI `text-embedding-3-small` over plain `fetch`, no SDK**. `db/migrations/0011_article_chunks.sql` is the schema change, `src/knowledge/reembed.ts` gained `chunkAndPublish` / `backfillChunks`, `src/providers/embedding.ts` is the provider seam, and `npm run db:seed` now chunks the fixture.
+
+**Why a second retrieval layer, in one paragraph.** `article_versions` already carries a whole-body embedding and a `tsv`; S02-05 retrieves from it. That holds while articles are short. The fixture's 19,462-character noticeboard is the counter-example: one vector for forty paragraphs dilutes against any single one, and `ts_rank` over the whole body cannot separate "pool closes at 20:00" from "spa closes at 20:00" inside the same document. The chunk is the unit a guest's question is comparable to. The whole-body vector stays: it is what S05 cites and what a version-level rerank reads.
+
+**The decisions that shaped the code:**
+
+- *One provider call per publish.* `promote_article_version` (0003) refuses a version whose own `embedding` is NULL, so chunks alone cannot satisfy the publish gate. `chunkAndPublish` embeds `[body, ...chunks]` in one request — position 0 is `article_versions.embedding`, the rest are ordinal-ordered chunk vectors. Two calls would let the two vectors come from providers that disagree and would double the failure surface.
+- *Publish order is the AC.* read → chunk → embed everything → write chunks → promote → retire the previous version's chunks, all in the caller's transaction. A provider failure, a wrong-width vector or a refused promotion leaves the previous version current and untouched. `tests/db/chunks.db.test.ts` proves the rollback for each failure.
+- *AC-1's second clause is what forces a DELETE.* "Every chunk resolves to a current version" cannot hold while v1's chunks survive v2's promotion, so `article_chunks` grants DELETE (unlike 0010's tables) and both publish paths (`chunkAndPublish`, and S02-05's `reembedAndPublish`) sweep the retired siblings. Derived data only: v1 keeps its immutable body and whole-body embedding.
+- *`(article_version_id, ordinal)` is identity.* Ordinals are 0-based and contiguous; the `article_chunks_identity_immutable` trigger refuses any UPDATE that moves a chunk to another version or position, while allowing the text/vector to be rewritten (a model change is legitimate). Rewriting position would silently repoint an existing citation.
+- *The provider never echoes its key.* Errors carry a status and a ≤300-character body snippet; a transport failure is re-wrapped rather than re-thrown, because a `fetch` rejection can carry the request headers in its message. Response order is restored by `index` and checked to be a permutation of `0..n-1`, so chunk N can never receive chunk M's vector.
+- *`backfillChunks` + `npm run embed:all` exist because "publish" grew a second half.* A database that published before 0011 has current versions with no chunks. The script takes an explicit `--org`/`--property` (enumerating tenants would mean reading across RLS) and compares each current version's chunk COUNT against `chunkBody(body).length`, so a half-written set is repaired too, not only an empty one. `backfillChunks` refuses a retired version: chunking history would violate the invariant it is meant to restore.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector + pg_trgm on a real cluster):**
+```text
+$ npm run db:migrate                                  # 11 applied (0011 lands)
+$ npm run db:seed                                     # {... "article_chunks":26} - demo satisfies AC-1 with no API key
+$ npm run embed:all -- --org <uuid> --property <uuid> --stub
+                                                      # {"versions":3,"chunks":3} after deleting 3 versions' chunks
+$ npm run db:test                                     # 152 passed (152) - incl. 15 article-chunks
+$ npm test                                            # 293 passed (293) - incl. 13 provider, 48 chunking
+$ npm run typecheck && npm run lint && npm run build   # all clean
+```
+
+**Seed note:** the fixture's 7 published versions are chunked with the same deterministic `stubEmbedding` the seed already uses for whole-body vectors, so a fresh demo database satisfies AC-1 without an embedding key. `--stub` on `embed:all` is the same idea and is for local/CI only: a stub vector is meaningless for real retrieval.
+

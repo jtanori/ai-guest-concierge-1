@@ -12,6 +12,7 @@
     "check:env": "node scripts/check-env.ts",
     "db:migrate": "node --experimental-strip-types scripts/migrate.ts",
     "db:seed": "node --experimental-strip-types scripts/seed.ts",
+    "embed:all": "node --experimental-strip-types scripts/embed-all.ts",
     "db:test": "vitest run --config tests/db/vitest.db.config.ts",
     "smoke:neon": "node --env-file=.env.local scripts/smoke-neon.ts",
     "start": "node --env-file=.env.local src/server.ts",

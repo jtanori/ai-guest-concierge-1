@@ -107,3 +107,60 @@ export function resolveDeploymentEnvironments(input: {
 
   return { localUrl, stagingUrl, prodUrl };
 }
+
+/**
+ * S04-02 / DEC-3 — the embedding provider's settings, resolved the same way as
+ * everything else: from the environment, with no silent default for the secret.
+ *
+ * The model default (`text-embedding-3-small`) is the one that emits the 1536
+ * dimensions D3 locked. It is a DEFAULT and not a constraint: pointing
+ * EMBEDDING_MODEL at a model with a different width is allowed here and fails
+ * loudly at `assertEmbeddingDimension` before anything reaches Postgres, which
+ * is the right place for that failure — the provider is replaceable, the column
+ * is not.
+ */
+export interface EmbeddingConfig {
+  apiKey: string;
+  model: string;
+  baseUrl: string;
+  timeoutMs: number;
+  /** How many chunk texts go in one provider call. */
+  batchSize: number;
+}
+
+export const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
+export const DEFAULT_EMBEDDING_BASE_URL = "https://api.openai.com/v1";
+
+export function loadEmbeddingConfig(source: Record<string, string | undefined>): EmbeddingConfig {
+  const apiKey = (source["EMBEDDING_API_KEY"] ?? "").trim();
+  if (apiKey === "") {
+    throw new ConfigError(
+      "EMBEDDING_API_KEY is required to chunk and embed published articles " +
+        "(S04-02). Refusing to start without it rather than writing rows with " +
+        "a null embedding.",
+    );
+  }
+
+  const baseUrl = (source["EMBEDDING_BASE_URL"] ?? DEFAULT_EMBEDDING_BASE_URL).trim();
+  if (!/^https?:\/\//.test(baseUrl)) {
+    throw new ConfigError(`EMBEDDING_BASE_URL must be an http(s) URL, got "${baseUrl}"`);
+  }
+
+  const timeoutMs = Number(source["EMBEDDING_TIMEOUT_MS"] ?? 20_000);
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1) {
+    throw new ConfigError("EMBEDDING_TIMEOUT_MS must be a positive integer");
+  }
+
+  const batchSize = Number(source["EMBEDDING_BATCH_SIZE"] ?? 16);
+  if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 128) {
+    throw new ConfigError("EMBEDDING_BATCH_SIZE must be an integer in 1..128");
+  }
+
+  return {
+    apiKey,
+    model: (source["EMBEDDING_MODEL"] ?? DEFAULT_EMBEDDING_MODEL).trim(),
+    baseUrl: baseUrl.replace(/\/+$/, ""),
+    timeoutMs,
+    batchSize,
+  };
+}

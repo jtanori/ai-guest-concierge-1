@@ -19,7 +19,7 @@ import { dropScratch, recreateScratch, scratchUrl } from "./helpers.db.ts";
 /** The RLS policy name that marks a table as tenant-scoped (0002). */
 const TENANT_POLICY = "tenant";
 
-/** The 23 tenant tables: the plan's 25 minus organizations/users/roles/memberships, plus S04-01's two. */
+/** The 24 tenant tables: the plan's 25 minus organizations/users/roles/memberships, plus S04-01's two. */
 const EXPECTED_TENANT_TABLES = [
   "properties",
   "channel_connections", "channel_identities",
@@ -30,6 +30,8 @@ const EXPECTED_TENANT_TABLES = [
   "events", "rollups", "audit_log", "outbox",
   // S04-01 (0010)
   "article_reviews", "fact_resolutions",
+  // S04-02 (0011)
+  "article_chunks",
 ];
 /** users/memberships carry S02-01's own surfaces (staff_select/staff_update_name
  *  and membership_select/insert/update/delete);
@@ -70,12 +72,12 @@ describe("row-level security (db)", () => {
   it("S01-03: the suite derives the tenant-table list FROM the database (policies, not hardcoded drift)", async () => {
     const scoped = await tenantTablesByPolicy(owner);
     expect([...scoped].sort()).toEqual([...EXPECTED_TENANT_TABLES].sort());
-    // and the whole 27 (25 plan + S04-01) split cleanly: scoped + global = all tables
+    // and the whole 28 (25 plan + S04-01 + S04-02) split cleanly: scoped + global = all tables
     const allTables = await owner.query<{ tablename: string }>(
       "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename != 'schema_migrations'",
     );
     const names = allTables.rows.map((r) => r.tablename).sort();
-    expect(names).toHaveLength(27);
+    expect(names).toHaveLength(28);
     expect(names).toEqual(
       [...EXPECTED_TENANT_TABLES, ...EXPECTED_GLOBAL_TABLES].sort(),
     );
@@ -386,6 +388,13 @@ async function seedOneTenant(client: pg.Client, tag: "a" | "b"): Promise<SeedRes
     [ORG, PROP, SRC],
   );
   const FACT = fact.rows[0]!.fact_id;
+
+  // S04-02 (0011): a chunk is derived data, but it is still a tenant row.
+  await client.query(
+    `INSERT INTO article_chunks (org_id, property_id, article_version_id, ordinal, body)
+     VALUES ($1, $2, $3, 0, 'The pool closes at 20:00.')`,
+    [ORG, PROP, VERSION],
+  );
 
   // S04-01 (0010): a decision and a resolution are tenant rows too, so the
   // leak sweep must see them.

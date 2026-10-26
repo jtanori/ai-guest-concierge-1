@@ -9,9 +9,11 @@ priority: P0
 depends_on: [S03-01]
 labels: [sprint:S04, track:foundation, prio:P0]
 milestone: S04 - Retrieval and review
-status: draft
+status: done
 issue: https://github.com/jtanori/ai-guest-concierge-1/issues/71
 pickup: decision
+approved: 2026-10-25
+done: 2026-10-25
 ---
 
 # S04-02 — Chunking + embeddings
@@ -33,8 +35,8 @@ Published versions must be embedded so hybrid retrieval and the `is_current` inv
 
 > Every published version is chunked and embedded.
 
-- **AC-1** Every `is_current` article version has ≥1 chunk; every chunk resolves to a current version.
-- **AC-2** A version with no body (picture-only noticeboard) is refused publication rather than silently indexed.
+- **AC-1** Every `is_current` article version has ≥1 chunk; every chunk resolves to a current version. *(Status: MET — `tests/db/chunks.db.test.ts` asserts both halves, including after a second version is published and after a backfill.)*
+- **AC-2** A version with no body (picture-only noticeboard) is refused publication rather than silently indexed. *(Status: MET — NULL and whitespace-only bodies both raise `UnembeddableVersionError`, write no chunks and leave the version retired.)*
 
 ## 3. Scope
 
@@ -71,8 +73,9 @@ Published versions must be embedded so hybrid retrieval and the `is_current` inv
 
 Open decisions / blockers:
 
-- **DEC-3 (embedding provider + API key).** Schema fixes 1536 dims (D3), so the provider must emit 1536 (e.g. `text-embedding-3-small`). The service contract (`Embedder`/`EmbeddingProvider`) is fully calculated; only the concrete adapter + env vars wait on the decision.
-- A real provider SDK would be a new runtime dependency — requires explicit approval per `docs/charters/README.md` §Approval checklist.
+- **DEC-3 (embedding provider + API key) — CLOSED 2026-10-25.** Operator decision: **OpenAI `text-embedding-3-small`, reached over plain `fetch`; no SDK** (so no new runtime dependency). `src/providers/embedding.ts` is the adapter; `EMBEDDING_API_KEY` is required and its absence is a `ConfigError`, never a row with a null embedding. `EMBEDDING_MODEL` / `EMBEDDING_BASE_URL` / `EMBEDDING_TIMEOUT_MS` / `EMBEDDING_BATCH_SIZE` cover a gateway or a self-hosted endpoint; a model that emits anything but 1536 dims fails in `assertEmbeddingDimension` before Postgres can coerce it.
+- **One provider call per publish, not two.** `promote_article_version` (0003) refuses a version whose own `embedding` column is still NULL, so chunks alone cannot satisfy the publish gate. `chunkAndPublish` therefore embeds `[body, ...chunks]` in a single request: position 0 becomes `article_versions.embedding`, the rest become chunk vectors. Two calls would let the two vectors come from providers that disagree, and would double the failure surface for no benefit.
+- **AC-1's second clause drives a DELETE.** "Every chunk resolves to a current version" means publishing v2 removes v1's chunks — hence `GRANT ... DELETE` on `article_chunks`, unlike 0010's tables. Chunks are derived data; v1 keeps its immutable body and whole-body embedding, which is what a citation needs. `reembedAndPublish` (S02-05's whole-body path) does the same sweep, so no publish path can leave retired chunks behind.
 
 ## 9. Definition of done
 

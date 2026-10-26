@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chunkBody } from "../../src/knowledge/chunk.ts";
+import { assertChunkShape, chunkBody, MAX_CHUNK_CHARS } from "../../src/knowledge/chunk.ts";
 
 /** Walk source offsets, accounting only for bounded overlap; require full coverage. */
 function assertCoverage(
@@ -233,5 +233,21 @@ describe("chunkBody", () => {
     expect(
       distinctChunks.reduce((sum, chunk) => sum + Array.from(chunk).length, 0),
     ).toBeLessThan(2 * Array.from(distinct).length);
+  });
+});
+
+describe("assertChunkShape (S04-02)", () => {
+  it("accepts what chunkBody produces", () => {
+    expect(() => assertChunkShape(chunkBody("One sentence. Two sentences."))).not.toThrow();
+  });
+
+  it("refuses the empty result that AC-1 forbids", () => {
+    expect(() => assertChunkShape([])).toThrow(/at least one chunk/);
+    expect(() => assertChunkShape(["   "])).toThrow(/blank/);
+  });
+
+  it("refuses a chunk past the database's ceiling", () => {
+    expect(() => assertChunkShape(["x".repeat(MAX_CHUNK_CHARS + 1)])).toThrow(/over the 2000/);
+    expect(() => assertChunkShape(["x".repeat(MAX_CHUNK_CHARS)])).not.toThrow();
   });
 });

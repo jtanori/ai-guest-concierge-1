@@ -125,3 +125,33 @@ export function chunkBody(body: string, opts: ChunkOptions = {}): string[] {
   }
   return chunks;
 }
+
+/** The database's ceiling (0011's CHECK) and the chunker's hard limit. */
+export const MAX_CHUNK_CHARS = 2000;
+
+/**
+ * The shape the store will accept, checked before the write rather than by a
+ * CHECK constraint halfway through a transaction:
+ *
+ *  - at least one chunk (a published version with zero chunks is exactly the
+ *    state AC-1 forbids),
+ *  - every chunk non-blank,
+ *  - every chunk within the 2000-code-point ceiling.
+ *
+ * Order matters and is not checked here: it is the array's, and
+ * `chunkAndPublish` assigns ordinals from it.
+ */
+export function assertChunkShape(chunks: readonly string[]): void {
+  if (!Array.isArray(chunks) || chunks.length === 0) {
+    throw new RangeError("a published version needs at least one chunk");
+  }
+  for (const [index, chunk] of chunks.entries()) {
+    if (typeof chunk !== "string" || chunk.trim() === "") {
+      throw new RangeError(`chunk ${index} is blank`);
+    }
+    const length = Array.from(chunk).length;
+    if (length > MAX_CHUNK_CHARS) {
+      throw new RangeError(`chunk ${index} is ${length} characters, over the ${MAX_CHUNK_CHARS} limit`);
+    }
+  }
+}

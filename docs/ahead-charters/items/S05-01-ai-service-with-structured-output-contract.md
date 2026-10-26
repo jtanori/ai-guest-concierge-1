@@ -69,7 +69,15 @@ Provider calls carry no tenant id in the prompt; log only `org_id/property_id/co
 
 ## 8. Pickup status, blockers and decisions
 
-**NEEDS DECISION — see §8. Calculations are complete where possible; the named decision must close first.**
+**IN PROGRESS.** DEC-2 is the only thing gating the vendor-facing half.
+
+Delivered without it (all provider-agnostic, all tested):
+
+- `src/ai/contract.ts` — Appendix B types plus `parseAiOutput`, a hand-written validator that rejects unknown/missing fields, an undefined decision, an answer with no citations, a citation outside the retrieved set, a bad quote, an out-of-range confidence, an unknown `reason_code`, prose attached to a non-answer, and unretrieved topic keys. It reports EVERY violation in one error rather than the first, and it refuses to map `needs_human` to the table's `escalate` anywhere but `toRunDecision`.
+- `src/ai/prompt.ts` — `PROMPT_VERSION = "answer-v1"`, a pure `buildPrompt`, and `AI_OUTPUT_JSON_SCHEMA` for provider-native structured outputs. Articles are labelled with `article_version_id` only (never `article_id`), and `no_answer` is offered to the model explicitly.
+- `src/ai/provider.ts` — `AiProvider` + `withResilience`: 8s/3s timeouts enforced on the caller side too, two jittered retries on 429/5xx only, a 60s circuit break to the secondary, `AiUnavailableError` when both fail, and a refusal to accept the same pinned model twice as primary and fallback.
+- `src/config/env.ts` — `loadLlmConfig`: no default model ids, `-latest`/`@latest` refused, key required outside `local`.
+- Tests: `tests/ai/contract.test.ts` (16), `tests/ai/transport.test.ts` (8), `src/config/env.test.ts` (+4).
 
 Open decisions / blockers:
 

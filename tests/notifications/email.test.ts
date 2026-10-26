@@ -27,6 +27,7 @@ import {
   logOnlyProvider,
   resendProvider,
 } from "../../src/providers/email.ts";
+import { reviewBackoffMs } from "../../src/review/queue.ts";
 import type { EscalationContact } from "../../src/settings/schema.ts";
 
 const FROM = "Concierge <desk@casamesa.example>";
@@ -375,12 +376,39 @@ describe("composeRequestEmail", () => {
 
 describe("emailBackoffMs", () => {
   it("doubles from a second and caps at a minute", () => {
-    expect(emailBackoffMs(0)).toBe(1000);
-    expect(emailBackoffMs(1)).toBe(2000);
-    expect(emailBackoffMs(2)).toBe(4000);
-    expect(emailBackoffMs(4)).toBe(16000);
+    // `attempt` is the 1-based failure count, so the first retry waits one second.
+    expect(emailBackoffMs(1)).toBe(1000);
+    expect(emailBackoffMs(2)).toBe(2000);
+    expect(emailBackoffMs(3)).toBe(4000);
+    expect(emailBackoffMs(4)).toBe(8000);
+    expect(emailBackoffMs(5)).toBe(16000);
     expect(emailBackoffMs(9)).toBe(60000);
     expect(emailBackoffMs(40)).toBe(60000);
+  });
+
+  it("never hands back a sub-second delay for a nonsense attempt", () => {
+    // Clamped at the floor: a zero or negative count must still wait a second, not
+    // retry instantly, which is what an unclamped `2 ** (attempt - 1)` would do.
+    expect(emailBackoffMs(0)).toBe(1000);
+    expect(emailBackoffMs(-1)).toBe(1000);
+  });
+
+  it("is the SAME ladder as the review worker, not merely a similar one", () => {
+    // The drift this pins: both workers share `claim_outbox` and both give up at five
+    // attempts, but this function used `2 ** attempt` where reviewBackoffMs uses
+    // `2 ** (attempt - 1)`, so email retried at 2s, 4s, 8s, 16s, 32s while this
+    // function's own comment, the runbook and the idempotency-window reasoning in
+    // src/providers/email.ts all said 1s, 2s, 4s, 8s, 16s. Comparing the two
+    // functions to each other is what turns that comment into an assertion.
+    for (let attempt = 0; attempt <= 12; attempt += 1) {
+      expect(emailBackoffMs(attempt), `ladder diverged at attempt ${attempt}`).toBe(
+        reviewBackoffMs(attempt),
+      );
+    }
+    // And the total the idempotency reasoning depends on: 1+2+4+8 = 15s, far inside
+    // Resend's 24-hour key retention, so a key cannot expire mid-ladder.
+    const ladderTotal = [1, 2, 3, 4].reduce((sum, a) => sum + emailBackoffMs(a), 0);
+    expect(ladderTotal).toBe(15_000);
   });
 
   it("has a ceiling on attempts", () => {

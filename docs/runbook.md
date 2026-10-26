@@ -1690,11 +1690,49 @@ fresh random UUIDs.
 string that contains generated ids. Assert the absence of something that could only
 come from the data you are worried about.
 
-**Evidence (local, PostgreSQL 16.2 + pgvector 0.6.2 + pg_trgm 1.6), after review round 1:**
+**Review round 2 (PR #145) — one consistency nit, and the interesting part is that the
+documentation was right and the code was wrong.**
+
+The reviewer noticed `emailBackoffMs(1)` returned 2 seconds while the review worker's
+first delay was 1 second, and that both the function's own comment and this runbook
+described a 1, 2, 4, 8, 16-second ladder. Three separate places already said "one
+second first": the comment, this runbook's "totals about fifteen seconds", and
+`src/providers/email.ts`'s argument that the ladder is short enough for a Resend
+idempotency key not to expire mid-retry. Even the test's own name said *"doubles from a
+second"* while its assertions started at 2000.
+
+So the fix was to align the calculation, not the prose: `2 ** attempt` became
+`2 ** (attempt - 1)`, making the two functions' expressions character-identical. That
+also makes the fifteen-second claim arithmetically true — 1+2+4+8 = 15s, where
+2+4+8+16 = 30s.
+
+**Why no test caught it, and the guard that now does.** Every wrong value was plausible
+in isolation: 2000 ms is a perfectly reasonable first backoff, and the old test asserted
+`emailBackoffMs(1)).toBe(2000)` and passed. Single-value assertions pin whatever the
+code currently does; they cannot express "these two channels agree". The new test
+compares the functions to each other across the whole ladder, which turns the comment's
+claim into an executable one:
+
+```ts
+for (let attempt = 0; attempt <= 12; attempt += 1) {
+  expect(emailBackoffMs(attempt), `ladder diverged at attempt ${attempt}`)
+    .toBe(reviewBackoffMs(attempt));
+}
+```
+
+Confirmed to fail on demand — reintroducing `2 ** attempt` produces "ladder diverged at
+attempt 1: expected 2000 to be 1000" in both the new test and the value test.
+
+**The general rule:** when a comment says one module behaves "the same as" another, the
+test should assert the equality between the two functions, not a list of literals copied
+from whichever one was read first. A duplicated constant is a duplicated opportunity to
+drift; a cross-module equality assertion fails the moment they part company.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector 0.6.2 + pg_trgm 1.6), after review round 2:**
 ```text
 $ npm run db:migrate   # 28 applied from an EMPTY database (0028 lands)
 $ npm run db:test      # 38 files / 400 passed (email outbox: 32)
-$ npm test             # 47 files / 620 passed (email pure: 44)
+$ npm test             # 47 files / 622 passed (email pure: 46)
 $ npx tsc --noEmit && npx tsc --noEmit -p web/tsconfig.json && npm run lint   # clean
 $ npm run web:build    # green; /gaps and /inbox/[conversationId] in the manifest
 ```

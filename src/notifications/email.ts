@@ -496,10 +496,25 @@ export interface EmailOutboxResult {
   noRecipient: number;
 }
 
-/** Same ladder as the review worker — 1s, 2s, 4s, 8s, 16s, capped at a minute. */
+/**
+ * Same ladder as the review worker — 1s, 2s, 4s, 8s, 16s, capped at a minute — and
+ * deliberately the same EXPRESSION rather than merely the same numbers: both workers
+ * claim from one `claim_outbox` (0028) and both give up at five attempts, so whoever
+ * learns one ladder should not have to relearn it for the other channel.
+ *
+ * `attempt` is the 1-based failure count, hence the `attempt - 1` exponent. This once
+ * used `attempt`, which silently shifted the whole ladder to 2s, 4s, 8s, 16s, 32s and
+ * contradicted three things at once: this comment, the runbook's "totals about fifteen
+ * seconds", and src/providers/email.ts's reasoning that the ladder is short enough for
+ * a Resend idempotency key not to expire mid-retry. 1+2+4+8 is fifteen seconds;
+ * 2+4+8+16 is thirty.
+ *
+ * Every wrong value was plausible on its own, so no single-value assertion caught it.
+ * What catches it now is a test comparing this function against `reviewBackoffMs`
+ * directly, which makes the claim in the comment above executable.
+ */
 export function emailBackoffMs(attempt: number): number {
-  const exp = Math.min(Math.max(attempt, 0), 10);
-  return Math.min(1000 * 2 ** exp, 60_000);
+  return Math.min(60_000, 1_000 * 2 ** Math.max(0, attempt - 1));
 }
 
 /**

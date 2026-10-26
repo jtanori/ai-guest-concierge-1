@@ -87,6 +87,17 @@ Deviations from §4, all recorded in the runbook:
 - **`BEGIN` in the worker is load-bearing and §4 did not mention it.** `FOR UPDATE SKIP LOCKED` holds its lock only for the transaction that took it, so without an explicit `BEGIN` the lock is released the instant the claim returns and two workers can claim the same row and both send it. `COMMIT` with no open transaction *succeeds with a warning*, so a single-worker test passes and the bug surfaces in production as duplicate escalation emails.
 - **A dead row carries no `next_attempt_at`,** differing deliberately from S09-04's `recordFailure`. `next_attempt_at` means "next eligible for claiming", so a timestamp on a row that will never be claimed again reads as a missed retry. Both email paths set `processed_at`, which is the column that answers "when did we give up". S09-04 stamps a due-time only because it writes no `processed_at`; rewriting that here would be out of scope, so the difference is documented in both places.
 
+**Review round 2 (PR #145) — approved with one consistency nit, now fixed.**
+`emailBackoffMs` used `2 ** attempt` where the review worker uses `2 ** (attempt - 1)`,
+so email retried at 2s, 4s, 8s, 16s, 32s while this charter, the runbook and the
+function's own comment all described 1s, 2s, 4s, 8s, 16s. Aligned the calculation to the
+documented ladder rather than the documentation to the calculation, because three
+independent places already said one second first and one of them (the fifteen-second
+total in `src/providers/email.ts`) is load-bearing for the idempotency argument. The new
+guard asserts `emailBackoffMs(n) === reviewBackoffMs(n)` across the ladder, so the two
+workers cannot silently diverge again — the old test asserted `emailBackoffMs(1) ===
+2000` and passed, because a single-value assertion pins whatever the code happens to do.
+
 **Review round 1 (PR #145) — four findings, all fixed.** Each was a case the tests
 could not see rather than a case that failed, so each now has one; details and
 reasoning are in the runbook entry.

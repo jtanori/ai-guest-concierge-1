@@ -27,6 +27,7 @@
  */
 import type pg from "pg";
 import { assertTenantShape, type TenantContext } from "../db/tenant.ts";
+import { parsePropertySettings } from "../settings/schema.ts";
 
 /** Unknown, malformed and ambiguous slugs all land here — one 404, no oracle. */
 export class UnknownPropertyError extends Error {
@@ -45,6 +46,15 @@ export interface PublicProperty {
   timeZone: string;
   /** Declared guest languages, e.g. `["es","en"]`. Used for the reply language default. */
   languages: string[];
+  /**
+   * S07-01 — the origins allowed to frame the chat (settings `embed`).
+   *
+   * Read under the APP role, not the lookup role: `concierge_public` holds a
+   * column grant on `properties` that deliberately excludes `settings` (0015),
+   * because settings carry staff contacts. This one field is copied out after
+   * the role switch rather than granted away.
+   */
+  frameAncestors: string[];
 }
 
 export interface GuestSession {
@@ -68,6 +78,30 @@ interface PropertyRow {
   slug: string;
   time_zone: string;
   languages: string[];
+}
+
+/**
+ * S07-01 — `embed.allowed_origins` for this property, or `[]`.
+ *
+ * Deliberately forgiving: settings are validated on write (0006/0013/0020 and
+ * `parsePropertySettings`), so a value that fails to parse here means somebody
+ * wrote past both. The guest still gets the chat; only embedding is refused.
+ */
+async function loadFrameAncestors(
+  client: pg.Client | pg.PoolClient,
+  context: TenantContext,
+): Promise<string[]> {
+  const result = await client.query<{ settings: unknown }>(
+    "SELECT settings FROM properties WHERE org_id = $1 AND property_id = $2",
+    [context.orgId, context.propertyId],
+  );
+  const settings = result.rows[0]?.settings;
+  try {
+    const parsed = parsePropertySettings(settings);
+    return [...parsed.embed.allowed_origins];
+  } catch {
+    return [];
+  }
 }
 
 export class GuestRoleUnavailableError extends Error {
@@ -125,6 +159,10 @@ export async function withGuestSession<T>(
       slug: row.slug,
       timeZone: row.time_zone,
       languages: row.languages,
+      // Filled in below, once the app role can read settings. A default here
+      // (rather than a placeholder) is what makes a missing key fail closed:
+      // no allowlist means no embedder.
+      frameAncestors: [],
     };
     const context: TenantContext = { orgId: property.orgId, propertyId: property.propertyId };
     assertTenantShape(context);
@@ -137,6 +175,12 @@ export async function withGuestSession<T>(
     }
     await client.query("SELECT set_config('app.current_org_id', $1, true)", [context.orgId]);
     await client.query("SELECT set_config('app.current_property_id', $1, true)", [context.propertyId]);
+
+    // S07-01: the embed allowlist, read now that the app role is in force. A
+    // settings row that does not parse must not 500 a guest page — the chat is
+    // the product, embedding is a distribution channel — so a parse failure is
+    // logged and treated as "nobody may embed".
+    property.frameAncestors = await loadFrameAncestors(client, context);
 
     const result = await fn({ context, property }, client);
     await client.query("COMMIT");

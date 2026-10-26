@@ -225,6 +225,67 @@ describe("property settings schema", () => {
     expect(parsePropertySettings(heavy).retrieval_weights.lexical).toBe(4);
   });
 
+  it("requires the embed key and defaults it to nobody (0020, S07-01)", () => {
+    // REQUIRED, not optional. An optional key would let a property inherit
+    // "everyone" from a missing value; required means the write says who may
+    // frame the chat, and 0020 backfills existing rows with an empty array.
+    expect(DEFAULT_SETTINGS.embed).toEqual({ allowed_origins: [] });
+
+    const missing = base();
+    delete missing["embed"];
+    expectPath(missing, "embed");
+
+    expectPath({ ...base(), embed: [] }, "embed");
+    expectPath({ ...base(), embed: { allowed_origins: "https://hotel.example" } }, "embed.allowed_origins");
+    expectPath({ ...base(), embed: { allowed_origins: [42] } }, "embed.allowed_origins");
+    // An extra key is a typo that would silently never be read.
+    expectPath(
+      { ...base(), embed: { allowed_origins: [], allow_all: true } },
+      "embed.allow_all",
+    );
+  });
+
+  it("accepts only bare origins, and treats the list as a set", () => {
+    // Bare origin: scheme, host, optional port. No path, no trailing slash, no
+    // wildcard — a wildcard here would be an open framing policy on a page that
+    // can open service requests.
+    for (const bad of [
+      "hotel.example",
+      "https://hotel.example/",
+      "https://hotel.example/spa",
+      "https://*.hotel.example",
+      "*",
+      "null",
+      "javascript:alert(1)",
+    ]) {
+      expectPath({ ...base(), embed: { allowed_origins: [bad] } }, "embed.allowed_origins");
+    }
+
+    const good = base();
+    good["embed"] = {
+      allowed_origins: ["https://hotel.example", "http://localhost:3000", "http://127.0.0.1:4000"],
+    };
+    expect(parsePropertySettings(good).embed.allowed_origins).toEqual([
+      "https://hotel.example",
+      "http://localhost:3000",
+      "http://127.0.0.1:4000",
+    ]);
+
+    // Duplicates are a copy-paste artefact, not a policy; refuse them rather
+    // than silently deduplicating a value the operator did not type.
+    const duplicate = base();
+    duplicate["embed"] = { allowed_origins: ["https://hotel.example", "https://hotel.example"] };
+    expectPath(duplicate, "embed.allowed_origins");
+
+    // Ten is the ceiling: an embed that needs more than ten hosts is a
+    // different product, and the CSP header has to stay small.
+    const eleven = base();
+    eleven["embed"] = {
+      allowed_origins: Array.from({ length: 11 }, (_, i) => `https://h${i}.example`),
+    };
+    expectPath(eleven, "embed.allowed_origins");
+  });
+
   it("merges top-level keys and keeps siblings", () => {
     const current: PropertySettings = structuredClone(DEFAULT_SETTINGS);
     const merged = mergeSettings(current, { tone: "concise", retention_days: 30 });

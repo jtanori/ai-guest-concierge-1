@@ -46,12 +46,63 @@ import {
   type PublicPropertyView,
 } from "./service.ts";
 import { GuestRoleUnavailableError } from "./session.ts";
+import { publicBaseUrl } from "./links.ts";
+import { qrSvg } from "./qr.ts";
 
 export interface GuestHttpDeps extends GuestDeps {
   client: pg.Client | pg.PoolClient;
 }
 
 const CHAT_PREFIX = "/api/chat";
+
+/**
+ * A route's answer when it is not JSON.
+ *
+ * The QR is the only `/api/chat` route that returns something other than a
+ * document, and it returns it as `image/svg+xml`. Rather than teach `send()` to
+ * sniff content types — which is how a JSON surface starts emitting whatever a
+ * handler felt like — a handler may return this and the dispatcher writes it
+ * verbatim.
+ */
+export class GuestRawResponse {
+  // Fields are declared and assigned explicitly rather than written as
+  // constructor parameter properties: the server runs under Node's
+  // `--experimental-strip-types`, which refuses erasable-syntax violations like
+  // parameter properties. It type-checks and runs under vitest either way, which
+  // is exactly how this shipped once and failed on boot.
+  readonly body: string;
+  readonly contentType: string;
+  readonly status: number;
+  readonly headers: Record<string, string>;
+
+  constructor(
+    body: string,
+    contentType: string,
+    status = 200,
+    headers: Record<string, string> = {},
+  ) {
+    this.body = body;
+    this.contentType = contentType;
+    this.status = status;
+    this.headers = headers;
+  }
+}
+
+/**
+ * S07-01 — the base URL for a link, from the one place that can know it.
+ *
+ * `GUEST_PUBLIC_URL` wins. Otherwise the caller's hint (the web tier, which knows
+ * the public origin a guest is actually using) and finally this request's own
+ * Host header — right for local dev, wrong behind a proxy, which is why the
+ * env var exists.
+ */
+function linkBase(url: URL, req: IncomingMessage): string {
+  const hint = url.searchParams.get("base");
+  return publicBaseUrl(
+    process.env["GUEST_PUBLIC_URL"],
+    hint !== null && hint !== "" ? hint : `http://${req.headers.host ?? "localhost"}`,
+  );
+}
 const MAX_BODY_BYTES = 16 * 1024;
 
 /** True when this handler owns the path (so the health table never sees it). */
@@ -204,6 +255,31 @@ const ROUTES: Route[] = [
     },
   },
   {
+    // S07-01 AC-1 — the QR SVG is ENCODED HERE, not in the web tier.
+    //
+    // The Next project installs only `web/`'s dependencies (`.github/workflows/
+    // ci.yml`, `web-build`), and `src/guest/qr.ts` needs `qrcode`; a route in
+    // `web/` that imported the encoder built fine locally (root `node_modules`
+    // present) and failed in CI (absent). Serving the image from the tier that
+    // owns the slug lookup and the encoder removes the cross-project import
+    // entirely, and the web route becomes a proxy — the same shape as
+    // `/api/chat/property`.
+    method: "GET",
+    pattern: /^\/api\/chat\/qr\.svg$/,
+    run: async (url, req, _res, deps): Promise<GuestRawResponse> => {
+      const property = await loadPublicProperty(deps.client, {
+        slug: slugFromUrl(url),
+        language: requestedLanguage(url, req.headers),
+      });
+      const svg = await qrSvg({ baseUrl: linkBase(url, req), slug: property.slug });
+      return new GuestRawResponse(svg, "image/svg+xml; charset=utf-8", 200, {
+        // The payload never changes for a property, and a card does not get
+        // re-scanned when the deploy rolls.
+        "cache-control": "public, max-age=3600",
+      });
+    },
+  },
+  {
     method: "GET",
     pattern: /^\/api\/chat\/messages$/,
     run: (url, req, res, deps): Promise<GuestTranscript> => {
@@ -284,7 +360,18 @@ export async function handleGuestRequest(
       send(res, 405, { error: "method_not_allowed", method });
       return;
     }
-    send(res, 200, await route.run(url, req, res, deps));
+    const body = await route.run(url, req, res, deps);
+    if (body instanceof GuestRawResponse) {
+      res.writeHead(body.status, {
+        "content-type": body.contentType,
+        ...body.headers,
+        // Inert bytes, but nothing may sniff them into a document.
+        "x-content-type-options": "nosniff",
+      });
+      res.end(body.body);
+      return;
+    }
+    send(res, 200, body);
   } catch (error) {
     const failure = classifyGuestError(error);
     res.removeHeader("set-cookie");

@@ -69,6 +69,9 @@ export function buildAi(source: NodeJS.ProcessEnv): ResilientAi {
       baseUrl: llm.baseUrl,
       timeoutMs: llm.timeoutMs,
     }),
+    // S07-06: the retry budget is configuration (LLM_RETRIES), defaulted to the
+    // plan's two, so the transport policy is not re-invented per call site.
+    { retries: llm.retries },
   );
 }
 

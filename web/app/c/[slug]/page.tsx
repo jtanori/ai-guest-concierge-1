@@ -1,8 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { GuestChat } from "@/components/guest-chat";
-import type { ApiFailure, PublicPropertyWire } from "@/lib/guest";
-import { apiBase } from "@/lib/session";
+import { loadPropertyWire } from "@/lib/property";
 import { currentLang, normalizeLang, translator } from "@/lib/i18n";
 
 /**
@@ -23,20 +22,6 @@ interface Params {
   searchParams: Promise<{ lang?: string }>;
 }
 
-async function loadProperty(slug: string, lang: string): Promise<PublicPropertyWire | null> {
-  try {
-    const response = await fetch(
-      `${apiBase()}/api/chat/property?property=${encodeURIComponent(slug)}&lang=${encodeURIComponent(lang)}`,
-      { cache: "no-store" },
-    );
-    if (!response.ok) return null;
-    const body = (await response.json()) as PublicPropertyWire | ApiFailure;
-    return "slug" in body ? body : null;
-  } catch {
-    return null;
-  }
-}
-
 export async function generateMetadata({ params }: Params): Promise<Metadata> {
   const { slug } = await params;
   return { title: `${slug} · Concierge` };
@@ -50,7 +35,7 @@ export default async function GuestPropertyPage({
   const lang = normalizeLang((await searchParams).lang ?? (await currentLang()));
   const tr = translator(lang);
 
-  const property = await loadProperty(slug, lang);
+  const property = await loadPropertyWire(slug, lang);
   if (property === null) notFound();
 
   return (

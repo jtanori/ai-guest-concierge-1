@@ -26,6 +26,8 @@ export interface PublicPropertyWire {
   languages: string[];
   disclosure: string;
   talkToPerson: string;
+  /** S07-01: origins allowed to frame the chat (settings `embed`). */
+  frameAncestors: string[];
 }
 
 export interface GuestTurnWire {

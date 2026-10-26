@@ -185,6 +185,12 @@ export interface LlmConfig {
   fallbackModel: string;
   baseUrl: string;
   timeoutMs: number;
+  /**
+   * S07-06: retries per provider before falling back. Defaults to the plan's
+   * two. Bounded because the guest is waiting: four retries of an 8s timeout is
+   * longer than anyone will hold a chat window open.
+   */
+  retries: number;
 }
 
 export const DEFAULT_LLM_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
@@ -229,11 +235,19 @@ export function loadLlmConfig(
     throw new ConfigError("LLM_TIMEOUT_MS must be a positive integer");
   }
 
+  // D12's spec is two retries; the ceiling exists so a host cannot configure a
+  // retry budget the guest spends waiting on it.
+  const retries = Number(source["LLM_RETRIES"] ?? 2);
+  if (!Number.isInteger(retries) || retries < 0 || retries > 4) {
+    throw new ConfigError("LLM_RETRIES must be an integer between 0 and 4");
+  }
+
   return {
     apiKey,
     primaryModel,
     fallbackModel,
     baseUrl: baseUrl.replace(/\/+$/, ""),
     timeoutMs,
+    retries,
   };
 }

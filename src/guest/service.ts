@@ -118,6 +118,12 @@ export interface PublicPropertyView {
   languages: string[];
   disclosure: string;
   talkToPerson: string;
+  /**
+   * S07-01: the origins allowed to frame this chat, straight from the
+   * property's settings. The page turns it into `frame-ancestors`; an empty
+   * list means only a direct visit may render it.
+   */
+  frameAncestors: string[];
 }
 
 export interface GuestTurn {
@@ -175,6 +181,7 @@ function propertyView(property: PublicProperty, language: Lang): PublicPropertyV
     languages: property.languages,
     disclosure: t("guest.ai_disclosure", language),
     talkToPerson: t("guest.talk_to_person", language),
+    frameAncestors: [...property.frameAncestors],
   };
 }
 

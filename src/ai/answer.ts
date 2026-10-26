@@ -60,6 +60,7 @@ import {
 import { AiUnavailableError, GENERATION_TIMEOUT_MS, type ResilientAi } from "./provider.ts";
 import { recordAiRun, recordCitations } from "./runs.ts";
 import { estimateTokens, recordSpend } from "./spend.ts";
+import { incrementCounter } from "../metrics/counters.ts";
 
 export interface AnswerMessageInput {
   conversationId: string;
@@ -185,6 +186,11 @@ export async function recordOutage(
   outage: { attempts: number; modelIds: readonly string[] },
   eventBase: EventContext,
 ): Promise<string> {
+  // S07-05's path, counted for S07-06's alert: both providers are down.
+  incrementCounter("ai_outage_total", {
+    org_id: context.orgId,
+    property_id: context.propertyId,
+  });
   const aiRunId = await recordAiRun(client, context, {
     conversationId: input.conversationId,
     messageId: input.messageId,
@@ -410,6 +416,18 @@ export async function answerMessage(
     at,
   });
 
+  // S07-06 AC-3: the primary failed and the secondary carried the turn. The
+  // guest never noticed, which is exactly why nothing else would have recorded
+  // it — `ai_runs.usage.used_fallback` does, per call, and this is the counter a
+  // dashboard reads without scanning the table.
+  if (generated.usedFallback) {
+    incrementCounter("ai_fallback_total", {
+      org_id: context.orgId,
+      property_id: context.propertyId,
+      model: generated.modelId,
+    });
+  }
+
   const promptVersion = deps.promptVersion ?? PROMPT_VERSION;
   const baseRun = {
     conversationId: input.conversationId,
@@ -429,6 +447,14 @@ export async function answerMessage(
     });
   } catch (error) {
     if (!(error instanceof AiContractError)) throw error;
+    // S07-06 AC-3: a model answered and the answer was not the contract. This is
+    // the failure that costs the guest an answer while every transport-level
+    // signal looks healthy, so it gets a counter, not just a column.
+    incrementCounter("ai_parse_failure_total", {
+      org_id: context.orgId,
+      property_id: context.propertyId,
+      model: generated.modelId,
+    });
     // Never sent. The call still happened, so it still gets a row — that row is
     // how the parse-failure rate (S07-06's alert) is computed.
     const aiRunId = await recordAiRun(client, context, {

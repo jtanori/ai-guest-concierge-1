@@ -29,6 +29,7 @@
  *    state (S07-05), not a 500.
  */
 import { createLogger, type Logger } from "../logging/index.ts";
+import { incrementCounter } from "../metrics/counters.ts";
 
 export interface AiRequest {
   system: string;
@@ -227,6 +228,9 @@ export function withResilience(
         } catch (error) {
           primaryError = error;
           circuitOpenUntil = now() + circuitMs;
+          // S07-06 AC-3: one event per OUTAGE, not per request — this is the
+          // metric that says "the primary has been down since 02:14".
+          incrementCounter("ai_circuit_open_total", { model: primary.modelId });
           logger.error(
             {
               modelId: primary.modelId,

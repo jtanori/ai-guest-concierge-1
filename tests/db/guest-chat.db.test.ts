@@ -356,6 +356,35 @@ describe("guest chat (db)", () => {
     ).rejects.toMatchObject({ code: "42501" });
   });
 
+  it("publishes the embed allowlist, read under the app role (0020, S07-01)", async () => {
+    // `concierge_public` holds a column grant on `properties` that excludes
+    // `settings` (0015), because settings carry staff contact details. The
+    // session copies out this one field after switching up to the app role, so
+    // the framing policy is available without widening the guest grant.
+    const before = await loadPublicProperty(client, { slug: SLUG });
+    // Fail closed: nothing configured means nobody may frame the chat.
+    expect(before.frameAncestors).toEqual([]);
+    // And the rest of `settings` is still absent from the public view.
+    expect(Object.keys(before).sort()).toEqual([
+      "disclosure",
+      "frameAncestors",
+      "languages",
+      "name",
+      "slug",
+      "talkToPerson",
+    ]);
+
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.embed = { allowed_origins: ["https://hotel.example"] };
+    await client.query("UPDATE properties SET settings = $1::jsonb WHERE property_id = $2", [
+      JSON.stringify(settings),
+      propertyId,
+    ]);
+
+    const after = await loadPublicProperty(client, { slug: SLUG });
+    expect(after.frameAncestors).toEqual(["https://hotel.example"]);
+  });
+
   it("sends the catalogue string, not model text, for the person request (AC-3)", async () => {
     const property = await loadPublicProperty(client, { slug: SLUG });
     const turn = await postGuestMessage(deps({}), client, {

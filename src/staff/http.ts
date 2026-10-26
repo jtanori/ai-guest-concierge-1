@@ -1,6 +1,7 @@
 /**
- * S04-01 / S02-06 — the first staff HTTP surface, and the first production
- * place where a role decides whether a request runs at all.
+ * S04-01 / S02-06 / S08-01 — the staff HTTP surfaces (`/api/review/*` and
+ * `/api/inbox`), and the first production place where a role decides whether a
+ * request runs at all.
  *
  * Design notes:
  *
@@ -36,6 +37,7 @@ import {
   FactValidationError,
   listContradictions,
 } from "../knowledge/facts.ts";
+import { InboxInputError, listInbox } from "../inbox/queries.ts";
 import {
   ContradictionGroupNotFoundError,
   ContradictionWinnerError,
@@ -59,6 +61,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const MAX_BODY_BYTES = 64 * 1024;
 
 const REVIEW_PREFIX = "/api/review";
+const INBOX_PREFIX = "/api/inbox";
 
 /** 401/403/404/409/400 mapping — one place, so no route invents its own code. */
 interface Failure {
@@ -87,6 +90,9 @@ export function classifyError(error: unknown): Failure {
   }
   if (error instanceof FactContradictionError) {
     return { status: 409, error: "contradiction", extra: { detail: error.message } };
+  }
+  if (error instanceof InboxInputError) {
+    return { status: 400, error: "invalid_request", extra: { detail: error.message } };
   }
   if (
     error instanceof ReviewInputError ||
@@ -210,26 +216,79 @@ const ROUTES: Route[] = [
   },
 ];
 
+/**
+ * S08-01 — the inbox. One route, three filters, keyset pages.
+ *
+ * The filter is a query parameter rather than a path segment so that a page
+ * link is a URL the browser can reopen from history: `/api/inbox?filter=mine`
+ * survives a reload, and the screen can be a plain server-rendered page with
+ * `<Link>`s instead of client state (DEC-1).
+ */
+const INBOX_ROUTES: Route[] = [
+  {
+    method: "GET",
+    pattern: /^\/api\/inbox$/,
+    run: (_m, _d, session, scoped, context, req) => {
+      const url = new URL(req.url ?? "/", "http://localhost");
+      return listInbox(scoped, context, session, {
+        filter: url.searchParams.get("filter"),
+        limit: url.searchParams.get("limit"),
+        cursor: url.searchParams.get("cursor"),
+      });
+    },
+  },
+];
+
 /** True when this handler owns the path (so the health table never sees it). */
 export function ownsReviewPath(path: string): boolean {
   return path === REVIEW_PREFIX || path.startsWith(`${REVIEW_PREFIX}/`);
+}
+
+/** True for `/api/inbox` (S08-01). */
+export function ownsInboxPath(path: string): boolean {
+  return path === INBOX_PREFIX || path.startsWith(`${INBOX_PREFIX}/`);
 }
 
 /**
  * Handles one `/api/review/*` request. Always writes a response; never throws
  * for a client-side problem (the status code carries it).
  */
-export async function handleReviewRequest(
+export function handleReviewRequest(
   req: IncomingMessage,
   res: ServerResponse,
   deps: ReviewHttpDeps,
+): Promise<void> {
+  return handleStaffRequest(req, res, deps, ROUTES);
+}
+
+/** S08-01 — `/api/inbox`, through the same identity → tenant → role pipeline. */
+export function handleInboxRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ReviewHttpDeps,
+): Promise<void> {
+  return handleStaffRequest(req, res, deps, INBOX_ROUTES);
+}
+
+/**
+ * The pipeline both surfaces share, in this order and for these reasons:
+ * verify the token (no database work for an unverified caller), resolve the
+ * tenant from the headers (membership-checked inside the transaction), then run
+ * role-checked work. Copying it for the second surface would be how the two
+ * drift apart — and the drift would be a missing `requireRole`.
+ */
+async function handleStaffRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ReviewHttpDeps,
+  table: Route[],
 ): Promise<void> {
   const path = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`).pathname;
   const method = (req.method ?? "GET").toUpperCase();
   const contextFrom = deps.contextFrom ?? tenantFromHeaders;
 
   try {
-    const route = ROUTES.find((candidate) => candidate.pattern.test(path));
+    const route = table.find((candidate) => candidate.pattern.test(path));
     if (route === undefined) {
       send(res, 404, { error: "not_found", path });
       return;

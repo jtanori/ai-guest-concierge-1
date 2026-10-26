@@ -19,7 +19,13 @@ import { createLogger, isLogLevel, type LogLevel } from "./logging/index.ts";
 import { loadConfig, type AppConfig } from "./config/env.ts";
 import { postgresStatus, closePool, getPool } from "./neon/postgres.ts";
 import { loadAuthConfig, verifyIdentityToken } from "./auth/session.ts";
-import { handleReviewRequest, ownsReviewPath, type ReviewHttpDeps } from "./staff/http.ts";
+import {
+  handleInboxRequest,
+  handleReviewRequest,
+  ownsInboxPath,
+  ownsReviewPath,
+  type ReviewHttpDeps,
+} from "./staff/http.ts";
 import { handleGuestRequest, ownsGuestPath, type GuestHttpDeps } from "./guest/http.ts";
 import { setCounterLogger } from "./metrics/counters.ts";
 import { guestRuntimeFromEnv } from "./guest/runtime.ts";
@@ -179,7 +185,9 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     return;
   }
 
-  if (ownsReviewPath(path)) {
+  // S08-01: the inbox is the same pipeline with a different route table, so it
+  // shares this branch rather than growing a second copy of the auth dance.
+  if (ownsReviewPath(path) || ownsInboxPath(path)) {
     // One checked-out client per request: withStaffSession runs BEGIN/COMMIT,
     // so it must never borrow a different connection per statement.
     void (async () => {
@@ -199,7 +207,8 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         return;
       }
       try {
-        await handleReviewRequest(req, res, deps);
+        if (ownsInboxPath(path)) await handleInboxRequest(req, res, deps);
+        else await handleReviewRequest(req, res, deps);
       } finally {
         client.release();
       }

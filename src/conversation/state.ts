@@ -47,7 +47,12 @@ export const TRANSITIONS: Readonly<Record<AiState, readonly AiState[]>> = {
   idle: ["awaiting_ai", "awaiting_staff"],
   awaiting_ai: ["idle", "awaiting_staff", "resolved"],
   awaiting_staff: ["resolved", "awaiting_ai"],
-  resolved: ["awaiting_ai"],
+  // S07-02: `resolved -> awaiting_staff` is the guest tapping "talk to a
+  // person" on a concluded thread. Refusing it would disable the one control
+  // that exists to protect a guest, at the moment the bot has already given up.
+  // `resolved -> idle` stays illegal: asking for a human must never hand the
+  // thread back to the model.
+  resolved: ["awaiting_ai", "awaiting_staff"],
 } as const;
 
 export class IllegalTransitionError extends Error {

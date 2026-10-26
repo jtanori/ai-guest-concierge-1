@@ -422,7 +422,7 @@ async function seedOneTenant(client: pg.Client, tag: "a" | "b"): Promise<SeedRes
   );
   await client.query(
     `INSERT INTO handoff_reasons (org_id, property_id, conversation_id, reason_code)
-     VALUES ($1, $2, $3, 'refresh_needed')`,
+     VALUES ($1, $2, $3, 'sensitive_topic')`,
     [ORG, PROP, CONV],
   );
   await client.query(

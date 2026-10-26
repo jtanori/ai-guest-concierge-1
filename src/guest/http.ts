@@ -6,6 +6,7 @@
  *   GET  /api/chat/property   what the page needs before a guest types anything
  *   GET  /api/chat/messages   the cookie's transcript (empty for a new visitor)
  *   POST /api/chat/messages   one turn: inbound + outbound, atomically
+ *   POST /api/chat/handoff    S07-02: one tap to a human, from any state
  *
  * The slug is part of the URL, never a body field. `x-org-id`/`x-property-id`
  * headers, `orgId`/`propertyId`/`conversationId` body fields and anything else a
@@ -34,8 +35,10 @@ import {
   UnknownPropertyError,
   loadPublicProperty,
   loadTranscript,
+  postGuestHandoff,
   postGuestMessage,
   type GuestDeps,
+  type GuestHandoff,
   type GuestTranscript,
   type GuestTurn,
   type PublicPropertyView,
@@ -187,6 +190,23 @@ const ROUTES: Route[] = [
       });
       setTicket(res, turn.ticket, req);
       return turn;
+    },
+  },
+  {
+    // S07-02 — "talk to a person". A POST with no body: the tenant is the slug,
+    // the conversation is the cookie, and nothing else a client could send has
+    // a meaning here. It deliberately does not take a message: a handoff that
+    // needs typing is not one tap, and the model is never in this path.
+    method: "POST",
+    pattern: /^\/api\/chat\/handoff$/,
+    run: async (url, req, res, deps): Promise<GuestHandoff> => {
+      const handoff = await postGuestHandoff(deps, deps.client, {
+        slug: slugFromUrl(url),
+        language: requestedLanguage(url, req.headers),
+        ticket: ticketFrom(req, deps.cookieSecret),
+      });
+      setTicket(res, handoff.ticket, req);
+      return handoff;
     },
   },
 ];

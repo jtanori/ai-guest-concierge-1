@@ -69,7 +69,6 @@ export default async function GuestPropertyPage({
         disclosure: property.disclosure,
         talkToPerson: property.talkToPerson,
       }}
-      handoffMessage={property.talkToPerson}
     />
   );
 }

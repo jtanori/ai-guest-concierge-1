@@ -28,13 +28,14 @@ const LEGAL: Array<[AiState, AiState]> = [
   ["awaiting_staff", "resolved"],
   ["awaiting_staff", "awaiting_ai"],
   ["resolved", "awaiting_ai"],
+  // S07-02: one tap from a concluded thread still reaches a human.
+  ["resolved", "awaiting_staff"],
 ];
 
 const ILLEGAL: Array<[AiState, AiState]> = [
   ["idle", "resolved"],
   ["awaiting_staff", "idle"],
   ["resolved", "idle"],
-  ["resolved", "awaiting_staff"],
 ];
 
 describe("conversation state matrix (S06-02)", () => {
@@ -45,7 +46,7 @@ describe("conversation state matrix (S06-02)", () => {
     }
   });
 
-  it("covers exactly the eight legal edges", () => {
+  it("covers exactly the nine legal edges", () => {
     const edges = AI_STATES.flatMap((from) =>
       TRANSITIONS[from].map((to) => `${from}->${to}`),
     ).sort();

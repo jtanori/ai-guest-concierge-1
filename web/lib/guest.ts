@@ -38,6 +38,21 @@ export interface GuestTurnWire {
   language: "es" | "en";
 }
 
+/**
+ * S07-02 — the wire shape of one tap. There is no `messages` array: a handoff
+ * answers with exactly the acknowledgement it stored, and the client appends it.
+ */
+export interface GuestHandoffWire {
+  property: PublicPropertyWire;
+  conversationId: string;
+  message: GuestMessageWire;
+  decision: "handoff";
+  reasonCode: "guest_asked_human";
+  language: "es" | "en";
+  requestId: string;
+  requestCreated: boolean;
+}
+
 export interface GuestTranscriptWire {
   property: PublicPropertyWire;
   conversationId: string | null;
@@ -52,4 +67,9 @@ export interface ApiFailure {
 /** `?property=` is the only tenant input the API accepts — never a body field. */
 export function messagesPath(slug: string, lang: string): string {
   return `/api/chat/messages?property=${encodeURIComponent(slug)}&lang=${encodeURIComponent(lang)}`;
+}
+
+/** S07-02: one tap. Same tenant and language inputs, no body. */
+export function handoffPath(slug: string, lang: string): string {
+  return `/api/chat/handoff?property=${encodeURIComponent(slug)}&lang=${encodeURIComponent(lang)}`;
 }

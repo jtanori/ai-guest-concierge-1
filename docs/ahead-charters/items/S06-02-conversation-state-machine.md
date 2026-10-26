@@ -81,6 +81,8 @@ Open decisions / blockers:
 
 ## 10. Outcome (2026-10-25)
 
+**Superseded on one edge by S07-02 (2026-10-25).** `resolved -> awaiting_staff` is now legal (`0017_handoff_from_resolved.sql`): the guest's one tap to a human must work from every state, including a concluded thread. `resolved -> idle` stays illegal, and the grid below is nine legal edges / three illegal ones as of 0017.
+
 **AC-1 met.** `0016_conversation_state.sql` adds `conversations.ai_state` (`idle | awaiting_ai | awaiting_staff | resolved`), a `BEFORE UPDATE OF ai_state` trigger holding the allowed-transition matrix, and a partial index for the "who is waiting" queue. `tests/db/conversation-state.db.test.ts` walks all sixteen pairs of the grid through **raw SQL**: eight legal edges succeed, four illegal edges raise `P0001` and leave the row unchanged, four same-state writes are no-ops. The TypeScript copy (`src/conversation/state.ts`) is pinned to the SQL by execution, not by a comment.
 
 **AC-2 met.** `takeover()` and every model write path take `SELECT … FOR UPDATE` on the same conversation row inside their own transaction, so the two are serialised: the test starts a takeover while another transaction holds the lock, asserts it has not completed while the lock is held, and asserts it completes exactly when that transaction commits. After a takeover, `assertModelMaySpeak` throws `StaffTookOverError`, and a real guest turn on an `awaiting_staff` conversation never reaches the provider (asserted: zero requests) — it records the guest's message and answers with the catalogue string `guest.staff_reply_pending`.

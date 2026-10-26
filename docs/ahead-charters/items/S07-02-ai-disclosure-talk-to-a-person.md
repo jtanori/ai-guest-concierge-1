@@ -9,21 +9,21 @@ priority: P0
 depends_on: [S06-02]
 labels: [sprint:S07, track:foundation, prio:P0]
 milestone: S07 - Chat hardening
-status: draft
+status: done
 issue: https://github.com/jtanori/ai-guest-concierge-1/issues/80
-pickup: decision
+pickup: ready
+approved: 2026-10-25
+done: 2026-10-25
 ---
 
 # S07-02 — AI disclosure + 'talk to a person'
-
-> **DRAFT — not approved.** Generated from the master backlog, `docs/01-development-plan.md` and the code at `main` + PR #32 head `81b19bb`. `docs/charters/README.md` says **"No item starts until its charter is approved"** — this file is a proposed contract, not permission to start. File paths, migration numbers and signatures are calculated from the current tree; rebase them on whatever merges first.
 
 | | |
 |---|---|
 | Sprint | S07 |
 | Track / days / priority | Eng · 0.5d · P0 |
 | Depends on | S06-02 |
-| Pickup | `decision` |
+| Pickup | `ready` |
 
 ## 1. Why / goal
 
@@ -63,16 +63,26 @@ Handoff writes use the guest-derived tenant context; `reason_code` is a closed e
 
 ## 8. Pickup status, blockers and decisions
 
-**NEEDS DECISION — see §8. Calculations are complete where possible; the named decision must close first.**
+**Started 2026-10-25** after S06-02 merged (`8d4b31b`). §8's only blocker (DEC-1) closed on **React 19 + Next.js + Shadcn/UI + Tailwind**, so the widget markup is a React client component (`web/components/guest-chat.tsx`) sharing the `web/` design system; the API route stays in `src/` (the S06-01 surface decision).
 
-Open decisions / blockers:
+Two deviations from §4, both deliberate:
 
-- **DEC-1 (UI rendering).** Copy, route, DB writes and states are fully calculated — only the widget markup waits on the framework choice.
-
+- **`0017_handoff_from_resolved.sql` was needed.** §4 said to call `transition(..., 'awaiting_staff')`, but 0016's matrix had no `resolved -> awaiting_staff` edge — and AC-2 names `resolved` explicitly. The matrix widened; the reasoning is in §10 and in the migration header.
+- **`takeover()` rather than a bare `transition()`.** It already writes `handoff_reasons` and emits `human_takeover` in one transaction with the state change, which is exactly what §4 asked for; a second implementation in the guest layer would have been a second copy of the same three statements.
 ## 9. Definition of done
 
-- [ ] CI green: `lint`, `typecheck`, `test`, `db-test`, `preview` (and `eval` once S06-03 lands).
-- [ ] Runbook entry in `docs/runbook.md` with the exact commands and counts.
-- [ ] Workbook ticked via `node scripts/update-workbook-status.mjs <ID> "✅ Done (<evidence>)"` only after the AC is objectively met.
-- [ ] Cross-tenant isolation suite extended for any new table or route; no new runtime dependency without explicit approval.
-- [ ] Review threads resolved; charter §9 decisions recorded in the runbook.
+- [x] CI green: `lint`, `typecheck`, `test`, `db-test`, `preview`, `web-build`, `eval`.
+- [x] Runbook entry in `docs/runbook.md` with the exact commands and counts.
+- [x] Workbook ticked via `node scripts/update-workbook-status.mjs S07-02 "✅ Done (…)"`.
+- [x] Cross-tenant isolation suite extended (no new table; the handoff route resolves its tenant from the slug exactly like the chat route, and `tests/db/handoff.db.test.ts` covers the unknown-slug case).
+- [x] Review threads resolved; charter §9 decisions recorded in the runbook.
+
+## 10. Outcome (2026-10-25)
+
+**AC-1 met.** The first outbound message of a conversation is prefixed with `guest.ai_disclosure` (ES and EN, asserted separately), stored that way so the transcript staff read is the text the guest read, and not repeated on later turns. "First" is decided by a query under the conversation's row lock, so a guest who taps "talk to a person" before typing still gets it — that conversation exists with no messages in it.
+
+**AC-2 met.** `POST /api/chat/handoff` reaches `awaiting_staff` from `idle`, `awaiting_ai`, `awaiting_staff` and `resolved`, and from the state a first-time visitor is in (no conversation yet); `tests/db/handoff.db.test.ts` drives each. On every path: **zero provider calls** (a provider that throws if asked proves it), one `handoff_reasons` row with `guest_asked_human`, one `human_takeover` event, one `request_created` event, one open `service_requests` row however many times the guest taps, and a re-issued cookie so the next message stays in the same thread.
+
+**Changed a decided constraint, on purpose.** 0016 recorded `resolved -> awaiting_staff` as illegal. AC-2 requires it, and the AC is right: refusing a handoff because the row says "resolved" disables the guest's only route to a person at the moment the bot has given up. `0017` adds the edge to both copies of the matrix and keeps `resolved -> idle` illegal. The S06-02 charter's §10 reasoning is superseded on this one edge and cross-references 0017.
+
+**Deliberately not done:** the staff inbox that shows the request (S08-01), email notification (S09-05), and the staff identity that `handoff_reasons` still cannot record — `takeover()` writes *why*, not *who*, until S08-01 supplies a session user.

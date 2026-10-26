@@ -1602,16 +1602,85 @@ $ npm run web:build    # green
 
 **Audit.** Three actions added to the closed list: `notification.queued` (AC-1's evidence, and it outlives the outbox row being marked sent), `notification.sent` (carries the provider's own id — delivery evidence that is not ours to invent — plus `recipientSource`, a recipient *count* and `redacted`; never an address, because an address is PII and `assertSafeDetail` is not the only reason to keep it out), and `notification.dead` (the escalation failed, with the reason). Actor is the staff member on the acknowledged edge and `null` on the guest edge and on every worker write: attributing a system action to a person is a false record.
 
-**Evidence (local, PostgreSQL 16.2 + pgvector 0.6.2 + pg_trgm 1.6):**
+**Review round 1 (PR #145) — four findings, all fixed, all previously untested.**
+
+The reviewer's framing was the useful part: these were not bugs the tests caught and
+then failed to fix, they were bugs the tests could not see. Each one now has a case.
+
+1. **`CONSOLE_BASE_URL` was optional outside local, so production could silently link
+   to `http://localhost:3000`.** The default *resolves* — on the recipient's own
+   machine, to whatever they happen to be running there. That is worse than no link:
+   it looks like a working console link in a test send and fails for every real
+   recipient, at 3am, on the one email whose whole purpose is to be actionable. Now
+   required outside `APP_ENV=local` on the same rule as `EMAIL_API_KEY`, and the local
+   default is kept because in local the link genuinely points at the developer's own
+   machine.
+2. **The provider timeout stopped before the body was read.** `fetch` resolves as soon
+   as the response *headers* arrive; the body is a separate stream. The `finally`
+   cleared the timer at that point, leaving `response.text()` with no deadline at all,
+   so a provider that sends headers and then stalls the body hangs the worker forever
+   — and it hangs *while holding a database transaction and a `FOR UPDATE` row lock*,
+   so one stalled body pins an outbox row no other worker can claim. The timeout now
+   covers the body read, and an abort mid-body is reported as `timeout` rather than as
+   a success. Tested with a `ReadableStream` that delivers headers and never enqueues.
+3. **The retry path could deliver twice, and the comment claimed otherwise.** The code
+   said the 0028 dedupe key "stops a retry that DID land from becoming a second
+   email". That was false, and the falseness is the interesting part: the index
+   prevents a second *outbox row* for one request+stage. It does nothing about a second
+   *delivery* of the row that already exists. If Resend accepts the email and the
+   response is lost — a stalled body, a reset connection, a process killed before the
+   `sent` commit — the row is still claimable and the next attempt sends it again.
+   Fixed with Resend's `Idempotency-Key` header (supported on `POST /emails`, 24-hour
+   window, same key + same payload replays the original response instead of
+   delivering). The key is `emailIdempotencyKey(outboxId)`: **stable across every retry
+   of one row, distinct between rows.** Both halves matter — a key regenerated per
+   attempt builds idempotency that is idempotent against nothing, and a key derived
+   from the *dedupe* key would silently suppress an operator's deliberate re-queue of a
+   dead row for Resend's whole 24 hours. The retry ladder totals about fifteen seconds,
+   so the key cannot expire mid-retry.
+   Resend's two 409s are handled distinctly, because they mean opposite things:
+   `concurrent_idempotent_requests` (the first attempt is still in flight) is
+   retryable — backing off is exactly what it asks for; `invalid_idempotent_request`
+   (same key, different payload) is **not** retryable and is **not** reported as sent.
+   It means an earlier attempt was accepted with content that is not what we would send
+   now, so claiming `sent` would assert a delivery whose content we cannot prove, and
+   retrying 409s forever. It becomes a dead row with reason `conflict_payload` for a
+   human to look at. That needs the property name, contacts or message to change
+   between attempts, so it is rare — but rare and unexplained is exactly the
+   combination that costs an afternoon.
+   Making this testable required one addition to the log-only provider: an `attempts`
+   list recording every message handed to `send`, failures included. `sent` alone
+   cannot prove the property that matters, because a failed attempt records nothing
+   there and the first key would be unobservable.
+4. **A detached conversation got a broken console link.** 0001 sets
+   `service_requests.conversation_id` to NULL when the conversation is deleted and the
+   request row survives. The worker comment claimed the link was omitted in that case;
+   the composer unconditionally appended the "Open it in the console" block, so the
+   email went out with a link ending in `/inbox/`. The conversation line is now its own
+   catalogue block with a `no_conversation` variant, and the link block is dropped
+   entirely — the email still names the request, the property and the guest's words,
+   and says the conversation is no longer available.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector 0.6.2 + pg_trgm 1.6), after review round 1:**
 ```text
 $ npm run db:migrate   # 28 applied from an EMPTY database (0028 lands)
-$ npm run db:test      # 38 files / 395 passed (email outbox: 27)
-$ npm test             # 47 files / 610 passed (email pure: 34)
+$ npm run db:test      # 38 files / 400 passed (email outbox: 32)
+$ npm test             # 47 files / 620 passed (email pure: 44)
 $ npx tsc --noEmit && npx tsc --noEmit -p web/tsconfig.json && npm run lint   # clean
 $ npm run web:build    # green; /gaps and /inbox/[conversationId] in the manifest
 ```
 0028 verified by catalog inspection after a from-empty apply: `claim_outbox` owned by `concierge_worker`, `prosecdef = true`, ACL exactly `concierge_worker=X|concierge_app=X` (no PUBLIC entry — an entry with an *empty* grantee, which is what `=X/` inside a named entry is not), `claim_review_outbox` gone, `concierge_worker` NOLOGIN, and `pg_has_role('concierge_app','concierge_worker','MEMBER')` false.
 
 **OUTSTANDING — real delivery evidence (§7).** DEC-4 closed on the provider and explicitly deferred credentials: the operator supplies `EMAIL_API_KEY` later, so **no real email has been sent and none was attempted**. Everything up to the send is tested; the one HTTP call is exercised against an injected `fetch` (endpoint, bearer header, body shape, 2xx/4xx/5xx/429/timeout/unreachable, non-JSON success) rather than against a live account. To close §7: set `EMAIL_FROM`, `EMAIL_API_KEY`, `EMAIL_ESCALATION_FALLBACK` and `CONSOLE_BASE_URL` in a staging `.env`, verify the sender domain in Resend, open a request as a guest, and keep the received email plus the `notification.sent` audit row with its `providerId`. This joins the other outstanding physical-evidence items (S07-01 QR scan, S08-01 stopwatch, S08-02 sources screenshot, S06-01 staging).
+
+**Not done, by charter — and this bounds what the AC can claim.** Nothing schedules
+`processEmailOutbox`, so as merged this item *queues* notifications and does not
+*deliver* them: the end-to-end reading of "a request reaches a human by email" is not
+operational until S11-01 deploys and schedules the worker. The AC is met at the level
+this item owns — the row is written atomically with the request, survives provider
+failure, resolves recipients correctly, and is composed and handed to a provider
+correctly — and the delivery half is owed along with the credentials. Recorded here so
+the gap is not discovered by someone waiting for an email that was queued and never
+sent.
 
 **Not done, by charter:** nothing schedules `processEmailOutbox` — S11-01 owns worker lifecycle for both outboxes (interval, shutdown, concurrency, the `sending` reaper), and this loop never writes `sending` so it cannot strand a row. Also out: a Resend webhook to reconcile provider-side bounces and complaints against rows we marked `sent` (we record that the provider *accepted* the message, not that a human read it); per-property fallback addresses (the current one is deployment-wide, which is why it is redacted); any non-email channel — `ESCALATION_CHANNELS` includes `in_app`, and `outbox.kind` has allowed `sms` since 0001, but neither has a sender; jitter and worker metrics.

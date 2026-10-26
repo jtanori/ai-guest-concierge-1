@@ -21,7 +21,12 @@ import {
   staffLanguage,
   EMAIL_MAX_ATTEMPTS,
 } from "../../src/notifications/email.ts";
-import { assertSenderAddress, logOnlyProvider, resendProvider } from "../../src/providers/email.ts";
+import {
+  assertSenderAddress,
+  emailIdempotencyKey,
+  logOnlyProvider,
+  resendProvider,
+} from "../../src/providers/email.ts";
 import type { EscalationContact } from "../../src/settings/schema.ts";
 
 const FROM = "Concierge <desk@casamesa.example>";
@@ -38,6 +43,25 @@ function contact(name: string, channel: "in_app" | "email", value: string): Esca
 }
 
 const LOCAL = { EMAIL_FROM: FROM };
+const MSG = { to: ["desk@hotel.example"], subject: "s", text: "t", from: FROM };
+
+/** A 200 with a JSON body, capturing the request. */
+function fake200(captured: Record<string, unknown>): typeof fetch {
+  return fakeJson(200, { id: "res_captured" }, captured);
+}
+
+function fakeJson(status: number, body: unknown, captured?: Record<string, unknown>): typeof fetch {
+  return async (input, init) => {
+    if (captured !== undefined) {
+      captured.url = String(input);
+      captured.init = init;
+    }
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+  };
+}
 const PROD = { EMAIL_FROM: FROM, EMAIL_API_KEY: KEY, EMAIL_ESCALATION_FALLBACK: FALLBACK, CONSOLE_BASE_URL: BASE };
 
 describe("loadEmailConfig", () => {
@@ -88,6 +112,20 @@ describe("loadEmailConfig", () => {
     expect(() =>
       loadEmailConfig({ ...PROD, EMAIL_ESCALATION_FALLBACK: "the-front-desk" }, "prod"),
     ).toThrow(/EMAIL_ESCALATION_FALLBACK/);
+  });
+
+  it("refuses to boot outside local with no console base URL", () => {
+    // The default is http://localhost:3000, which RESOLVES — on the recipient's own
+    // machine, to whatever they happen to be running there. That is worse than no
+    // link: it looks like a working console link in a test send and fails for every
+    // real recipient, at 3am, on the one email whose purpose is to be actionable.
+    const withoutUrl = { EMAIL_FROM: FROM, EMAIL_API_KEY: KEY, EMAIL_ESCALATION_FALLBACK: FALLBACK };
+    expect(() => loadEmailConfig(withoutUrl, "staging")).toThrow(/CONSOLE_BASE_URL/);
+    expect(() => loadEmailConfig(withoutUrl, "prod")).toThrow(/CONSOLE_BASE_URL/);
+    // Local keeps the default: the link then points at the dev server, which is the
+    // machine the developer is sitting at.
+    expect(loadEmailConfig(LOCAL, "local").consoleBaseUrl).toBe("http://localhost:3000");
+    expect(loadEmailConfig(PROD, "prod").consoleBaseUrl).toBe(BASE);
   });
 
   it("strips a trailing slash from the console base and rejects a non-http one", () => {
@@ -279,13 +317,53 @@ describe("composeRequestEmail", () => {
     expect(email.text).toContain("Open it in the console:");
   });
 
+  it("omits the console link when the conversation is gone", () => {
+    // 0001 sets service_requests.conversation_id to NULL when the conversation is
+    // deleted and the request row survives. The detail page is keyed by conversation
+    // id, so there is no link to give — and `${base}/inbox/` would render as a real
+    // URL that resolves to the inbox index or a 404, looking like a console bug
+    // rather than a deleted conversation.
+    const email = composeRequestEmail({
+      ...base,
+      stage: "new",
+      lang: "es",
+      conversationId: "",
+      messageBody: GUEST_TEXT,
+      recipients: property,
+    });
+    expect(email.text).not.toContain("/inbox/");
+    expect(email.text).not.toContain("Ábrela en la consola");
+    expect(email.text).toContain("ya no está disponible");
+    // Still actionable: the request and the property are named, and the guest's
+    // words are still quoted because these are the property's own contacts.
+    expect(email.text).toContain(base.requestId);
+    expect(email.text).toContain(GUEST_TEXT);
+  });
+
+  it("names the conversation when there is one", () => {
+    const email = composeRequestEmail({
+      ...base,
+      stage: "new",
+      lang: "en",
+      messageBody: null,
+      recipients: property,
+    });
+    expect(email.text).toContain(`Conversation: ${base.conversationId}`);
+    expect(email.text).toContain(`${BASE}/inbox/${base.conversationId}`);
+    expect(email.text).not.toContain("no longer available");
+  });
+
   it("never emits an unfilled placeholder", () => {
     for (const lang of ["en", "es"] as const) {
       for (const stage of ["new", "acknowledged"] as const) {
         for (const recipients of [property, fallback]) {
           for (const messageBody of [GUEST_TEXT, null]) {
-            const email = composeRequestEmail({ ...base, stage, lang, messageBody, recipients });
-            expect(`${email.subject}${email.text}`).not.toMatch(/\{\w+\}/);
+            for (const conversationId of [base.conversationId, ""]) {
+              const email = composeRequestEmail({ ...base, stage, lang, messageBody, recipients, conversationId });
+              expect(`${email.subject}${email.text}`).not.toMatch(/\{\w+\}/);
+              // No link to nowhere, in any combination.
+              if (conversationId === "") expect(email.text).not.toContain("/inbox/");
+            }
           }
         }
       }
@@ -408,6 +486,105 @@ describe("resendProvider", () => {
   it("handles a non-JSON success body without inventing an id", async () => {
     const provider = resendProvider({ apiKey: KEY, fetch: fake(200, "not json") });
     expect(await provider.send(message)).toEqual({ ok: true, providerId: null, retryable: false, reason: "sent" });
+  });
+});
+
+describe("idempotency keys", () => {
+  it("is stable for a row and distinct between rows", () => {
+    // Stable across retries of one row (so a lost response cannot become a second
+    // email) and unique per row (so an operator re-queueing a dead row is a real
+    // send rather than a suppressed one — Resend remembers keys for 24 hours).
+    expect(emailIdempotencyKey(BigInt(42))).toBe(emailIdempotencyKey("42"));
+    expect(emailIdempotencyKey(BigInt(42))).toBe("concierge-email/42");
+    expect(emailIdempotencyKey(BigInt(43))).not.toBe(emailIdempotencyKey(BigInt(42)));
+    // Resend caps keys at 256 characters.
+    expect(emailIdempotencyKey(BigInt("9".repeat(30))).length).toBeLessThanOrEqual(256);
+  });
+
+  it("sends the key as a header when given one and omits it when not", async () => {
+    const captured: Record<string, unknown> = {};
+    const provider = resendProvider({ apiKey: KEY, fetch: fake200(captured) });
+    const message = { to: ["desk@hotel.example"], subject: "s", text: "t", from: FROM };
+
+    await provider.send({ ...message, idempotencyKey: "concierge-email/7" });
+    const withKey = (captured.init as RequestInit).headers as Record<string, string>;
+    expect(withKey["idempotency-key"]).toBe("concierge-email/7");
+
+    await provider.send(message);
+    const withoutKey = (captured.init as RequestInit).headers as Record<string, string>;
+    expect(Object.keys(withoutKey)).not.toContain("idempotency-key");
+  });
+
+  it("treats an in-flight conflict as retryable", async () => {
+    // Resend cannot replay the original answer while the first attempt is still
+    // running; backing off is exactly what it asks for.
+    const provider = resendProvider({
+      apiKey: KEY,
+      fetch: fakeJson(409, { name: "concurrent_idempotent_requests", message: "in progress" }),
+    });
+    expect(await provider.send(MSG)).toMatchObject({ retryable: true, reason: "conflict_in_flight" });
+  });
+
+  it("treats a payload conflict as permanent, not as a send", async () => {
+    // Same key, different payload: an earlier attempt WAS accepted, and its content
+    // is not what we would send now. Retrying 409s forever, and reporting `sent`
+    // would claim a delivery whose content we cannot prove. So: dead, with its own
+    // reason, for a human to look at.
+    const provider = resendProvider({
+      apiKey: KEY,
+      fetch: fakeJson(409, { name: "invalid_idempotent_request", message: "key reused" }),
+    });
+    expect(await provider.send(MSG)).toMatchObject({
+      ok: false,
+      retryable: false,
+      reason: "conflict_payload",
+    });
+  });
+
+  it("distinguishes a 409 it does not recognise from the two idempotency codes", async () => {
+    const provider = resendProvider({ apiKey: KEY, fetch: fakeJson(409, { message: "something else" }) });
+    expect(await provider.send(MSG)).toMatchObject({ retryable: false, reason: "rejected" });
+  });
+});
+
+describe("the timeout covers the response body", () => {
+  it("does not hang when headers arrive and the body stalls", async () => {
+    // `fetch` resolves as soon as the HEADERS arrive; the body is a separate stream.
+    // Clearing the timer at that point leaves `response.text()` with no deadline, so
+    // a provider that sends headers and then stalls the body hangs the worker
+    // forever — while it holds a database transaction and a FOR UPDATE row lock, so
+    // one stalled body pins an outbox row no other worker can claim.
+    const provider = resendProvider({
+      apiKey: KEY,
+      timeoutMs: 25,
+      fetch: (_url, init) => {
+        const signal = init?.signal;
+        const stalled = new ReadableStream<Uint8Array>({
+          start(controller) {
+            // Never enqueue and never close: headers are delivered, the body is not.
+            signal?.addEventListener("abort", () => {
+              controller.error(new DOMException("This operation was aborted", "AbortError"));
+            });
+          },
+        });
+        return Promise.resolve(
+          new Response(stalled, { status: 200, headers: { "content-type": "application/json" } }),
+        );
+      },
+    });
+
+    const started = Date.now();
+    const result = await provider.send(MSG);
+    // It returns, and it returns promptly rather than after some socket default.
+    expect(Date.now() - started).toBeLessThan(3000);
+    expect(result).toMatchObject({ ok: false, retryable: true, reason: "timeout" });
+  });
+
+  it("still clears its timer on a normal send", async () => {
+    // A leaked timer per send would keep the worker's event loop alive and, over a
+    // long queue, accumulate.
+    const provider = resendProvider({ apiKey: KEY, timeoutMs: 5000, fetch: fakeJson(200, { id: "res_ok" }) });
+    expect(await provider.send(MSG)).toMatchObject({ ok: true, providerId: "res_ok" });
   });
 });
 

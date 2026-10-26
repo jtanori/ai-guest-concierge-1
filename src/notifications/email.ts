@@ -36,6 +36,7 @@ import { parsePropertySettings, type EscalationContact } from "../settings/schem
 import { writeAudit } from "../audit/write.ts";
 import {
   assertSenderAddress,
+  emailIdempotencyKey,
   resendProvider,
   type EmailProvider,
   type EmailSendResult,
@@ -109,7 +110,7 @@ export function loadEmailConfig(
     return {
       from,
       fallbackRecipient: fallback === "" ? null : assertAddress("EMAIL_ESCALATION_FALLBACK", fallback),
-      consoleBaseUrl: consoleUrl(source),
+      consoleBaseUrl: consoleUrl(source, appEnv),
       provider: "log",
       apiKey: "",
     };
@@ -134,15 +135,27 @@ export function loadEmailConfig(
   return {
     from,
     fallbackRecipient: assertAddress("EMAIL_ESCALATION_FALLBACK", fallback),
-    consoleBaseUrl: consoleUrl(source),
+    consoleBaseUrl: consoleUrl(source, appEnv),
     provider: "resend",
     apiKey,
   };
 }
 
-function consoleUrl(source: Record<string, string | undefined>): string {
+function consoleUrl(source: Record<string, string | undefined>, appEnv: EnvName): string {
   const raw = (source["CONSOLE_BASE_URL"] ?? "").trim();
-  if (raw === "") return "http://localhost:3000";
+  if (raw === "") {
+    // Local only. Defaulting everywhere else would send staff a link to
+    // http://localhost:3000 — which resolves, on the recipient's own machine, to
+    // whatever they happen to be running there. That is worse than no link: it looks
+    // like a working console link in a test send and fails for every real recipient,
+    // at 3am, on the one email whose whole purpose is to be actionable.
+    if (appEnv === "local") return "http://localhost:3000";
+    throw new ConfigError(
+      `CONSOLE_BASE_URL is required when APP_ENV=${appEnv}. It builds the link in every ` +
+        "escalation email, and the local default would point recipients at their own " +
+        "machine instead of the console.",
+    );
+  }
   // Parsed rather than string-matched: a relative or malformed base produces a
   // link that looks fine in the email and goes nowhere, which is worse than a boot
   // failure.
@@ -314,15 +327,24 @@ export function composeRequestEmail(input: ComposeInput): ComposedEmail {
 
   // Blocks, not one template per permutation: stage x fallback x has-message is
   // eight combinations, and eight near-identical strings drift.
+  // 0001 sets service_requests.conversation_id to NULL when the conversation is
+  // deleted, and the request row survives. There is then no console link to give —
+  // the detail page is keyed by conversation id — so the link block is dropped and
+  // the body says why. Printing `${base}/inbox/` instead would send a link that
+  // renders as a real URL, resolves to the inbox index or a 404, and looks like a
+  // bug in the console rather than a deleted conversation.
+  const hasConversation = input.conversationId.trim() !== "";
+
   const blocks = [
     fill(t(introId, lang), values),
     fill(t("email.request.facts", lang), values),
+    fill(t(hasConversation ? "email.request.conversation" : "email.request.no_conversation", lang), values),
     ...(quote
       ? [fill(t("email.request.quote", lang), values)]
       : redacted
         ? [fill(t("email.request.redacted_notice", lang), values)]
         : []),
-    fill(t("email.request.open", lang), values),
+    ...(hasConversation ? [fill(t("email.request.open", lang), values)] : []),
   ];
 
   return {
@@ -812,9 +834,9 @@ async function sendOne(
   }
 
   // A request whose conversation has been detached (0001 sets conversation_id to
-  // NULL on conversation delete) still deserves an email — there is no console link
-  // to follow, but the facts block still names the request. Composing with an empty
-  // conversation id would produce a link to nowhere, so the url is omitted instead.
+  // NULL on conversation delete) still deserves an email: the facts block still names
+  // the request and the property. The empty string is the signal the composer reads
+  // to drop the console-link block, so no link to nowhere is ever printed.
   const conversationId = fact.conversationId === null ? "" : String(fact.conversationId);
 
   const composed = composeRequestEmail({
@@ -841,6 +863,13 @@ async function sendOne(
     // guest: a reply-to pointing at a guest would open a channel that no message
     // row records, and every guest-visible word is supposed to be one.
     replyTo: config.from,
+    // Keyed on THIS ROW, so every retry of it carries the same key and the provider
+    // replays the original response instead of delivering a second email. This is
+    // the only thing that makes the retry path safe: 0028's dedupe index stops a
+    // second outbox ROW for one request+stage, and does nothing about a second
+    // delivery of the row that already exists when Resend accepted the first attempt
+    // and we lost the response.
+    idempotencyKey: emailIdempotencyKey(row.claimed_id),
   });
 
   if (sent.ok) {

@@ -705,6 +705,128 @@ describe("email outbox (db)", () => {
     });
   });
 
+  describe("a retry cannot deliver twice (review #3)", () => {
+    it("carries the same idempotency key on every attempt of one row", async () => {
+      // 0028's dedupe index stops a second outbox ROW for one request+stage. It does
+      // nothing about a second DELIVERY of the row that already exists: if Resend
+      // accepts the email and the response is lost — a stalled body, a reset
+      // connection, a process killed before the `sent` commit — the row is still
+      // claimable and a naive retry sends it again. The provider-side key is the only
+      // thing that closes that, so the key has to be observable on the FAILED attempt
+      // too, which is why the log-only provider records attempts and not just sends.
+      const provider = logOnlyProvider();
+      provider.failWith = { ok: false, providerId: null, retryable: true, reason: "unavailable" };
+      const captured = await capture(a);
+
+      await processEmailOutbox(pool, provider, config);
+      expect(provider.attempts).toHaveLength(1);
+      expect(provider.sent).toHaveLength(0);
+      const firstKey = provider.attempts[0]!.idempotencyKey;
+
+      const row = (await rowsFor(captured.requestId))[0]!;
+      expect(firstKey).toBe(`concierge-email/${row.outbox_id}`);
+
+      // The provider recovers and the row becomes due: the retry must reuse the key.
+      provider.failWith = null;
+      await makeDue(row.outbox_id);
+      await processEmailOutbox(pool, provider, config);
+
+      expect(provider.attempts).toHaveLength(2);
+      expect(provider.attempts[1]!.idempotencyKey).toBe(firstKey);
+      expect(provider.sent).toHaveLength(1);
+    });
+
+    it("gives a re-queued row a different key, so a deliberate re-send is not suppressed", async () => {
+      // The other half of keying on the row rather than on request+stage: Resend
+      // remembers keys for 24 hours, so a key derived from the dedupe key would
+      // silently swallow an operator's re-queue of a dead row for a whole day.
+      const provider = logOnlyProvider();
+      provider.failWith = { ok: false, providerId: null, retryable: false, reason: "rejected" };
+      const captured = await capture(a);
+      await processEmailOutbox(pool, provider, config);
+      expect((await rowsFor(captured.requestId))[0]!.status).toBe("dead");
+
+      const requeued = await enqueueEmail(client, {
+        orgId: a.orgId,
+        propertyId: a.propertyId,
+        requestId: captured.requestId,
+        conversationId: captured.conversationId,
+        messageId: captured.messageId,
+        stage: "new",
+      });
+      expect(requeued.queued).toBe(true);
+
+      provider.failWith = null;
+      await processEmailOutbox(pool, provider, config);
+      expect(provider.attempts).toHaveLength(2);
+      expect(provider.attempts[1]!.idempotencyKey).not.toBe(provider.attempts[0]!.idempotencyKey);
+      expect(provider.attempts[1]!.idempotencyKey).toBe(`concierge-email/${requeued.outboxId?.toString()}`);
+    });
+
+    it("retries an in-flight conflict rather than giving up on it", async () => {
+      // Resend answers 409 concurrent_idempotent_requests while the first attempt is
+      // still running; that is a "come back in a moment", not a refusal.
+      const provider = logOnlyProvider();
+      provider.failWith = { ok: false, providerId: null, retryable: true, reason: "conflict_in_flight" };
+      const captured = await capture(a);
+
+      const tally = await processEmailOutbox(pool, provider, config);
+      expect(tally).toMatchObject({ retried: 1, dead: 0 });
+      expect((await rowsFor(captured.requestId))[0]!.status).toBe("failed");
+    });
+
+    it("gives up on a payload conflict without claiming it was sent", async () => {
+      // Same key, different payload: an earlier attempt WAS accepted and its content
+      // is not what we would send now. Reporting `sent` would claim a delivery whose
+      // content we cannot prove, and retrying 409s forever — so it is a dead row with
+      // its own reason for a human to look at.
+      const provider = logOnlyProvider();
+      provider.failWith = { ok: false, providerId: null, retryable: false, reason: "conflict_payload", detail: "key reused" };
+      const captured = await capture(a);
+
+      const tally = await processEmailOutbox(pool, provider, config);
+      expect(tally).toMatchObject({ sent: 0, dead: 1 });
+      expect(provider.sent).toHaveLength(0);
+
+      const row = (await rowsFor(captured.requestId))[0]!;
+      expect(row.status).toBe("dead");
+      expect(row.last_error).toContain("conflict_payload");
+      expect((await audits("notification.dead", captured.requestId))[0]!.detail).toMatchObject({
+        reason: "conflict_payload",
+      });
+      // Nothing was recorded as delivered.
+      expect(await audits("notification.sent", captured.requestId)).toHaveLength(0);
+    });
+  });
+
+  describe("a detached conversation (review #4)", () => {
+    it("sends no console link when the conversation is gone", async () => {
+      // 0001 sets service_requests.conversation_id to NULL on conversation delete and
+      // the request row survives. The detail page is keyed by conversation id, so
+      // there is no link to give: printing `${base}/inbox/` would render as a real URL
+      // resolving to the inbox index or a 404, which reads as a console bug rather
+      // than as a deleted conversation.
+      const provider = logOnlyProvider();
+      const captured = await capture(a);
+      await client.query(
+        "UPDATE service_requests SET conversation_id = NULL WHERE request_id = $1",
+        [captured.requestId],
+      );
+
+      const tally = await processEmailOutbox(pool, provider, config);
+      expect(tally).toMatchObject({ sent: 1, dead: 0 });
+
+      const email = provider.sent[0]!;
+      expect(email.text).not.toContain("/inbox/");
+      expect(email.text).not.toContain("Ábrela en la consola");
+      expect(email.text).toContain("ya no está disponible");
+      // Still worth receiving: the request and the guest's words are both there.
+      expect(email.text).toContain(captured.requestId);
+      expect(email.text).toContain(GUEST_TEXT);
+      expect(email.to).toEqual([DESK_A]);
+    });
+  });
+
   describe("tenant separation across the one cross-tenant read", () => {
     it("answers each property from its own settings", async () => {
       // `claim_outbox` sees every tenant's rows; the work afterwards must not. A

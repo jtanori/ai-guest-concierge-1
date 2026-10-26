@@ -217,8 +217,14 @@ export const en = {
   "email.request.new.intro": "A guest asked for a person at {property}.",
   "email.request.acknowledged.intro":
     "{actorName} acknowledged request {requestId} at {property}.",
-  "email.request.facts":
-    "Request: {requestId}\nType: {topic}\nConversation: {conversationId}",
+  "email.request.facts": "Request: {requestId}\nType: {topic}",
+  "email.request.conversation": "Conversation: {conversationId}",
+  // 0001 sets service_requests.conversation_id to NULL when the conversation is
+  // deleted, and the request row survives. There is then no console link to give
+  // (the detail page is keyed by conversation id), so the email says so instead of
+  // printing a link that ends in /inbox/ and resolves to nothing.
+  "email.request.no_conversation":
+    "This request's conversation is no longer available, so there is no link to open.",
   "email.request.quote": "What the guest wrote:\n{message}",
   // Printed instead of the quote when the mail goes to the deployment-wide
   // fallback because the property configured no contacts of its own. That address
@@ -411,8 +417,10 @@ export const es: Record<StringId, string> = {
   "email.request.new.intro": "Un huésped pidió hablar con una persona en {property}.",
   "email.request.acknowledged.intro":
     "{actorName} confirmó la solicitud {requestId} en {property}.",
-  "email.request.facts":
-    "Solicitud: {requestId}\nTipo: {topic}\nConversación: {conversationId}",
+  "email.request.facts": "Solicitud: {requestId}\nTipo: {topic}",
+  "email.request.conversation": "Conversación: {conversationId}",
+  "email.request.no_conversation":
+    "La conversación de esta solicitud ya no está disponible, así que no hay un enlace para abrir.",
   "email.request.quote": "Lo que escribió el huésped:\n{message}",
   "email.request.redacted_notice":
     "Esta propiedad no tiene configurado un correo de escalamiento, así que esto llegó al destinatario de respaldo del despliegue. El mensaje del huésped no se incluye aquí, porque esta dirección no pertenece a esa propiedad.",

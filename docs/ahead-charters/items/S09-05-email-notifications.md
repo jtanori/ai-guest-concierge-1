@@ -87,13 +87,52 @@ Deviations from §4, all recorded in the runbook:
 - **`BEGIN` in the worker is load-bearing and §4 did not mention it.** `FOR UPDATE SKIP LOCKED` holds its lock only for the transaction that took it, so without an explicit `BEGIN` the lock is released the instant the claim returns and two workers can claim the same row and both send it. `COMMIT` with no open transaction *succeeds with a warning*, so a single-worker test passes and the bug surfaces in production as duplicate escalation emails.
 - **A dead row carries no `next_attempt_at`,** differing deliberately from S09-04's `recordFailure`. `next_attempt_at` means "next eligible for claiming", so a timestamp on a row that will never be claimed again reads as a missed retry. Both email paths set `processed_at`, which is the column that answers "when did we give up". S09-04 stamps a due-time only because it writes no `processed_at`; rewriting that here would be out of scope, so the difference is documented in both places.
 
+**Review round 1 (PR #145) — four findings, all fixed.** Each was a case the tests
+could not see rather than a case that failed, so each now has one; details and
+reasoning are in the runbook entry.
+
+1. `CONSOLE_BASE_URL` was optional outside local, so production could silently link
+   every escalation email to `http://localhost:3000` — which *resolves*, on the
+   recipient's own machine. Now required outside `APP_ENV=local`.
+2. The provider timeout was cleared when the response **headers** arrived, leaving
+   `response.text()` with no deadline. A provider that stalls the body hangs the worker
+   while it holds a transaction and a `FOR UPDATE` row lock, pinning a row no other
+   worker can claim. The timeout now covers the body read.
+3. **The retry path could deliver twice, and a comment in the code claimed it could
+   not.** 0028's dedupe index prevents a second outbox *row*; it does nothing about a
+   second *delivery* of the row that already exists when Resend accepted the first
+   attempt and the response was lost. Fixed with Resend's `Idempotency-Key`, derived
+   from the outbox row id so it is stable across retries of one row and distinct
+   between rows — a per-attempt key is idempotent against nothing, and a key derived
+   from the dedupe key would suppress an operator's deliberate re-queue for Resend's
+   whole 24-hour window. The two 409s are handled distinctly:
+   `concurrent_idempotent_requests` retries, `invalid_idempotent_request` goes dead
+   with reason `conflict_payload` rather than being reported as a send whose content
+   cannot be proven.
+4. A request whose conversation was deleted (`conversation_id` NULL, per 0001) still
+   printed a console link ending in `/inbox/`, despite a worker comment saying it was
+   omitted. The conversation line is now its own catalogue block with a
+   `no_conversation` variant and the link block is dropped.
+
+**Scope caveat, agreed with the reviewer.** Nothing schedules `processEmailOutbox`, so
+as merged this item *queues* notifications and does not *deliver* them. The
+end-to-end reading of AC-1 — "a request reaches a human by email" — is **not
+operational** until S11-01 deploys and schedules the worker. What is met here is the
+part this item owns: the row is written atomically with the request, survives provider
+failure, resolves recipients from the right tenant's settings, and is composed and
+handed to a provider correctly. This is recorded in §9 and in the runbook rather than
+left to be discovered by someone waiting for an email that was queued and never sent.
+
 ## 9. Definition of done
 
-- [x] Implemented and measured locally: `db:migrate` **28** from empty, `db:test` **38 files / 395**, `npm test` **47 files / 610**, root+web `tsc` clean, `lint` clean, `web:build` green. Runbook entry `## S09-05 - Email notifications (0.50d)`.
+- [x] Implemented and measured locally, after review round 1: `db:migrate` **28** from empty, `db:test` **38 files / 400** (email outbox 32), `npm test` **47 files / 620** (email pure 44), root+web `tsc` clean, `lint` clean, `web:build` green. Runbook entry `## S09-05 - Email notifications (0.50d)`.
 - [x] §6's named cases all exist and pass. `tests/notifications/email.test.ts` (34): empty contacts → fallback used; ES/EN bodies; **no PII beyond the request id in the subject**; plus config refusal, `in_app` contacts not counting as addresses, dedupe, the redacted fallback body, no empty quote block for a button-tap request, backoff, and the Resend call shape against an injected `fetch`. `tests/db/email-outbox.db.test.ts` (27): request + outbox row atomic **in both directions** (commit visible to a session that was not part of the turn; rollback takes the notification with it); provider failure leaves the row with `attempts` incremented and a future due-time; not-due rows are not claimed; retry succeeds; permanent refusal goes `dead` on the first attempt; retries exhaust to `dead` + audit; nobody-to-send-to is loud; **§5's cross-tenant assertion** — each property answered from its own settings, and a payload naming tenant A's request cannot be redirected by tenant B's settings.
   - One deviation from §6's wording: it says a failure "leaves `status='pending'` with `attempts` incremented". The shipped behaviour leaves `status='failed'`, because `claim_outbox` selects `status IN ('pending','failed')` and a retried row that stayed `pending` would be indistinguishable from one never attempted. `attempts` is incremented as specified, and `last_error` carries the reason.
 - [x] Cross-tenant isolation: no new table (the `outbox` has existed since 0001 and is already in the isolation suite), but the new **definer function** is covered — `tests/db/non-superuser.db.test.ts` runs the whole 28-file chain as a non-superuser owner, and `tests/db/email-outbox.db.test.ts` asserts `claim_outbox`'s owner, `prosecdef`, an ACL with **no PUBLIC entry**, `concierge_worker` NOLOGIN, and `pg_has_role('concierge_app','concierge_worker','MEMBER')` false. **No new runtime dependency.**
 - [ ] CI green: `lint`, `typecheck`, `test`, `db-test`, `preview` (and `eval` once S06-03 lands).
+- [ ] **AC-1 is not operational until S11-01 schedules the worker.** Merged state
+      queues notifications correctly; nothing sends them. Do not describe the
+      end-to-end criterion as met before the worker is deployed.
 - [ ] **§7's third evidence item is OUTSTANDING: `staging inbox screenshot of a real delivered email`.** DEC-4 deferred credentials, so nothing was sent. To close it: set `EMAIL_FROM`, `EMAIL_API_KEY`, `EMAIL_ESCALATION_FALLBACK` and `CONSOLE_BASE_URL` in a staging `.env`, verify the sender domain in Resend, open a request as a guest, and keep the received email plus the `notification.sent` audit row with its `providerId`. Joins the other outstanding physical-evidence items (S07-01 QR scan, S08-01 stopwatch, S08-02 sources screenshot, S06-01 staging).
 - [ ] Workbook ticked via `node scripts/update-workbook-status.mjs <ID> "✅ Done (<evidence>)"` only after the AC is objectively met.
 - [ ] Review threads resolved; charter §9 decisions recorded in the runbook.

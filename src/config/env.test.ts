@@ -129,4 +129,14 @@ describe("loadLlmConfig (S05-01 / DEC-2)", () => {
     expect(() => loadLlmConfig(base, "prod")).toThrow(/LLM_API_KEY is required/);
     expect(loadLlmConfig({ ...base, LLM_API_KEY: "sk-test" }, "prod").apiKey).toBe("sk-test");
   });
+
+  it("S07-06: defaults the retry budget to the plan's two, and bounds it", () => {
+    expect(loadLlmConfig(base, "local").retries).toBe(2);
+    expect(loadLlmConfig({ ...base, LLM_RETRIES: "0" }, "local").retries).toBe(0);
+    expect(loadLlmConfig({ ...base, LLM_RETRIES: "4" }, "local").retries).toBe(4);
+    // The ceiling exists because the guest is the one waiting on the retries.
+    expect(() => loadLlmConfig({ ...base, LLM_RETRIES: "5" }, "local")).toThrow(/LLM_RETRIES/);
+    expect(() => loadLlmConfig({ ...base, LLM_RETRIES: "-1" }, "local")).toThrow(/LLM_RETRIES/);
+    expect(() => loadLlmConfig({ ...base, LLM_RETRIES: "two" }, "local")).toThrow(/LLM_RETRIES/);
+  });
 });

@@ -24,8 +24,6 @@ export async function readSession(): Promise<StaffCookieSession | null> {
   return { token, orgId, propertyId };
 }
 
-export function apiBase(): string {
-  return process.env["REVIEW_API_URL"] ?? "http://127.0.0.1:8787";
-}
+export { apiBase } from "./api-base";
 
 export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

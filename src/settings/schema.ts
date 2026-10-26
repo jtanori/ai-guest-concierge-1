@@ -23,6 +23,8 @@ export const SETTINGS_KEYS = [
   "retention_days",
   // S04-03
   "retrieval_weights",
+  // S07-01
+  "embed",
 ] as const;
 
 export type SettingsKey = (typeof SETTINGS_KEYS)[number];
@@ -42,6 +44,18 @@ export const RETRIEVAL_WEIGHT_KEYS = ["lexical", "vector", "trigram"] as const;
 export type RetrievalWeightKey = (typeof RETRIEVAL_WEIGHT_KEYS)[number];
 export type RetrievalWeights = Record<RetrievalWeightKey, number>;
 
+/**
+ * S07-01 — which origins may frame the guest chat.
+ *
+ * Bare origins only (`https://hotel.example`, `http://localhost:3000`): no path,
+ * no trailing slash, no wildcard. Mirrors 0020's SQL validator clause for
+ * clause, and an empty list means **nobody** may embed — the safe default for a
+ * page that can open service requests.
+ */
+export interface EmbedSettings {
+  allowed_origins: string[];
+}
+
 export interface PropertySettings {
   tone: Tone;
   business_hours: BusinessDay[];
@@ -56,6 +70,7 @@ export interface PropertySettings {
    * the ordering arbitrary.
    */
   retrieval_weights: RetrievalWeights;
+  embed: EmbedSettings;
 }
 
 export class SettingsValidationError extends Error {
@@ -83,6 +98,7 @@ export const DEFAULT_SETTINGS: PropertySettings = {
   spend_cap: { daily_usd: 10, per_conversation_usd: 0.5 },
   retention_days: 90,
   retrieval_weights: { lexical: 1, vector: 1, trigram: 1 },
+  embed: { allowed_origins: [] },
 };
 
 const TIME_RE = /^([01][0-9]|2[0-3]):[0-5][0-9]$/;
@@ -270,6 +286,50 @@ function parseRetrievalWeights(value: unknown, path: string): RetrievalWeights {
   return weights;
 }
 
+/** An origin: scheme, host, optional port. Nothing else. */
+export const ORIGIN_RE = /^https?:\/\/[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?$/;
+
+/**
+ * Normalises a value a human typed into an origin, or returns null.
+ *
+ * Used on the *reading* side (an `Origin` header, a config value) where
+ * forgiving case and a trailing slash is right. The parser below is strict,
+ * because stored settings must not depend on how they were typed.
+ */
+export function normaliseOrigin(value: string): string | null {
+  const trimmed = value.trim().replace(/\/+$/, "").toLowerCase();
+  return ORIGIN_RE.test(trimmed) ? trimmed : null;
+}
+
+/**
+ * S07-01: exactly one key (`allowed_origins`), each a bare lowercase origin,
+ * no duplicates, at most ten. Mirrors 0020's SQL validator.
+ */
+function parseEmbed(value: unknown, path: string): EmbedSettings {
+  if (!isRecord(value)) fail(path, "must be an object");
+  assertExactKeys(value, ["allowed_origins"], path);
+
+  const raw = value["allowed_origins"];
+  if (!Array.isArray(raw)) fail(`${path}.allowed_origins`, "must be an array of origins");
+  if (raw.length > 10) fail(`${path}.allowed_origins`, "at most 10 origins");
+
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    if (typeof entry !== "string") {
+      fail(`${path}.allowed_origins`, "every entry must be a string");
+    }
+    if (!ORIGIN_RE.test(entry)) {
+      fail(
+        `${path}.allowed_origins`,
+        `"${entry}" is not an origin like https://hotel.example — no path, no trailing slash, no wildcard`,
+      );
+    }
+    if (seen.has(entry)) fail(`${path}.allowed_origins`, `"${entry}" appears twice`);
+    seen.add(entry);
+  }
+  return { allowed_origins: [...seen] };
+}
+
 /**
  * Parses stored JSON into a complete settings object. `{}` returns a fresh
  * copy of DEFAULT_SETTINGS; every other value must be complete.
@@ -288,6 +348,7 @@ export function parsePropertySettings(value: unknown): PropertySettings {
     spend_cap: parseSpendCap(value["spend_cap"], "spend_cap"),
     retention_days: parseRetention(value["retention_days"], "retention_days"),
     retrieval_weights: parseRetrievalWeights(value["retrieval_weights"], "retrieval_weights"),
+    embed: parseEmbed(value["embed"], "embed"),
   };
 }
 

@@ -1022,3 +1022,95 @@ $ npm run db:migrate   # still 19 applied — this item changed no schema
 ```
 
 **Not done, by charter:** transport retry/circuit policy (S07-06 — it decides how often this path is reached, and `ai_runs.reason_code = 'provider_unavailable'` is the number to tune it against). **Also owed:** nothing alerts on `message_failed` yet (the reliability item owns dashboards), and the chaos run should join the staging smoke script rather than living only in tests.
+
+## S07-06 - LLM transport resilience (0.50d)
+
+**AC (verbatim):** Both providers killed; product degrades honestly.
+
+- **AC-1** 8s generation / 3s classification timeouts, two retries with jitter on 429/5xx only, 60s circuit break to the secondary.
+- **AC-2** Pinned model versions; provider-native structured outputs + server-side validation.
+- **AC-3** Parse-failure rate is an alerting metric.
+
+**Status: DONE (2026-10-25).** `src/metrics/counters.ts` (new), `src/ai/provider.ts`, `src/ai/answer.ts`, `src/config/env.ts` (`LlmConfig.retries`), `src/guest/runtime.ts`, `src/server.ts`; tests `tests/metrics/counters.test.ts` (new), `tests/db/metrics.db.test.ts` (new), `src/config/env.test.ts`. **No migration** — see below.
+
+**What was already true, and what was not.** The transport policy itself was S05-01's and has been enforced since: timeouts, jittered retries on 429/5xx only, a 60s circuit break to the secondary, `AiUnavailableError` when both are down, and pinned model ids that `src/config/env.ts` refuses to default. What was missing was **step three of the charter: the parse-failure rate was not a number anywhere.** A model could return JSON that failed the contract all night, the guest would correctly get the honest fallback, and the only trace was a log line nobody counts.
+
+**The decisions that shaped the code:**
+
+- *Four counters, a closed vocabulary, an allowlist of labels.* `ai_parse_failure_total`, `ai_fallback_total`, `ai_circuit_open_total`, `ai_outage_total`. Labels are `org_id`, `property_id`, `model` and nothing else — the counter API rejects anything else rather than accepting a free-form object, because the first time someone passes `{question}` "for debugging" the counter table becomes a transcript.
+- *Counters only, no histograms.* A rate needs a numerator and a denominator, both of which are counts (`ai_parse_failure_total` over turns). Latency percentiles are a different item with a different sink; shipping half a histogram here would have implied coverage that does not exist.
+- *The sink is injected, and a broken sink cannot break a turn.* `setCounterLogger` is called once at boot in `src/server.ts`; with no sink the counters are still counted and simply not emitted (every test runs that way). The call is wrapped in try/catch and pinned by a test: metrics are an observability feature and a guest turn must never fail because a logger threw.
+- *The retry budget became configuration: `LLM_RETRIES` (default 2, range 0–4).* The charter fixed "two retries"; the range exists because the ceiling is a product judgement, not a transport one — with an 8s timeout, four retries is 32 seconds of a guest watching a spinner. Anything outside 0–4 is a `ConfigError` at boot, not a silent clamp.
+- *`ai_runs` already had the denominator, so nothing new was stored.* The reason codes from S07-05 (`provider_unavailable` in `AI_RUN_REASON_CODES`) are the per-turn record; the counters are the rate. Recomputing one from the other in SQL is possible but slow at the wrong moment, which is why both exist.
+- *Nothing pages anybody yet.* AC-3 says the parse-failure rate is an alerting metric; S11-04 turns counters into alerts. Saying "alerting" in a runbook while nothing alerts would be the exact dishonesty this sprint exists to remove, so the close-out says what is true: the number is emitted, on a `metrics.counter` log line, in a shape a log-based alert can consume.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector + pg_trgm):**
+```text
+$ npm test        # 38 files / 500 passed (12 counter cases, +3 through the DB pipeline)
+$ npm run db:test # 28 files / 242 passed
+$ npm run typecheck && npm run lint && npm run web:build   # clean
+$ npm run db:migrate   # still 19 applied at the time of this item; 0020 belongs to S07-01
+```
+
+**Not done, by charter:** dashboards and alert rules (S11-04); exact token accounting from provider `usageMetadata` and the first invoice reconciliation (still owed from S07-04). **Also owed:** `LLM_RETRIES` should be exercised against a real provider in staging — the retry path is proven by unit tests against scripted providers, not by burning real quota.
+
+## S07-01 - QR + embeddable snippet (0.50d)
+
+**AC (verbatim):** QR resolves to the right property on a real phone.
+
+- **AC-1** `GET /c/:slug/qr.svg` returns a scannable SVG encoding the public chat URL.
+- **AC-2** A copy-paste `<script>`/iframe snippet embeds the same chat on the hotel site.
+
+**Status: DONE (2026-10-25), with one manual evidence item still owed.** `db/migrations/0020_embed_settings.sql`, `src/settings/schema.ts` (`embed`), `src/guest/links.ts` (new), `src/guest/qr.ts` (new), `src/guest/session.ts`, `src/guest/service.ts`, `web/middleware.ts` (new), `web/lib/property.ts` (new), `web/lib/api-base.ts` (new), `web/app/c/[slug]/{qr.svg,embed.js,embed.txt}/route.ts` (new); tests `tests/guest/links.test.ts` (new), `tests/guest/qr.test.ts` (new), plus cases in `tests/settings/schema.test.ts`, `tests/db/settings.db.test.ts`, `tests/db/guest-chat.db.test.ts`, `tests/db/schema.db.test.ts`, `tests/db/non-superuser.db.test.ts`.
+
+**What the code does, in one pass.** The property is resolved by the same slug lookup the chat page uses (a QR for a slug that does not resolve is a published 404), then `GET /c/:slug/qr.svg` encodes `<GUEST_PUBLIC_URL or request origin>/c/<slug>` as vector SVG; `GET /c/:slug/embed.txt` returns the copy-paste snippet; `GET /c/:slug/embed.js` returns the script it loads, which mounts an iframe of the same URL; and `web/middleware.ts` puts `frame-ancestors` on the chat page itself, per property, from `settings.embed.allowed_origins`.
+
+**The decisions that shaped the code:**
+
+- *`qrcode` (+ `@types/qrcode`), operator-approved 2026-10-25.* The charter offered vendoring a tiny encoder or an approved dependency; a hand-rolled QR is the one kind of bug that passes every test and fails in a lobby, because a subtly wrong code does not throw — it scans to nothing. It is the only runtime dependency this item added, and it is pure JavaScript (no native build, no service call, so the URL never leaves our process).
+- *The payload is the plain guest URL.* No tenant id, no shortener, no signed token, no tracking parameter. A laminated card is photographed, reposted and re-printed; a code that leaks only what a guest could have typed by hand leaks nothing.
+- *Error-correction level M with a two-module quiet zone.* L is smaller and survives a clean screen; M (15%) is the cheap insurance for a scuffed card. The spec asks for four modules of margin — two is the smallest value that scans reliably on paper, and a printed card usually carries its own margin.
+- *A slug that is not a slug never becomes a QR.* `SLUG_RE` is ASCII-only (`[a-z0-9-]`), which refuses `../`, over-long values, and the lookalikes that matter on a printed card: a Cyrillic `а` or a non-breaking hyphen renders identically and is a different string, so it would 404 for every guest who scanned. `links.ts` declares its own copy of the pattern so the module stays pure enough to bundle into Next middleware, and a test pins it to `session.ts`'s.
+- *`embed.allowed_origins` is a required setting, and empty means nobody.* Migration `0020` backfills `[]`, moves the other keys' validation into `property_settings_valid_v3`, and rebinds the CHECK. Matching is **exact origin**, never a prefix: `https://hotel.example` must not admit `https://hotel.example.evil.test`, which `startsWith` would. Wildcards, paths and trailing slashes are rejected by both the parser and the CHECK (tests assert the two agree), and the ceiling is ten origins so the CSP header stays small.
+- *The allowlist is read without widening the guest role.* `concierge_public`'s column grant on `properties` excludes `settings` on purpose (staff contact details live there). Instead of granting a stranger-only role access to settings, `src/guest/session.ts` copies `embed.allowed_origins` out **after** switching up to `concierge_app`, as a separate `frameAncestors` field. A settings value that fails to parse yields `[]` (nobody may embed), never a 500: embedding is a distribution channel, the chat is the product. `tests/db/guest-chat.db.test.ts` pins both the value and the fact that the public view still exposes exactly six fields.
+- *Framing is enforced by the page, in middleware.* The App Router has no per-page header API, so `web/middleware.ts` matches `/c/:slug` exactly (the QR and the script are files, not documents, and staff routes are untouched), reads the allowlist from the API, and caches the directive in memory for 60s per slug. A per-request lookup would put our own API in the critical path of the most-visited route; a minute of staleness on a *framing* header is the right trade. `'self'` is always included — "nobody may embed" must not become "nobody may visit" — and an API failure caches `'self'`, never a wildcard.
+- *`GUEST_PUBLIC_URL` overrides the request origin.* A server behind a proxy does not know its public name, and a QR encoding `http://127.0.0.1:8787` scans to nothing. Both routes prefer the configured origin and fall back to the request's own, which is the honest answer for local dev and preview hosts; `.env.example` says it must be set in production, because a printed card outlives the deploy that produced it.
+- *The snippet is the same function the tests exercise.* `GET /c/:slug/embed.txt` is the copy-paste text and `embedSnippet()` is what the tests cover, so what is handed to a hotel is what was verified — no second implementation living only in a docs page.
+- *The embed script does not set `sandbox`.* The chat needs cookies and forms; a sandbox without `allow-same-origin allow-forms allow-scripts` would break the thing it embeds. `frame-ancestors` on our side is the control: the page decides who may frame it, not the framer.
+
+**A bug found by curling the running stack, not by a unit test.** The first snippet emitted `src="…/c/demo?lang=es/embed.js"` — the query string before the file name, a 404 on every hotel site. Every unit test passed because each one asserted the pieces separately. Fixed by `embedScriptUrl()` plus a named assertion (`?lang=en/embed.js` must not appear); the general lesson is in §"Standing procedure" below.
+
+**Live verification (API on :8787, `web/` on :3000, seeded `demo` property):**
+```text
+GET /c/demo/qr.svg     200 image/svg+xml  1255 bytes; bytes identical to a fresh encode of
+                       http://127.0.0.1:3000/c/demo  → the served code encodes the right URL
+GET /c/demo/embed.txt  200 text/plain  — <div id="concierge-chat">…</div> + <script src="…/c/demo/embed.js?lang=es" async>
+GET /c/demo/embed.js   200 application/javascript — mounts an iframe of …/c/demo?lang=es
+GET /c/demo            content-security-policy: frame-ancestors 'self' https://hotel.example http://localhost:4000
+                       (header appears only after settings.embed.allowed_origins is set; with [] it is 'self')
+```
+
+**Evidence (local, PostgreSQL 16.2 + pgvector + pg_trgm):**
+```text
+$ npm run db:migrate # 20 applied (0020 new)
+$ npm test        # 38 files / 500 passed (23 link cases, 5 QR cases)
+$ npm run db:test # 28 files / 242 passed (embed allowlist + public-view shape)
+$ npm run typecheck && npm run lint && npm run web:build   # clean; three new routes in the manifest
+```
+
+**Still owed — the one thing this item cannot close itself: a scan on a real phone.** AC-1 says *"QR resolves to the right property on a real phone"*, and this environment has no camera. What is proven is that the route returns an SVG which encodes exactly the expected URL (byte-compared against a fresh encode) and that the encoder is the approved library at error-correction M. What is **not** proven is the scan itself. Procedure for the operator:
+
+1. Deploy `web/` with `GUEST_PUBLIC_URL` set to the public origin.
+2. `curl -s https://<host>/c/<slug>/qr.svg -o /tmp/qr.svg` and open it.
+3. Hold a phone camera to it; the preview must read `https://<host>/c/<slug>` and land on that property's chat.
+4. Record the host, the date and the slug in this section. Until then, treat AC-1 as *unverified on hardware*.
+
+**Not done, by charter:** print design (the card itself), WhatsApp entry point (WA track). **Also owed:** a staff-facing screen that shows the snippet and the QR to a hotel owner — today the operator hands them over via `embed.txt` and the SVG file, which is enough for the pilot but is not self-service; and `frameAncestors` is decorated per replica, so an allowlist change reaches every instance within 60 seconds rather than instantly.
+
+**Standing procedure — run the stack before believing the tests.** S07-01 shipped a snippet whose script URL was a 404 in every unit test's blind spot. Two commands, in the lifecycle of any item that emits a URL, a script, or a header:
+```text
+$ DATABASE_URL=… GUEST_COOKIE_SECRET=… PORT=8787 node --experimental-strip-types src/server.ts &
+$ (cd web && REVIEW_API_URL=http://127.0.0.1:8787 npm run dev) &
+$ curl -sD- -o /tmp/out https://<preview-or-local>/c/<slug>{,/qr.svg,/embed.txt,/embed.js}
+```
+Read the status, the content type and the body. A generated artifact is not verified until it has been fetched from a running process.

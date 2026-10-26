@@ -161,6 +161,58 @@ describe("property settings (db)", () => {
     }
   });
 
+  it("validates the embed allowlist at the CHECK, not only in the parser (0020)", async () => {
+    // The parser and the CHECK must agree, or a direct write by a future job
+    // would create a property whose framing policy is unreadable. These are the
+    // same values the schema test rejects, so the two layers stay in step.
+    const base = (): Record<string, unknown> =>
+      JSON.parse(JSON.stringify(DEFAULT_SETTINGS)) as Record<string, unknown>;
+
+    const cases: Array<[string, Record<string, unknown>]> = [];
+    const missing = base();
+    delete missing["embed"];
+    cases.push(["missing embed", missing]);
+
+    const wildcard = base();
+    wildcard["embed"] = { allowed_origins: ["*"] };
+    cases.push(["wildcard origin", wildcard]);
+
+    const withPath = base();
+    withPath["embed"] = { allowed_origins: ["https://hotel.example/spa"] };
+    cases.push(["origin with a path", withPath]);
+
+    const duplicate = base();
+    duplicate["embed"] = { allowed_origins: ["https://hotel.example", "https://hotel.example"] };
+    cases.push(["duplicate origin", duplicate]);
+
+    const extraKey = base();
+    extraKey["embed"] = { allowed_origins: [], allow_all: true };
+    cases.push(["extra embed key", extraKey]);
+
+    for (const [label, value] of cases) {
+      await expect(
+        client.query("UPDATE properties SET settings = $1::jsonb WHERE property_id = $2", [
+          JSON.stringify(value),
+          propertyA.propertyId,
+        ]),
+        label,
+      ).rejects.toThrow(/properties_settings_valid/);
+    }
+
+    // And a valid list is accepted, written and read back unchanged.
+    const allowed: PropertySettings = structuredClone(DEFAULT_SETTINGS);
+    allowed.embed = { allowed_origins: ["https://hotel.example", "http://localhost:3000"] };
+    await client.query("UPDATE properties SET settings = $1::jsonb WHERE property_id = $2", [
+      JSON.stringify(allowed),
+      propertyA.propertyId,
+    ]);
+    const loaded = await asApp(propertyA, (tx) => loadPropertySettings(tx, propertyA));
+    expect(loaded.embed.allowed_origins).toEqual([
+      "https://hotel.example",
+      "http://localhost:3000",
+    ]);
+  });
+
   it("rejects after_hours with an all-closed week at the DB CHECK", async () => {
     const closedWeek: PropertySettings = structuredClone(DEFAULT_SETTINGS);
     closedWeek.business_hours = [0, 1, 2, 3, 4, 5, 6].map((day) => ({ day, closed: true }));

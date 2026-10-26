@@ -21,6 +21,7 @@ import { postgresStatus, closePool, getPool } from "./neon/postgres.ts";
 import { loadAuthConfig, verifyIdentityToken } from "./auth/session.ts";
 import { handleReviewRequest, ownsReviewPath, type ReviewHttpDeps } from "./staff/http.ts";
 import { handleGuestRequest, ownsGuestPath, type GuestHttpDeps } from "./guest/http.ts";
+import { setCounterLogger } from "./metrics/counters.ts";
 import { guestRuntimeFromEnv } from "./guest/runtime.ts";
 import { authStatus } from "./neon/auth.ts";
 import {
@@ -46,6 +47,14 @@ const [cfg, cfgError] = loadConfigGracefully(process.env);
 const configuredLevel = cfg?.logLevel ?? "info";
 const log = createLogger((isLogLevel(configuredLevel) ? configuredLevel : "info") as LogLevel);
 const startedAt = new Date().toISOString();
+
+// S07-06 AC-3: counters are silent by default (tests and scripts import the same
+// modules); the server is the one place a metric becomes a log line an alert can
+// parse. `metrics.counter` lines carry org_id/property_id/model and never prompt
+// or guest text.
+setCounterLogger({
+  info: (fields, message) => log.info(fields, message),
+});
 
 type Handler = () => Promise<Record<string, unknown> | string>;
 

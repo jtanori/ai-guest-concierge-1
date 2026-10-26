@@ -10,10 +10,11 @@
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { answerMessage } from "../../src/ai/answer.ts";
-import { createFixedProvider } from "../../src/ai/stub.ts";
+import { createFixedProvider, createScriptedProvider } from "../../src/ai/stub.ts";
 import { withResilience } from "../../src/ai/provider.ts";
 import { withTenant, type TenantContext } from "../../src/db/tenant.ts";
 import { toVectorLiteral } from "../../src/knowledge/embedding.ts";
+import { t } from "../../src/i18n/catalog.ts";
 import { DEFAULT_SETTINGS } from "../../src/settings/schema.ts";
 import { stubEmbedding } from "../../src/seed/embedding.ts";
 import { connectScratch, dropScratch, recreateScratch, seedTenant } from "./helpers.db.ts";
@@ -273,5 +274,93 @@ describe("AI pipeline + ai_runs (db)", () => {
     // The contract only ever accepts version ids; the FK is the second wall.
     const outcome = await ask(validAnswer("44444444-4444-4444-8444-444444444444"));
     expect(outcome.kind).toBe("escalate");
+  });
+
+  it("escalates an answer whose quote is not in the cited version, and records the guard", async () => {
+    const fabricated = {
+      ...validAnswer(versionId),
+      answer: "La alberca cierra a las 23:00.",
+      citations: [{ article_version_id: versionId, quote: "cierra a las 23:00" }],
+    };
+    const outcome = await ask(fabricated);
+    expect(outcome).toMatchObject({ kind: "escalate", detail: "quote_not_in_cited_version" });
+    if (outcome.kind !== "escalate") throw new Error("unreachable");
+    expect(outcome.aiRunId).not.toBeNull();
+    expect(outcome.guestMessage).not.toContain("23:00");
+
+    const run = await client.query<{ decision: string; reason_code: string; usage: { guard?: string } }>(
+      "SELECT decision, reason_code, usage FROM ai_runs WHERE ai_run_id = $1",
+      [outcome.aiRunId],
+    );
+    expect(run.rows[0]).toMatchObject({ decision: "escalate", reason_code: "low_retrieval" });
+    expect(run.rows[0]!.usage.guard).toBe("quote_not_in_cited_version");
+
+    const citations = await client.query("SELECT 1 FROM citations WHERE ai_run_id = $1", [
+      outcome.aiRunId,
+    ]);
+    expect(citations.rowCount).toBe(0);
+  });
+
+  it("refuses an answer that promises a price (banned content) even with a real citation", async () => {
+    const priced = {
+      ...validAnswer(versionId),
+      answer: "La entrada cuesta 450 MXN por persona.",
+      citations: [{ article_version_id: versionId, quote: "El acceso es con llave" }],
+    };
+    const outcome = await ask(priced);
+    expect(outcome).toMatchObject({ kind: "escalate", reasonCode: "policy_block" });
+    if (outcome.kind !== "escalate") throw new Error("unreachable");
+    expect(outcome.detail).toContain("banned_content:currency_amount");
+    expect(outcome.guestMessage).not.toContain("450");
+  });
+
+  it("escalates a sensitive question before calling the model at all", async () => {
+    const provider = createScriptedProvider([validAnswer(versionId)], MODEL);
+    const before = await client.query("SELECT 1 FROM ai_runs");
+
+    const outcome = await asApp((tx) =>
+      answerMessage(
+        tx,
+        tenant,
+        {
+          conversationId,
+          messageId: null,
+          text: "Quiero un reembolso de la última noche",
+          language: "es",
+          channel: "web",
+        },
+        {
+          ai: withResilience(provider, createFixedProvider(validAnswer(versionId), `${MODEL}-fb`), {
+            retries: 0,
+            sleep: async () => {},
+            now: () => 0,
+          }),
+        },
+      ),
+    );
+
+    expect(outcome).toMatchObject({ kind: "escalate", reasonCode: "sensitive_topic" });
+    if (outcome.kind !== "escalate") throw new Error("unreachable");
+    expect(outcome.detail).toBe("sensitive:money_and_refunds");
+    expect(outcome.aiRunId).toBeNull();
+    // The guardrail costs nothing: no model call, no ai_runs row.
+    expect(provider.requests).toHaveLength(0);
+    const after = await client.query("SELECT 1 FROM ai_runs");
+    expect(after.rowCount).toBe(before.rowCount);
+  });
+
+  it("records a knowledge gap and sends the catalogue string on no_answer", async () => {
+    const outcome = await ask(validAnswer(versionId), { text: "xyzzyqqq" });
+    expect(outcome).toMatchObject({ kind: "no_answer" });
+    if (outcome.kind !== "no_answer") throw new Error("unreachable");
+    // D14: the guest sees a catalogued string (here, the Spanish one), never
+    // generated text — asserted through the catalogue, not a copied literal.
+    expect(outcome.guestMessage).toBe(t("guest.idontknow", "es"));
+
+    const gaps = await client.query<{ question: string; language: string; status: string }>(
+      "SELECT question, language, status FROM knowledge_gaps WHERE conversation_id = $1",
+      [conversationId],
+    );
+    expect(gaps.rows).toContainEqual({ question: "xyzzyqqq", language: "es", status: "open" });
   });
 });

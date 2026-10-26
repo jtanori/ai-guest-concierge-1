@@ -299,7 +299,12 @@ describe("hybrid retrieval (db)", () => {
     expect(history.rowCount).toBe(1);
     // ...but nothing retrievable answers with it.
     expect(await retrieve({ text: v1Only })).toEqual([]);
-    expect((await retrieve({ text: "gimnasio abre" }))[0]!.body).toBe(secondBody);
+    // The query is a token that exists ONLY in v2. "gimnasio abre" is not usable
+    // here: both articles match it in the lexical and trigram branches, the
+    // fused scores tie to the last digit, and the winner would be decided by a
+    // random UUID — a flake that says nothing about `is_current`.
+    const current = await retrieve({ text: "enero" });
+    expect(current[0]!.body).toBe(secondBody);
   });
 
   it("rejects malformed input rather than returning an empty list", async () => {

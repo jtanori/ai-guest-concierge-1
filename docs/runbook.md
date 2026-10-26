@@ -738,3 +738,37 @@ $ npm run typecheck && npm run lint && npm run build   # clean
 ```
 
 **Not done, by charter:** nothing in this item. S10-01 will instrument the event writer further; S08-02 renders this reconstruction in the staff UI.
+
+## S05-02 - Guardrail layer (2.50d)
+
+**AC (verbatim AC-1):** Every `decision=answer` has ≥1 citation in the retrieved set and every quote is entailed by its cited chunk.
+**AC (verbatim AC-2):** Banned content (prices, availability, 'confirmed', 'on the way') and policy/sensitive topics escalate with a `reason_code`.
+**AC (verbatim AC-3):** False-answer ≤2%, correct-or-correct-escalation ≥95% (G2).
+
+**Status: DONE for AC-1 and AC-2 (2026-10-25). AC-3 is NOT proven and is not claimed** — it is a measurement, and the instrument (golden set v2 with 25 articles + `npm run eval`, S06-03) does not exist yet. Guardrail *code* is complete; the G2 *number* is S06-03's to produce. This gap is stated in the charter and in the workbook row.
+
+**The gate, and where each check sits.** `src/ai/answer.ts`: policy (`policy.ts`) → **sensitive** (`sensitive.ts`) → verified fact (S03-03) → retrieval → **contradiction** → empty-retrieval gate → prompt → `parseAiOutput` (S05-01) → **`verifyAnswer`** (`guard.ts`) → persist. The two new gates are deliberately on opposite sides of the model: the sensitive gate runs *before* retrieval and generation, so the expensive, inventable part never happens for a refund or a medical question; the verification gate runs *after* generation and *before* persistence, so a rejected answer never gets a row that looks sent.
+
+**The decisions that shaped the code:**
+
+- *Shape check and meaning check are different files, on purpose.* `parseAiOutput` already rejects a malformed JSON, an answer with no citations and a citation id the retrieval did not return. `verifyAnswer` re-checks those (one `Map` lookup; a guard must be safe to call on any `AiOutput`) and adds the check that actually matters: **the quoted words must appear in the cited version**. A model that cites a real version and quotes a sentence that exists nowhere is manufacturing a source — the worst failure this product can have.
+- *Entailment is normalised substring containment, and the header says so.* Case, accents, punctuation, ellipsis and whitespace are folded before containment, because "cierra a las 20:00" against "cierra a las 20:00." is not a fabrication. It is checked against the matched chunk **and** the full body, because a quote may span a chunk boundary. This cannot prove semantic entailment — S12's manual audit is the check for that — but no model can argue its way past a substring.
+- *Tuning that only a test could have found.* `en_route` originally required "on the way now"; the bare phrase is the one a model actually writes. Sensitive matching runs on an **accent-stripped, punctuation→space** haystack, so `¿Hay recepción?` matches `recepcion` — the first version matched `" term "` and failed on the question mark, which is exactly how it would have failed on a real guest message.
+- *A non-answer is not "verified".* `verifyAnswer` returns `not_an_answer` for `decision != answer`. S05-01 already escalates those; marking them as a guardrail pass would have made the audit log lie about what the guard did.
+- *Banned content escalates, it is never edited outward.* A price the model invented is not an incidental phrase — the rest of the sentence was built on the same invention, so `banned_content:<ids>` → `policy_block` → human. Card numbers get a `[redacted]` excerpt in `violations` and never reach the log whole (`src/security/pii.ts`, Luhn-checked, shared with S11-03).
+- *The confidence floor is a parameter defaulting to 0.* A floor invented here would be a number with no evidence behind it. S06-03 calibrates it against the golden set; S07-04 can pass a property's own. Until then the gate is silent on confidence, and the code says why.
+- *One policy gate, consumed not implemented.* `policyGate` returns `{allow, reasonCode, detail, topicUnclassified}` and adds the two spend caps to S05-01's mode/after-hours/topic causes. The counter belongs to S07-04 (it has to survive across requests, and `policy.ts` is pure), so `spendTodayUsd` is an input: **omitted means "no budget information" and allows; present-and-over refuses**. `topicUnclassified: true` records that topic rules were skipped — the topic classifier still does not exist, and pretending an unclassified question passed a topic check would be the same class of lie.
+- *Contradiction beats both answers.* If `listContradictions` reports a verified/unverified disagreement for the resolved topic, the turn escalates with `contradiction:<topic>.<fact>` rather than picking a side. Only a *value* disagreement escalates; two articles merely mentioning the same fact do not.
+- *Every rejection leaves a trace.* `escalate`/`no_answer` write an `ai_runs` row (with `usage.guard`, `usage.violations` capped at 5) and, on the two no-answer paths, a `knowledge_gaps` row (`question`, `language`, `status: open`) — the gap list is what an operator works from, and it is now fed by the guard.
+- *One pre-existing flake surfaced under the full db run and is fixed here.* `tests/db/hybrid.db.test.ts`'s `is_current` case also asserted that `"gimnasio abre"` ranks the freshly published version first. Both articles match that query in the lexical and trigram branches, so the fused score ties to the last digit and the winner was decided by a random UUID — it passed in isolation and failed whenever another suite had run first. The assertion now queries a token that exists only in v2 (`"enero"`), which tests `is_current` and not tie-breaking. Nothing in `src/` changed.
+- *The guest sees a catalogue string, never model text.* Every non-answer outcome carries `guestMessage = t("guest.idontknow", lang)` in the **message's** language. The db test asserts it through the catalogue (`t("guest.idontknow", "es")`) rather than a copied English literal — the first version of that assertion hardcoded English and failed for the right reason.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector + pg_trgm, stub provider — no key, no network):**
+```text
+$ npm test           # 25 files / 356 passed - incl. 23 guardrail cases
+$ npm run db:test    # 20 files / 184 passed - incl. 12 ai-runs cases (4 new)
+$ npm run typecheck && npm run lint && npm run build   # clean
+```
+The four new db cases are end-to-end, not unit: a fabricated quote → `escalate` / `quote_not_in_cited_version` with `usage.guard` set and **zero** citation rows; an invented price → `policy_block` / `banned_content:currency_amount` with the price absent from the guest's text; a refund question → `sensitive_topic` / `sensitive:money_and_refunds` with `provider.requests.length === 0` and **no** `ai_runs` row (the model was never asked); and `"xyzzyqqq"` → `no_answer` plus an open `knowledge_gaps` row.
+
+**Not done, by charter:** the 50/week manual accuracy audit (S12), golden-set content (G1), and therefore **AC-3**. Also not done, and named rather than hidden: semantic entailment (substring containment only), a topic classifier (topic-scoped policy stays unevaluated until one exists), and the spend counter itself (S07-04). The verbatim `quote` still has no `citations` column (S05-03's recorded gap), so verification is reproducible only from the answer text and version bodies, not from the quote alone.

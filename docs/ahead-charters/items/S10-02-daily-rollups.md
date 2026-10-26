@@ -48,6 +48,7 @@ Recompute any historical date without drift — SQL over events, no second pipel
 - Metrics from Appendix D: `conversations_started`, `messages_received`, `ai_answers_sent`, `escalations`, `no_answers`, `containment` (conversations with zero `staff_message_sent`), `first_response_p95_seconds`, `requests_created`, `requests_acknowledged`, `ack_median_seconds`, `knowledge_gaps_opened/closed`. Store each as a row in `rollups` (0001: `metric, granularity, window_start, value, generated_at`, UNIQUE already present).
 - Add `"rollup": "node --experimental-strip-types scripts/rollup.ts"` to `package.json`; support `--from/--to` backfill and `--dry-run`.
 - Add a scheduled CI workflow `rollup-nightly.yml` (or a cron in the hosting platform) that recomputes the last 3 days so late events are absorbed.
+- **Before wiring any of this to `reconcile()`'s `from`/`to`:** read issue #147 and the caveat on `ReconcileWindow` in `src/events/reconcile.ts`. The nightly 3-day recompute is the first thing to sit on a window boundary where the business-table clock and the event clock disagree, so edge deltas of ±1 are expected and must be tolerated, not alerted.
 
 ## 5. Tenancy & security
 
@@ -70,6 +71,11 @@ Rollup queries must group by `org_id, property_id` and write both columns; add `
 Open decisions / blockers:
 
 - READY — `rollups` table exists; no external decision. Note the timezone fix must be applied here even though it was raised on S03-03.
+
+- **BLOCKED ON A DECISION, not on code — [issue #147](https://github.com/jtanori/ai-guest-concierge-1/issues/147) must be resolved before or alongside this item.** S10-01 shipped `src/events/reconcile.ts` with a windowed path (`from`/`to`), and this charter's `--from/--to` backfill plus the nightly 3-day recompute are its **first production consumers**. The two sides of that window are not on the same clock: business tables take `created_at timestamptz DEFAULT now()` (the Postgres transaction timestamp, 0001:107/126/158/176/299/344) while the paired event takes a JS-side `new Date()` (`src/requests/capture.ts:109`, passed as `createdAt` at :184; no business INSERT in `src/` supplies `created_at`). A window boundary between those two readings yields `delta ±1` — a timing artifact, not missing instrumentation — and a backfill that recomputes "the last 3 days" sits exactly on such a boundary.
+  - Consequence for this item: **any rollup that is verified against a windowed `reconcile()` must treat a `delta ±1` at its edges as advisory.** Whatever alerts or fails a backfill on a non-zero delta needs an explicit tolerance or an edge exclusion, or it will page on an artifact.
+  - The three ways to remove it properly are in #147. Option 3 — producers pass their business row's `created_at` from `INSERT ... RETURNING` into the event context — is the one that actually honours D10's "reconcile exactly" promise, and it touches every emission site, so it is the owner's call, not the implementer's. The artifact is pinned by a test today (`tests/db/events.db.test.ts`, a pair whose two rows carry deliberately different timestamps), so choosing option 3 will fail that test and force the record to be updated.
+  - S10-01's own AC-1 is unaffected: the unwindowed reconciliation is the authoritative one and reconciles exactly.
 
 ## 9. Definition of done
 

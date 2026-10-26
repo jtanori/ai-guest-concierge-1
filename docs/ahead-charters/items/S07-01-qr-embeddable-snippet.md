@@ -110,6 +110,7 @@ in this tree):
 |---|---|
 | URL building, origin matching, snippet/script generation | `src/guest/links.ts` |
 | QR encoding | `src/guest/qr.ts` |
+| QR route (the web route proxies it) | `src/guest/http.ts` — `GET /api/chat/qr.svg` |
 | Allowlist storage + validation | `db/migrations/0020_embed_settings.sql`, `src/settings/schema.ts` |
 | Framing header (per property, 60s in-memory cache) | `web/middleware.ts` |
 | Routes | `web/app/c/[slug]/qr.svg/`, `.../embed.js/`, `.../embed.txt/` |
@@ -124,12 +125,20 @@ than a 500 — embedding is a distribution channel, the chat is the product.
 `tests/db/guest-chat.db.test.ts` pins both the value and the fact that the public
 view still exposes exactly six fields.
 
+**Two failures that only a running process found.** The web QR route first
+imported `src/guest/qr.ts` directly, which builds locally and fails in CI (`web-build`
+installs only `web/`'s dependencies, so `qrcode` is missing and a cross-project
+import never resolves into `web/node_modules`) — the encoder now runs in the API and
+the web route proxies it. And `GuestRawResponse` used TypeScript parameter
+properties, which type-check, pass vitest and crash at boot under
+`--experimental-strip-types`. Both are recorded in the runbook.
+
 **Bug found by running it, not by testing it.** The first version of the snippet
 emitted `/c/demo?lang=es/embed.js` — the query string before the file name, a 404
 every time. `embedScriptUrl()` and a named assertion now exist because of it; the
 lesson (curl the running stack before believing the unit test) is in the runbook.
 
-**Evidence:** `npm test` 500 passed (38 files); `npm run db:test` 242 passed;
+**Evidence:** `npm test` 500 passed (38 files); `npm run db:test` 243 passed;
 `npm run lint` clean; `npx tsc --noEmit` clean; `npm run web:build` green with the
 three new routes; live run of API + web confirming `200 image/svg+xml`,
 `200 text/plain` snippet, `200 application/javascript` script, and

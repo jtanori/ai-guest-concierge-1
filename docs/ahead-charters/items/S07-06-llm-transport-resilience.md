@@ -116,5 +116,5 @@ which is why AC-3 is "is a metric" and not "has an alert".
 
 **Evidence:** `tests/metrics/counters.test.ts` 12 passed; `tests/db/metrics.db.test.ts`
 3 passed; `src/config/env.test.ts` covers `LLM_RETRIES` (default, range, rejection);
-`npm test` 500 passed; `npm run db:test` 242 passed; `npm run lint` and
+`npm test` 500 passed; `npm run db:test` 243 passed; `npm run lint` and
 `npx tsc --noEmit` clean; `npm run web:build` green.

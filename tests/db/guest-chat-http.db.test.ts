@@ -22,6 +22,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { withResilience } from "../../src/ai/provider.ts";
 import { createScriptedProvider } from "../../src/ai/stub.ts";
 import { handleGuestRequest, type GuestHttpDeps } from "../../src/guest/http.ts";
+import { qrSvg } from "../../src/guest/qr.ts";
 import { connectScratch, dropScratch, recreateScratch } from "./helpers.db.ts";
 
 const SECRET = "h".repeat(40);
@@ -147,5 +148,25 @@ describe("guest chat over HTTP (db)", () => {
     expect((await fetch(`${base}/api/chat/property?property=${SLUG}`, { method: "DELETE" })).status).toBe(
       405,
     );
+  });
+
+  it("serves the QR as image/svg+xml, encoding the base it was given (S07-01)", async () => {
+    // The web tier proxies this route (it cannot import the encoder — its CI job
+    // installs only `web/`'s dependencies), so the wire contract is what matters:
+    // an SVG body, and an encoded payload that matches the requested base.
+    const response = await fetch(
+      `${base}/api/chat/qr.svg?property=${SLUG}&base=${encodeURIComponent("http://chat.example.com")}`,
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("image/svg+xml; charset=utf-8");
+    const svg = await response.text();
+    expect(svg.startsWith("<svg")).toBe(true);
+    // Same encoder, same bytes: the served code IS a code for that URL.
+    expect(svg).toBe(await qrSvg({ baseUrl: "http://chat.example.com", slug: SLUG }));
+
+    const unknown = await fetch(`${base}/api/chat/qr.svg?property=nobody-here`);
+    expect(unknown.status).toBe(404);
+    // A QR is printed and lives for months; a QR of a 404 is a published 404.
+    expect(((await unknown.json()) as { error: string }).error).toBe("unknown_property");
   });
 });

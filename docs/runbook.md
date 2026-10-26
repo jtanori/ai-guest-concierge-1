@@ -1047,7 +1047,7 @@ $ npm run db:migrate   # still 19 applied — this item changed no schema
 **Evidence (local, PostgreSQL 16.2 + pgvector + pg_trgm):**
 ```text
 $ npm test        # 38 files / 500 passed (12 counter cases, +3 through the DB pipeline)
-$ npm run db:test # 28 files / 242 passed
+$ npm run db:test # 28 files / 243 passed
 $ npm run typecheck && npm run lint && npm run web:build   # clean
 $ npm run db:migrate   # still 19 applied at the time of this item; 0020 belongs to S07-01
 ```
@@ -1078,6 +1078,29 @@ $ npm run db:migrate   # still 19 applied at the time of this item; 0020 belongs
 - *The snippet is the same function the tests exercise.* `GET /c/:slug/embed.txt` is the copy-paste text and `embedSnippet()` is what the tests cover, so what is handed to a hotel is what was verified — no second implementation living only in a docs page.
 - *The embed script does not set `sandbox`.* The chat needs cookies and forms; a sandbox without `allow-same-origin allow-forms allow-scripts` would break the thing it embeds. `frame-ancestors` on our side is the control: the page decides who may frame it, not the framer.
 
+**A CI failure that changed where the encoder lives.** The first version put
+`QRCode.toString` behind a `web/app/c/[slug]/qr.svg/route.ts` that imported
+`src/guest/qr.ts`. It built locally and **failed in CI**: the `web-build` job runs
+`npm ci` inside `web/`, so the root `node_modules` that satisfies `qrcode` is not
+there, and a cross-project source import resolves the package from the issuer's
+directory (`src/guest/`) upwards — never into `web/node_modules`. Adding the
+dependency to `web/package.json` would not have fixed it for the same reason.
+The QR is therefore encoded by the tier that owns the slug lookup and the
+encoder, `GET /api/chat/qr.svg?property=<slug>&base=<origin>`, and the web route
+proxies it exactly like `/api/chat/property`. One encoder, one 404, and no
+runtime dependency crossing the project boundary. Pure TypeScript (`links.ts`,
+`catalog.ts`) still crosses it, which is fine and was already the case.
+
+**A boot failure that neither `tsc` nor vitest catches.** `GuestRawResponse` was
+first written with TypeScript *parameter properties*
+(`constructor(readonly body: string, …)`). That type-checks, passes vitest, and
+**crashes at boot** under Node's `--experimental-strip-types`
+(`ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`) — the server is not transpiled, it is
+type-stripped, so only erasable syntax is allowed. Fields are now declared and
+assigned explicitly. Standing rule: any new class in `src/` is exercised once by
+starting the real server (`node --experimental-strip-types src/server.ts`), not
+only by the test runner.
+
 **A bug found by curling the running stack, not by a unit test.** The first snippet emitted `src="…/c/demo?lang=es/embed.js"` — the query string before the file name, a 404 on every hotel site. Every unit test passed because each one asserted the pieces separately. Fixed by `embedScriptUrl()` plus a named assertion (`?lang=en/embed.js` must not appear); the general lesson is in §"Standing procedure" below.
 
 **Live verification (API on :8787, `web/` on :3000, seeded `demo` property):**
@@ -1094,7 +1117,7 @@ GET /c/demo            content-security-policy: frame-ancestors 'self' https://h
 ```text
 $ npm run db:migrate # 20 applied (0020 new)
 $ npm test        # 38 files / 500 passed (23 link cases, 5 QR cases)
-$ npm run db:test # 28 files / 242 passed (embed allowlist + public-view shape)
+$ npm run db:test # 28 files / 243 passed (embed allowlist + public-view shape)
 $ npm run typecheck && npm run lint && npm run web:build   # clean; three new routes in the manifest
 ```
 

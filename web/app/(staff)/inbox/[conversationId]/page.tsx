@@ -3,6 +3,12 @@ import { redirect } from "next/navigation";
 import { currentLang, translator, type StringId } from "@/lib/i18n";
 import { apiBase, readSession, type StaffCookieSession } from "@/lib/session";
 import type { ApiFailure, ConversationDetailWire, DetailMessageWire } from "@/lib/types";
+import {
+  assignToMeAction,
+  replyAction,
+  resolveAction,
+  takeOverAction,
+} from "./actions";
 
 /**
  * S08-02 — the conversation, with the text the AI leaned on.
@@ -71,15 +77,37 @@ const DECISION_LABEL = {
   no_answer: "staff.inbox.decision_no_answer",
 } as const;
 
+/**
+ * S08-03 — the action bar is three plain forms.
+ *
+ * Not a client component and not a fetch: a form posting to a server action works
+ * before hydration, cannot leak the bearer token to the browser, and leaves the
+ * "which actions exist" decision in the role matrix (an observer's POST is a 403
+ * from the API, rendered as a sentence). The buttons shown are a courtesy, not the
+ * authorisation.
+ */
+const PROBLEM_IDS = {
+  invalid: "staff.inbox.problem_invalid",
+  forbidden: "staff.inbox.problem_forbidden",
+  missing: "staff.inbox.problem_missing",
+  conflict: "staff.inbox.problem_conflict",
+  error: "staff.inbox.problem_error",
+} as const;
+
+const OPEN_REQUEST = new Set(["new", "acknowledged", "assigned"]);
+
 export default async function ConversationDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ conversationId: string }>;
+  searchParams: Promise<{ problem?: string }>;
 }): Promise<React.ReactElement> {
   const session = await readSession();
   if (session === null) redirect("/session");
 
   const { conversationId } = await params;
+  const { problem } = await searchParams;
   const lang = await currentLang();
   const tr = translator(lang);
   const loaded = await load(session, conversationId);
@@ -109,9 +137,78 @@ export default async function ConversationDetailPage({
       minute: "2-digit",
     }).format(new Date(iso));
 
+  const openRequest = detail.requests.find((request) => OPEN_REQUEST.has(request.status));
+
   return (
     <div className="space-y-4">
       <BackLink label={tr("staff.inbox.back")} />
+
+      {problem === undefined ? null : (
+        <p className="rounded border border-destructive/40 p-2 text-xs text-destructive">
+          {tr(PROBLEM_IDS[problem as keyof typeof PROBLEM_IDS] ?? "staff.inbox.problem_error")}
+        </p>
+      )}
+
+      <section className="space-y-2 rounded-lg border p-3">
+        <h2 className="text-sm font-semibold">{tr("staff.inbox.actions")}</h2>
+        <form action={replyAction} className="space-y-1">
+          <input type="hidden" name="conversationId" value={detail.conversationId} />
+          <label className="block text-[11px] font-medium" htmlFor="reply-body">
+            {tr("staff.inbox.reply")}
+          </label>
+          <textarea
+            id="reply-body"
+            name="body"
+            required
+            maxLength={2000}
+            rows={3}
+            className="w-full rounded border bg-background p-2 text-sm"
+          />
+          <p className="text-[11px] text-muted-foreground">{tr("staff.inbox.reply_hint")}</p>
+          <button
+            type="submit"
+            className="rounded bg-foreground px-3 py-1.5 text-xs font-medium text-background"
+          >
+            {tr("staff.inbox.send")}
+          </button>
+        </form>
+
+        <div className="flex flex-wrap gap-2 border-t pt-2">
+          {detail.aiState === "awaiting_staff" ? null : (
+            <form action={takeOverAction}>
+              <input type="hidden" name="conversationId" value={detail.conversationId} />
+              <button
+                type="submit"
+                className="rounded border px-3 py-1.5 text-xs font-medium"
+                title={tr("staff.inbox.take_over_hint")}
+              >
+                {tr("staff.inbox.take_over")}
+              </button>
+            </form>
+          )}
+          {openRequest === undefined ? null : (
+            <form action={assignToMeAction}>
+              <input type="hidden" name="conversationId" value={detail.conversationId} />
+              <input type="hidden" name="requestId" value={openRequest.requestId} />
+              <button type="submit" className="rounded border px-3 py-1.5 text-xs font-medium">
+                {tr("staff.inbox.assign_me")}
+              </button>
+            </form>
+          )}
+          {detail.aiState === "resolved" ? null : (
+            <form action={resolveAction}>
+              <input type="hidden" name="conversationId" value={detail.conversationId} />
+              <button
+                type="submit"
+                className="rounded border px-3 py-1.5 text-xs font-medium"
+                title={tr("staff.inbox.resolve_hint")}
+              >
+                {tr("staff.inbox.resolve")}
+              </button>
+            </form>
+          )}
+        </div>
+      </section>
 
       <header className="space-y-1">
         <h1 className="text-lg font-semibold tracking-tight">{tr("staff.inbox.transcript")}</h1>

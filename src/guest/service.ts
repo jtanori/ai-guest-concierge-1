@@ -33,7 +33,14 @@ import { answerMessage, type AnswerOutcome } from "../ai/answer.ts";
 import { AiUnavailableError, type ResilientAi } from "../ai/provider.ts";
 import type { Channel, EventContext } from "../events/taxonomy.ts";
 import { emitEvent } from "../events/emit.ts";
-import { lockState, takeover, transition } from "../conversation/state.ts";
+import {
+  StaffTookOverError,
+  assertModelMaySpeak,
+  lockState,
+  readState,
+  takeover,
+  transition,
+} from "../conversation/state.ts";
 import { captureRequest, type RequestTopic } from "../requests/capture.ts";
 import { recordOutage } from "../ai/answer.ts";
 import { checkRate, type RateVerdict } from "../security/ratelimit.ts";
@@ -541,11 +548,14 @@ export async function postGuestMessage(
       language,
     );
 
-    // S06-02: take the conversation's row lock for the REST of this transaction.
-    // Everything below — the model call, the outbound message, the state write —
-    // happens under it, which is what makes a concurrent staff takeover and this
-    // turn mutually exclusive rather than merely unlikely.
-    const state = await lockState(scoped, session.context, conversation.conversationId);
+    // S06-02 took the row lock here and held it for the rest of the transaction,
+    // model call included. S08-03 reversed that on purpose: holding the lock
+    // across a provider call (up to the whole timeout budget) made a human's
+    // "take over" wait behind the model, and the turn that started first would
+    // still speak last. So this is a plain read now — a hint, not a promise —
+    // and the promise is `assertModelMaySpeak` below, taken AFTER the model has
+    // answered. AC-2: a writer that started before a takeover loses.
+    const state = await readState(scoped, session.context, conversation.conversationId);
     // S07-02 AC-1: computed under the lock, before this turn's outbound row
     // exists, so exactly one message in a conversation can ever be the first.
     const firstReply = await isFirstReply(scoped, conversation.conversationId);
@@ -642,10 +652,8 @@ export async function postGuestMessage(
       return finish("handoff", "awaiting_staff", { ...outbound, body: pending });
     }
 
-    // The model is about to speak, so the conversation is no longer idle. A
-    // `resolved` thread reopens here rather than staying a dead end.
-    await transition(scoped, session.context, conversation.conversationId, "awaiting_ai");
-
+    // The model call happens with NO lock held: that is the window in which a
+    // human is allowed to win.
     const outcome = await askModel(deps, scoped, session.context, {
       conversationId: conversation.conversationId,
       messageId: inbound.messageId,
@@ -656,6 +664,48 @@ export async function postGuestMessage(
       spend,
     });
     const reply = replyFor(outcome, language);
+
+    // ---- S08-03 AC-2: did a human take over while the model was thinking? ---
+    // `assertModelMaySpeak` takes the conversation's row lock (the same one every
+    // staff action in src/inbox/actions.ts takes) and re-reads the state, so this
+    // is not a check against the snapshot read at the top of the turn. If a
+    // takeover committed in the meantime, the model's answer is discarded — the
+    // words were generated for a thread a human now owns, and sending them would
+    // be exactly the race the AC forbids.
+    try {
+      await assertModelMaySpeak(scoped, session.context, conversation.conversationId);
+    } catch (error) {
+      if (!(error instanceof StaffTookOverError)) throw error;
+      const pending = withDisclosure(t("guest.staff_reply_pending", language), language, firstReply);
+      const outbound = await insertMessage(scoped, session.context, {
+        conversationId: conversation.conversationId,
+        direction: "outbound",
+        authorRole: "ai",
+        body: pending,
+        language,
+      });
+      // The request exists so the conversation shows up in a queue: the guest
+      // was told a person will reply, and a promise with no row behind it is the
+      // failure S07-03 exists to prevent.
+      await captureRequest(scoped, session.context, {
+        conversationId: conversation.conversationId,
+        topic: "needs_human",
+        question: text,
+        language,
+        knowledgeGap: false,
+        reasonCode: "staff_takeover",
+        at,
+      });
+      await scoped.query(
+        `UPDATE conversations SET last_activity_at = $2::timestamptz WHERE conversation_id = $1`,
+        [conversation.conversationId, outbound.createdAt],
+      );
+      return finish("handoff", "staff_takeover", { ...outbound, body: pending });
+    }
+
+    // We hold the lock now. `resolved` reopens through `awaiting_ai` rather than
+    // going straight to `idle`, because that transition is not in the matrix.
+    await transition(scoped, session.context, conversation.conversationId, "awaiting_ai");
 
     // S07-03 AC-1: the request row is written BEFORE the message that promises
     // it, inside the same transaction. If the insert fails, the acknowledgement
@@ -787,7 +837,9 @@ export async function postGuestHandoff(
 
     // Same row lock the model's writer takes (S06-02 AC-2): a turn that is
     // mid-answer either finishes first and this handoff applies to the next
-    // message, or commits first and that turn stays silent.
+    // message, or commits first and that turn stays silent. `takeover()` below
+    // takes it too; taking it here first makes the read of `firstReply` part of
+    // the same critical section.
     await lockState(scoped, session.context, conversationId);
     const firstReply = await isFirstReply(scoped, conversationId);
 

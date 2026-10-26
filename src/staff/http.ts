@@ -38,6 +38,7 @@ import {
   listContradictions,
 } from "../knowledge/facts.ts";
 import { InboxInputError, listInbox } from "../inbox/queries.ts";
+import { ConversationNotFoundError, getConversationDetail } from "../inbox/detail.ts";
 import {
   ContradictionGroupNotFoundError,
   ContradictionWinnerError,
@@ -79,6 +80,11 @@ export function classifyError(error: unknown): Failure {
   }
   if (error instanceof RoleNotOnSurfaceError) {
     return { status: 403, error: "role_not_on_surface", extra: { detail: error.message } };
+  }
+  if (error instanceof ConversationNotFoundError) {
+    // S08-02: one 404 for "no such conversation" and "not yours" — the same
+    // reason the guest surface does not distinguish them.
+    return { status: 404, error: "not_found", extra: { detail: error.message } };
   }
   if (
     error instanceof ReviewNotFoundError ||
@@ -225,6 +231,14 @@ const ROUTES: Route[] = [
  * `<Link>`s instead of client state (DEC-1).
  */
 const INBOX_ROUTES: Route[] = [
+  {
+    // S08-02 — the conversation, its transcript, and the sources behind each
+    // answer. Read-only: staff do not act on a conversation in this item.
+    method: "GET",
+    pattern: /^\/api\/inbox\/conversations\/([0-9a-f-]{36})$/i,
+    run: (m, _d, session, scoped, context) =>
+      getConversationDetail(scoped, context, session, m[1]!),
+  },
   {
     method: "GET",
     pattern: /^\/api\/inbox$/,

@@ -94,6 +94,7 @@ describe("schema (db)", () => {
       "0019_abuse_and_spend.sql",
       "0020_embed_settings.sql",
       "0021_inbox_indexes.sql",
+      "0022_citation_quotes.sql",
     ]);
   });
 

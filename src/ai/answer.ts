@@ -533,7 +533,10 @@ export async function answerMessage(
       client,
       context,
       aiRunId,
-      output.citations.map((citation) => citation.articleVersionId),
+      output.citations.map((citation) => ({
+        articleVersionId: citation.articleVersionId,
+        quote: citation.quote,
+      })),
     );
     await emitEvent(client, context, "ai_answer_sent", eventBase, {
       ai_run_id: aiRunId,

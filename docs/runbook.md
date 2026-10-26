@@ -1194,3 +1194,53 @@ $ npm run web:build    # green; /inbox in the manifest
 4. Screenshot the queue at 390px width into this section.
 
 **Not done, by charter:** reply/takeover/assign/resolve (S08-03), the AI-sources pane (S08-02), AI operating modes (S08-04). **Also owed:** there is no realtime — the page is a snapshot and an agent refreshes; that becomes real in S08-03 when rows grow actions.
+
+## S08-02 - Conversation detail with AI sources (1.00d)
+
+**AC (verbatim):** Staff can see the cited text verbatim.
+
+- **AC-1** The detail view shows each AI message's citations with the exact `article_version` body/quote that was used.
+- **AC-2** Editing the article later does not change what the staff member sees for an old answer.
+
+**Status: DONE (2026-10-26), with one operator artifact owed (the §7 screenshot).**
+`src/inbox/detail.ts` (new), `src/ai/history.ts` (`loadCitations` extracted, quote added), `src/ai/runs.ts` (`recordCitations` persists the quote), `src/ai/answer.ts` (passes it through), `src/staff/http.ts` (the route), `src/i18n/catalog.ts` (detail copy, en+es), `db/migrations/0022_citation_quotes.sql` (new), `web/app/(staff)/inbox/[conversationId]/page.tsx` (new), `web/app/(staff)/inbox/page.tsx` (rows link through), `web/lib/types.ts`; tests `tests/db/inbox-detail.db.test.ts` (new), `tests/inbox/detail-page.test.ts` (new).
+
+**The decision this item actually turned on.** S05-03 shipped `citations` with `article_version_id` and nothing else, and its own comment said the verbatim `quote` "belongs in a new column, not in a JSON blob — and that is a migration, not a silent change here". **0022** is that migration:
+
+```sql
+ALTER TABLE citations ADD COLUMN quote text;
+ALTER TABLE citations ADD CONSTRAINT citations_quote_shape
+  CHECK (quote IS NULL OR length(btrim(quote)) BETWEEN 1 AND 400);
+```
+
+The alternative was to render the whole version body and call it "the cited text". That is not what the AC says, and in practice it means an agent scrolling a 19,000-character noticeboard for one sentence while a guest waits. The quote is also the only string in this system that `src/ai/guard.ts` has *proven* appears in the cited version — storing it is storing a verified fact, not a claim.
+
+`quote` is nullable on purpose: pre-0022 citations keep `NULL` and the pane falls back to the body. Inventing quotes for old rows would be falsifying history. The `1..400` bound mirrors `src/ai/contract.ts`, so a row that could not have come out of the model is refused by the table as well.
+
+**AC-2 is a schema property, and the code refuses to undermine it.** Versions are immutable (0003) and citations point at versions (D5), so the pane reads `article_versions.body` and never `knowledge_articles`. The test publishes v2 and then v3 after the answer and re-reads: quote and body byte-identical, `version_no` still 1, `isCurrent` flipping to `false`. A citation that is no longer current is labelled in the UI — that is history working, not an error to chase.
+
+**One join, two callers.** The citation SELECT moved into `src/ai/history.ts::loadCitations(client, context, aiRunIds)` filtered by `ai_run_id = ANY(...)`; `reconstructAnswer` passes one id, `getConversationDetail` passes the conversation's runs. A test asserts both return the same quote, because the failure mode of a copied join is one of them quietly drifting.
+
+**Route and tenancy.** The charter guessed `?conversation=`; the shipped route is **`GET /api/inbox/conversations/:id`** (a resource on the collection that already exists). It runs through the shared `handleStaffRequest` (`queue: read`), and a malformed, unknown or foreign id all return **404 with an identical body** — the route never confirms that a conversation exists to someone who cannot read it. `timeZone` comes back with the payload so the screen formats hotel-local times instead of the server's (UTC in CI, usually wrong).
+
+**Escaping.** Guest bodies travel raw: escaping in the service corrupts the transcript for other consumers and double-escapes on the next hop. The page renders every body as a JSX text child, and `tests/inbox/detail-page.test.ts` scans the source (comments stripped) and fails if `dangerouslySetInnerHTML` or `innerHTML` appears — the one edit that would turn a guest message into script. The DB test asserts the hostile body `"<script>alert(\"xss\")</script> …"` round-trips unchanged, so nothing upstream is pre-escaping it either.
+
+**`data-ai-run-id`** is emitted on every AI message block for S09-03's one-click flag.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector 0.6.2 + pg_trgm):**
+```text
+$ npm run db:migrate   # 22 applied (0022 lands)
+$ npm run db:test      # 30 files / 261 passed (8 inbox-detail cases)
+$ npm test             # 40 files / 518 passed (4 detail-page source cases)
+$ npx tsc --noEmit && npm run lint   # clean (root and web/)
+$ npm run web:build    # green; /inbox/[conversationId] in the manifest
+```
+
+**Not done, by charter:** flagging persistence (S09-03), reply/takeover (S08-03), and no live refresh — the transcript is a snapshot like the list.
+
+**Owed — §7's screenshot of the sources pane.** It needs a signed-in staff session against a seeded tenant, so it is an operator artifact like S08-01's stopwatch. Procedure:
+
+1. `npm run db:seed`, then start the API and `npm run web:dev`; sign in at `/session` as a `front_desk` user.
+2. In `/c/<slug>`, ask the demo guest something the knowledge base answers (pool hours, wifi), so an `ai_runs` row exists with citations.
+3. Open `/inbox` → the conversation → screenshot the AI message with its Sources pane (quote visible, body expanded once) at 390px width.
+4. Paste the screenshot here with property, date and the AI run id.

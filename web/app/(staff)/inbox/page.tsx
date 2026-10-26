@@ -173,25 +173,31 @@ export default async function InboxPage({
       ) : (
         <ul className="divide-y rounded-lg border">
           {page.items.map((item) => (
-            <li key={item.conversationId} className="space-y-1.5 p-4">
-              <div className="flex items-start justify-between gap-3">
-                <span className="rounded bg-muted px-2 py-0.5 text-[11px] font-medium">
-                  {tr(STATE_LABEL[item.aiState])}
-                </span>
-                <span className="shrink-0 text-[11px] text-muted-foreground">
-                  {waitLabel(item.waitSeconds, tr)}
-                </span>
-              </div>
-              <p className="line-clamp-2 text-sm">
-                {item.lastMessage === null
-                  ? tr("staff.inbox.no_messages")
-                  : item.lastMessage.body}
-              </p>
-              {item.request !== null ? (
-                <p className="text-[11px] text-muted-foreground">
-                  {tr(REQUEST_LABEL[item.request.status])}
+            <li key={item.conversationId}>
+              {/* S08-02: the row is the door to the conversation. */}
+              <Link
+                href={`/inbox/${item.conversationId}`}
+                className="block space-y-1.5 p-4 hover:bg-muted/50"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <span className="rounded bg-muted px-2 py-0.5 text-[11px] font-medium">
+                    {tr(STATE_LABEL[item.aiState])}
+                  </span>
+                  <span className="shrink-0 text-[11px] text-muted-foreground">
+                    {waitLabel(item.waitSeconds, tr)}
+                  </span>
+                </div>
+                <p className="line-clamp-2 text-sm">
+                  {item.lastMessage === null
+                    ? tr("staff.inbox.no_messages")
+                    : item.lastMessage.body}
                 </p>
-              ) : null}
+                {item.request !== null ? (
+                  <p className="text-[11px] text-muted-foreground">
+                    {tr(REQUEST_LABEL[item.request.status])}
+                  </p>
+                ) : null}
+              </Link>
             </li>
           ))}
         </ul>

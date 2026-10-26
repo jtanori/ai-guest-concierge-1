@@ -32,7 +32,8 @@ export interface GuestTurnWire {
   property: PublicPropertyWire;
   conversationId: string;
   messages: GuestMessageWire[];
-  decision: "answer" | "fact" | "escalate" | "no_answer" | "unavailable";
+  /** `handoff`: a human owns the thread (S06-02), so the model stayed silent. */
+  decision: "answer" | "fact" | "escalate" | "no_answer" | "unavailable" | "handoff";
   reasonCode: string | null;
   language: "es" | "en";
 }

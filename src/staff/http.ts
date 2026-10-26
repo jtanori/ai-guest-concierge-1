@@ -38,6 +38,12 @@ import {
   listContradictions,
 } from "../knowledge/facts.ts";
 import { InboxInputError, listInbox } from "../inbox/queries.ts";
+import {
+  ModeInputError,
+  PropertyModeNotFoundError,
+  getAiMode,
+  setAiMode,
+} from "../settings/mode.ts";
 import { ConversationNotFoundError, getConversationDetail } from "../inbox/detail.ts";
 import { ConversationNotFoundError as StateConversationNotFoundError, IllegalTransitionError } from "../conversation/state.ts";
 import {
@@ -73,6 +79,7 @@ const MAX_BODY_BYTES = 64 * 1024;
 
 const REVIEW_PREFIX = "/api/review";
 const INBOX_PREFIX = "/api/inbox";
+const SETTINGS_PREFIX = "/api/settings";
 
 /** 401/403/404/409/400 mapping — one place, so no route invents its own code. */
 interface Failure {
@@ -106,6 +113,12 @@ export function classifyError(error: unknown): Failure {
   }
   if (error instanceof FactContradictionError) {
     return { status: 409, error: "contradiction", extra: { detail: error.message } };
+  }
+  if (error instanceof PropertyModeNotFoundError) {
+    return { status: 404, error: "not_found", extra: { detail: error.message } };
+  }
+  if (error instanceof ModeInputError) {
+    return { status: 400, error: "invalid_request", extra: { detail: error.message } };
   }
   if (error instanceof AssigneeNotMemberError) {
     // 409, not 403: the caller is allowed to assign, they simply named someone
@@ -339,9 +352,37 @@ const INBOX_ROUTES: Route[] = [
   },
 ];
 
+/**
+ * S08-04 — the operating mode.
+ *
+ * A GET as well as a POST because the screen must show what the mode currently
+ * is: a settings toggle that only writes is a toggle that cannot be read back,
+ * and an admin who cannot see the current mode will set it twice.
+ */
+const SETTINGS_ROUTES: Route[] = [
+  {
+    method: "GET",
+    pattern: /^\/api\/settings\/ai-mode$/,
+    run: (_m, _d, session, scoped, context) => getAiMode(scoped, context, session),
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/settings\/ai-mode$/,
+    run: async (_m, _d, session, scoped, context, req) => {
+      const body = await readJson(req);
+      return setAiMode(scoped, context, session, { mode: body["mode"] });
+    },
+  },
+];
+
 /** True when this handler owns the path (so the health table never sees it). */
 export function ownsReviewPath(path: string): boolean {
   return path === REVIEW_PREFIX || path.startsWith(`${REVIEW_PREFIX}/`);
+}
+
+/** True for `/api/settings` (S08-04). */
+export function ownsSettingsPath(path: string): boolean {
+  return path === SETTINGS_PREFIX || path.startsWith(`${SETTINGS_PREFIX}/`);
 }
 
 /** True for `/api/inbox` (S08-01). */
@@ -359,6 +400,15 @@ export function handleReviewRequest(
   deps: ReviewHttpDeps,
 ): Promise<void> {
   return handleStaffRequest(req, res, deps, ROUTES);
+}
+
+/** S08-04 — `/api/settings`, same pipeline, `settings: read|write`. */
+export function handleSettingsRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ReviewHttpDeps,
+): Promise<void> {
+  return handleStaffRequest(req, res, deps, SETTINGS_ROUTES);
 }
 
 /** S08-01 — `/api/inbox`, through the same identity → tenant → role pipeline. */
@@ -388,13 +438,17 @@ async function handleStaffRequest(
   const contextFrom = deps.contextFrom ?? tenantFromHeaders;
 
   try {
-    const route = table.find((candidate) => candidate.pattern.test(path));
-    if (route === undefined) {
+    // Match on path AND method. S08-04 made `/api/settings/ai-mode` the first
+    // resource with a GET and a POST, and matching on the path alone would have
+    // answered 405 to one of them forever.
+    const onPath = table.filter((candidate) => candidate.pattern.test(path));
+    if (onPath.length === 0) {
       send(res, 404, { error: "not_found", path });
       return;
     }
-    if (route.method !== method) {
-      res.setHeader("allow", route.method);
+    const route = onPath.find((candidate) => candidate.method === method);
+    if (route === undefined) {
+      res.setHeader("allow", [...new Set(onPath.map((candidate) => candidate.method))].join(", "));
       send(res, 405, { error: "method_not_allowed", method });
       return;
     }

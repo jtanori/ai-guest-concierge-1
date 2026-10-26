@@ -116,3 +116,9 @@ export interface ConversationDetailWire {
     createdAt: string;
   }>;
 }
+
+/** S08-04 — the operating mode, as `GET /api/settings/ai-mode` serialises it. */
+export interface AiModeStateWire {
+  aiMode: "auto" | "draft" | "human_only" | "after_hours";
+  timeZone: string;
+}

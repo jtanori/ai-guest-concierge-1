@@ -1287,3 +1287,46 @@ $ npm run web:build    # green; /inbox/[conversationId] in the manifest
 **The race case, in one line:** a scripted provider parks inside `generate`, the takeover runs on a *second connection*, the takeover must commit within 3s (if it blocked, the test errors rather than hanging), and exactly one outbound message exists afterwards — the pending line, never the model's answer.
 
 **Not done, by charter:** operating modes (S08-04), notification email (S09-05), internal notes, reassignment to another user from the UI.
+
+## S08-04 - AI operating modes (1.00d)
+
+**AC (verbatim):** Mode change applies to the next message, no deploy.
+
+- **AC-1** `auto | draft | human_only | after_hours` selected per property.
+- **AC-2** Flipping the mode changes the very next message's decision without restart; `draft` escalates, `after_hours` uses the property's `time_zone`.
+
+**Status: DONE (2026-10-26).** `src/settings/mode.ts` (new), `src/staff/http.ts` (settings routes + a dispatcher fix), `src/server.ts` (wiring), `src/i18n/catalog.ts` (`staff.mode.*`, en+es), `web/app/(staff)/settings/page.tsx` + `actions.ts` (new), `web/app/(staff)/layout.tsx` (nav), `web/lib/types.ts`; tests `tests/db/ai-modes.db.test.ts` (new), `tests/settings/mode.test.ts` (new), `tests/settings/policy.test.ts` (DST case), `tests/runtime/strip-types.test.ts` (new guard).
+
+**Most of the item already existed, and saying so is the honest close-out.** `policyGate` / `escalationDecision` have been mode-aware since S05-02, and `answerMessage` SELECTs `ai_mode, time_zone, languages, settings` at the top of every turn — so the "no restart" property was true before this item started. What S08-04 adds is a *surface* (GET/POST `/api/settings/ai-mode`, `settings: read|write`), an audit trail with the previous value, and a test that would notice if somebody ever cached the mode.
+
+**Where the mode lives.** `properties.ai_mode` — a column with a CHECK, not a `property_settings` table (the charter's wording is corrected in §10; `properties.settings` is the JSONB for tunable policy). `savePropertySettings` patches that JSONB and is deliberately not reused: folding a column into a JSONB patch helper would mean two storage shapes pretending to be one.
+
+**AC-2's proof.** `tests/db/ai-modes.db.test.ts` flips the mode through the HTTP route and sends the next message in the same process, on the same pool, with no reload:
+
+| flip | next message | provider calls |
+|---|---|---|
+| `auto` | answered | 1 |
+| `human_only` | escalate, `mode_human_only` | **0** |
+| `draft` | escalate, `mode_draft` | **0** |
+| `after_hours` at 15:00Z (09:00 local) | answered | 1 |
+| `after_hours` at 04:00Z (22:00 local, prev day) | escalate, `after_hours` | **0** |
+
+The counting provider matters: a decision string alone cannot distinguish "the model was never called" from "the model was called and refused". The pure suite also gained a DST case — 13:30Z is 08:30 on 2026-03-07 and 09:30 on 2026-03-08 in New York, so the same UTC hour crosses the open/close line.
+
+**A dispatcher bug this item surfaced.** `/api/settings/ai-mode` is the first resource with both a GET and a POST. `handleStaffRequest` matched the route on path only and then answered 405 when the method differed, which would have made one of the two permanently unreachable. It now matches on path **and** method and sets `Allow` from every method registered for that path.
+
+**A regression found while live-checking, and the guard for it.** S08-03's `RequestNotActionableError` used a TypeScript parameter property (`constructor(readonly reason: ...)`). Node's `--experimental-strip-types` refuses that syntax, so **the API could not boot at all** — with `typecheck`, `test`, `db-test` and the entire CI matrix green, because `tsc` and vitest both compile it happily. `tsc`/vitest cannot catch this class of bug; only running the server can.
+
+`tests/runtime/strip-types.test.ts` now imports every module under `src/` (except `server.ts`, which binds a port) in one child process with the server's own flags, and fails on `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`. It was verified against a probe: planting a parameter property in `src/` makes it fail, removing it makes it pass. **Add this to the pre-merge checklist** — a green matrix does not mean the process starts.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector 0.6.2 + pg_trgm):**
+```text
+$ npm run db:migrate   # 23 applied (no new migration this item)
+$ npm run db:test      # 33 files / 279 passed (7 mode cases)
+$ npm test             # 43 files / 531 passed (5 pure mode, 1 DST, 1 runtime guard)
+$ npx tsc --noEmit && npm run lint   # clean (root and web/)
+$ npm run web:build    # green; /settings in the manifest
+```
+Live: `GET /api/settings/ai-mode` answers `503 {"detail":"NEON_AUTH_JWKS_URL is required"}` without auth configured — the same degraded contract as every other staff route, which is what proves the new prefix reaches the shared pipeline.
+
+**Not done, by charter:** scheduled mode changes, per-channel modes, new modes.

@@ -11,12 +11,12 @@
  * (mutable, and the wrong unit); the join is `ai_runs → citations →
  * article_versions`, exactly as the schema was designed.
  *
- * WHAT IS NOT STORED, AND WHY THAT IS FINE: the verbatim `quote` from the model
- * output is not persisted (0001's `citations` has no quote column, and S05-03's
- * scope says not to change it). AC-1 asks for "citations and cited
- * article_version bodies", both of which are here. If the quote is ever needed
- * for dispute resolution it belongs in a new column, not in a JSON blob — and
- * that is a migration, not a silent change here.
+ * THE QUOTE IS NOW STORED (S08-02, migration 0022). S05-03 shipped without it
+ * and said so here: "the verbatim quote ... belongs in a new column, not in a
+ * JSON blob — and that is a migration, not a silent change". 0022 adds exactly
+ * that column, so a citation now carries the sentence the model leaned on as
+ * well as the body it came from. Rows written before 0022 have `quote = NULL`
+ * and read back as they always did: the body, without an anchor.
  *
  * A foreign or unknown `ai_run_id` returns `AiRunNotFoundError`, never a
  * partial object: RLS already hides other tenants' rows, and this maps "0 rows"
@@ -36,6 +36,12 @@ export class AiRunNotFoundError extends Error {
 
 export interface ReconstructedCitation {
   articleVersionId: string;
+  /**
+   * The model's verbatim supporting quote (S08-02), already proven by
+   * `src/ai/guard.ts` to appear in `body`. `null` for citations written before
+   * 0022 — the detail view then shows the body alone, which is all S05-03 had.
+   */
+  quote: string | null;
   /** The body AS CITED. Immutable since 0003; editing the article adds a version. */
   body: string;
   versionNo: number;
@@ -84,7 +90,9 @@ interface RunRow {
 }
 
 interface CitationRow {
+  ai_run_id: string;
   article_version_id: string;
+  quote: string | null;
   body: string;
   version_no: number;
   topic_key: string;
@@ -97,6 +105,70 @@ interface HandoffRow {
   reason_code: string;
   detail: string | null;
   created_at: Date;
+}
+
+/**
+ * The citation join, once.
+ *
+ * Exported because S08-02 needs it for every AI message in a conversation, and a
+ * second copy of this SELECT is a second place for the D5 rule to rot. The caller
+ * that has one run passes one id; the detail view passes a page of them.
+ *
+ * Filtered by `ai_run_id = ANY(...)` rather than by `conversation_id` so the
+ * tenant predicate stays the leading column of the index 0014 built.
+ */
+export async function loadCitations(
+  client: pg.Client | pg.PoolClient,
+  context: TenantContext,
+  aiRunIds: readonly string[],
+): Promise<Map<string, ReconstructedCitation[]>> {
+  assertTenantShape(context);
+  const byRun = new Map<string, ReconstructedCitation[]>();
+  if (aiRunIds.length === 0) return byRun;
+
+  // The body is read from the VERSION, never the article: this is the whole
+  // point of D5, and the join key is the composite FK 0001 already enforces.
+  const citations = await client.query<CitationRow>(
+    `SELECT c.ai_run_id,
+            c.article_version_id,
+            c.quote,
+            av.body,
+            av.version_no,
+            ka.topic_key,
+            ka.title,
+            av.is_current,
+            av.promoted_at
+       FROM citations c
+       JOIN article_versions av
+         ON av.org_id = c.org_id
+        AND av.property_id = c.property_id
+        AND av.article_version_id = c.article_version_id
+       JOIN knowledge_articles ka
+         ON ka.org_id = av.org_id
+        AND ka.property_id = av.property_id
+        AND ka.article_id = av.article_id
+      WHERE c.org_id = $1
+        AND c.property_id = $2
+        AND c.ai_run_id = ANY($3::uuid[])
+      ORDER BY c.ai_run_id, c.citation_id`,
+    [context.orgId, context.propertyId, [...aiRunIds]],
+  );
+
+  for (const citation of citations.rows) {
+    const list = byRun.get(citation.ai_run_id) ?? [];
+    list.push({
+      articleVersionId: citation.article_version_id,
+      quote: citation.quote,
+      body: citation.body,
+      versionNo: citation.version_no,
+      topicKey: citation.topic_key,
+      title: citation.title,
+      isCurrent: citation.is_current,
+      promotedAt: citation.promoted_at === null ? null : citation.promoted_at.toISOString(),
+    });
+    byRun.set(citation.ai_run_id, list);
+  }
+  return byRun;
 }
 
 export async function reconstructAnswer(
@@ -116,29 +188,7 @@ export async function reconstructAnswer(
   const row = run.rows[0];
   if (row === undefined) throw new AiRunNotFoundError(aiRunId);
 
-  // The body is read from the VERSION, never the article: this is the whole
-  // point of D5, and the join key is the composite FK 0001 already enforces.
-  const citations = await client.query<CitationRow>(
-    `SELECT c.article_version_id,
-            av.body,
-            av.version_no,
-            ka.topic_key,
-            ka.title,
-            av.is_current,
-            av.promoted_at
-       FROM citations c
-       JOIN article_versions av
-         ON av.org_id = c.org_id
-        AND av.property_id = c.property_id
-        AND av.article_version_id = c.article_version_id
-       JOIN knowledge_articles ka
-         ON ka.org_id = av.org_id
-        AND ka.property_id = av.property_id
-        AND ka.article_id = av.article_id
-      WHERE c.org_id = $1 AND c.property_id = $2 AND c.ai_run_id = $3
-      ORDER BY c.citation_id`,
-    [context.orgId, context.propertyId, aiRunId],
-  );
+  const citations = await loadCitations(client, context, [aiRunId]);
 
   const handoffs = await client.query<HandoffRow>(
     `SELECT reason_code, detail, created_at
@@ -160,15 +210,7 @@ export async function reconstructAnswer(
     latencyMs: row.latency_ms,
     usage: row.usage,
     createdAt: row.created_at.toISOString(),
-    citations: citations.rows.map((citation) => ({
-      articleVersionId: citation.article_version_id,
-      body: citation.body,
-      versionNo: citation.version_no,
-      topicKey: citation.topic_key,
-      title: citation.title,
-      isCurrent: citation.is_current,
-      promotedAt: citation.promoted_at === null ? null : citation.promoted_at.toISOString(),
-    })),
+    citations: citations.get(row.ai_run_id) ?? [],
     handoffs: handoffs.rows.map((handoff) => ({
       reasonCode: handoff.reason_code,
       detail: handoff.detail,

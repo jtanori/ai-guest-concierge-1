@@ -62,3 +62,57 @@ export interface InboxPageWire {
   items: InboxItemWire[];
   nextCursor: string | null;
 }
+
+/**
+ * S08-02 — a conversation as `src/inbox/detail.ts` serialises it.
+ *
+ * `quote` is nullable because citations written before 0022 have none; the pane
+ * then shows the version body alone, exactly as S05-03 could.
+ */
+export interface DetailCitationWire {
+  articleVersionId: string;
+  quote: string | null;
+  body: string;
+  versionNo: number;
+  topicKey: string;
+  title: string;
+  isCurrent: boolean;
+  promotedAt: string | null;
+}
+
+export interface DetailAiRunWire {
+  aiRunId: string;
+  modelId: string;
+  promptVersion: string;
+  decision: "answer" | "escalate" | "no_answer";
+  reasonCode: string | null;
+  confidence: number | null;
+  latencyMs: number | null;
+  citations: DetailCitationWire[];
+}
+
+export interface DetailMessageWire {
+  messageId: string;
+  direction: "inbound" | "outbound";
+  authorRole: "guest" | "ai" | "staff";
+  body: string;
+  createdAt: string;
+  aiRun: DetailAiRunWire | null;
+}
+
+export interface ConversationDetailWire {
+  conversationId: string;
+  aiState: string;
+  status: string;
+  language: string | null;
+  timeZone: string;
+  createdAt: string;
+  lastActivityAt: string;
+  messages: DetailMessageWire[];
+  requests: Array<{
+    requestId: string;
+    status: string;
+    topic: string | null;
+    createdAt: string;
+  }>;
+}

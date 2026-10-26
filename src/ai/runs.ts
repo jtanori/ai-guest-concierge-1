@@ -101,27 +101,49 @@ export async function recordAiRun(
  * one claim, and two rows would double-count it in every "sources used" number.
  * The foreign key is what makes an unretrieved or deleted version impossible.
  */
+export interface CitedVersion {
+  articleVersionId: string;
+  /**
+   * S08-02 — the model's supporting quote, already proven to appear in the
+   * version by `src/ai/guard.ts`. Optional so a caller that only knows the id
+   * (a backfill, a reconstruction) can still record the citation.
+   */
+  quote?: string | null;
+}
+
 export async function recordCitations(
   client: pg.Client | pg.PoolClient,
   context: TenantContext,
   aiRunId: string,
-  articleVersionIds: readonly string[],
+  citations: readonly (CitedVersion | string)[],
 ): Promise<number> {
   assertTenantShape(context);
   if (!UUID.test(aiRunId)) throw new AiRunError("aiRunId must be a uuid");
 
-  const seen = new Set<string>();
-  for (const articleVersionId of articleVersionIds) {
+  // Collapsed by version, and the FIRST non-empty quote wins: the same version
+  // cited twice is one claim, and the earliest quote is the one the guard
+  // checked against the same text.
+  const quotes = new Map<string, string | null>();
+  for (const entry of citations) {
+    const articleVersionId = typeof entry === "string" ? entry : entry.articleVersionId;
+    const quote = typeof entry === "string" ? null : (entry.quote ?? null);
     if (!UUID.test(articleVersionId)) {
       throw new AiRunError(`articleVersionId ${articleVersionId} is not a uuid (D5: versions, never articles)`);
     }
-    if (seen.has(articleVersionId)) continue;
-    seen.add(articleVersionId);
+    const existing = quotes.get(articleVersionId);
+    if (existing === undefined) {
+      quotes.set(articleVersionId, quote);
+    } else if (existing === null && quote !== null) {
+      quotes.set(articleVersionId, quote);
+    }
+  }
+
+  for (const [articleVersionId, quote] of quotes) {
     await client.query(
-      `INSERT INTO citations (org_id, property_id, ai_run_id, article_version_id)
-       VALUES ($1, $2, $3, $4)`,
-      [context.orgId, context.propertyId, aiRunId, articleVersionId],
+      `INSERT INTO citations (org_id, property_id, ai_run_id, article_version_id, quote)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [context.orgId, context.propertyId, aiRunId, articleVersionId, quote],
     );
   }
-  return seen.size;
+  return quotes.size;
 }

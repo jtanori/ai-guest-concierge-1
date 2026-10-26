@@ -587,6 +587,20 @@ $ npm run typecheck && npm run lint && npm run build   # all clean
 
 **Lookup / no-guess proof:** both pool facts are `verified = false` after the seed, so `lookupFact(pool.hours, closing_time, es)` → `null` (and an unknown key → `null`). After `verifyFact` on the website row it returns `{value: "21:00", unit: "time-of-day", effectiveFrom: "2026-01-01"}`; the directory row's `20:00` is refused with `FactContradictionError` naming both fact ids.
 
+**Close-out, 2026-10-26 — the tick that was missed.** The code merged in PR #32 and every line above was written then, but `S03-03` was never ticked in the workbook and epic #27 stayed open, so each progress report since — including the one that closed S07 — under-counted S03 by one item and 2.0 days and read the sprint as 2/3. There was no missing code; there was a missing spreadsheet cell.
+
+Re-verified on `main` at `9b3f107` rather than taken on trust from the entry above, because S04–S07 have landed on top of this surface since:
+```text
+$ npm run db:migrate   # 20 applied (0009 among them)
+$ npm run db:seed      # {"property_facts":5,...}
+$ npm run db:test      # 28 files / 243 passed — incl. the 20 fact cases
+$ npm test             # 38 files / 500 passed — incl. the 17 fact validation cases
+$ npm run typecheck && npm run lint   # clean
+```
+Ticked with that evidence and epic #27 closed; S03 is now 3/3.
+
+**The lesson, kept here because this is the checklist that failed:** the runbook entry is not the close-out. The workbook tick is, and it is the only thing `scripts/progress.mjs` reads. An item whose evidence is written and whose cell is empty is an item the project still believes is unstarted.
+
 ## S04-01 - Review-and-approve screen (2.00d, +1.00d for S02-06)
 
 **AC (verbatim):** A contradictory pair is blocked until a human resolves it.

@@ -9,14 +9,14 @@ priority: P0
 depends_on: [S03-01]
 labels: [sprint:S03, track:foundation, prio:P0]
 milestone: S03 - Knowledge
-status: draft
+status: done
 issue: https://github.com/jtanori/ai-guest-concierge-1/issues/26
-pickup: inflight
+pickup: done
 ---
 
 # S03-03 — property_facts table + UI
 
-> **DRAFT — not approved.** Generated from the master backlog, `docs/01-development-plan.md` and the code at `main` + PR #32 head `81b19bb`. `docs/charters/README.md` says **"No item starts until its charter is approved"** — this file is a proposed contract, not permission to start. File paths, migration numbers and signatures are calculated from the current tree; rebase them on whatever merges first.
+> **CLOSED — implemented, merged and re-verified.** The code landed in PR #32; the review findings listed in §4 were resolved there. §9's last open box (runbook entry + workbook tick) was the only thing outstanding and is closed by the follow-up PR described in §10.
 
 | | |
 |---|---|
@@ -68,7 +68,41 @@ Open decisions / blockers:
 
 ## 9. Definition of done
 
-- [ ] 9 review threads resolved.
-- [ ] CI green on the fix commit.
-- [ ] Runbook S03-03 entry + workbook tick (follow-up PR, as done for S03-01/02).
-- [ ] Issues #26 and epic #27 closed.
+- [x] 9 review threads resolved.
+- [x] CI green on the fix commit.
+- [x] Runbook S03-03 entry + workbook tick (follow-up PR, as done for S03-01/02).
+- [x] Issues #26 and epic #27 closed.
+
+## 10. Close-out
+
+**Why this item sat at `☐ Not started` for a month while its code was merged.** The
+implementation landed in PR #32 and the runbook entry was written the same day, but
+the workbook was never ticked and epic #27 was left open. Every progress report
+since then has under-counted S03 by one item and 2.0 days, and the sprint read 2/3
+because of a spreadsheet cell, not missing code. This is the failure mode the
+close-out checklist exists to prevent, so it is recorded rather than quietly fixed.
+
+**Re-verified on `main` at `9b3f107` (2026-10-26), not taken on trust from the old
+entry** — the tree has moved a long way since PR #32 (S04–S07 have landed on top of
+this surface):
+
+```text
+$ npm run db:migrate   # 20 applied (0009 among them)
+$ npm run db:seed      # property_facts: 5, units/effective dates/source version ids filled
+$ npm run db:test      # 28 files / 243 passed — includes the 16 fact cases
+$ npm test             # 38 files / 500 passed — includes the 11 fact validation cases
+$ npm run typecheck && npm run lint   # clean
+```
+
+**What the item actually left behind** (the contracts later items depend on):
+`lookupFact` (verified-only, exact key, deterministic — no embedding, no provider,
+no ranking), `listContradictions` (the pool pair is a real contradiction; the two
+spa prices are not), `verifyFact` (actor required, refuses a conflicting verified
+row, writes `fact.verified` in the same transaction), `property_facts_verified_key`
+(one verified holder per key + effective date) and migration 0009's CHECKs. S04-01
+consumes `listContradictions`; S05-01/S05-02 consume `lookupFact`.
+
+**Still open downstream, by other items — not this one:** the fact short-circuit in
+the answer path (S05) and the human contradiction-resolution screen (S04-01, shipped
+its queue). The two pool facts remain genuinely contradictory in the demo fixture,
+which is the point of the adversarial hotel.

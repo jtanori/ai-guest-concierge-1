@@ -9,9 +9,11 @@ priority: P0
 depends_on: [S04-03]
 labels: [sprint:S05, track:foundation, prio:P0]
 milestone: S05 - AI core and evaluation
-status: draft
+status: done
 issue: https://github.com/jtanori/ai-guest-concierge-1/issues/73
 pickup: decision
+approved: 2026-10-25
+done: 2026-10-25
 ---
 
 # S05-01 — AI service with structured output contract
@@ -69,7 +71,7 @@ Provider calls carry no tenant id in the prompt; log only `org_id/property_id/co
 
 ## 8. Pickup status, blockers and decisions
 
-**IN PROGRESS.** **DEC-2 CLOSED 2026-10-25** by the operator: **Google Gemini**, reached over plain `fetch` (no SDK, consistent with DEC-3). Pinned pair `gemini-2.5-flash` (primary) / `gemini-2.5-flash-lite` (fallback), both required as env values — `loadLlmConfig` has no default model id and refuses `-latest`/`@latest`.
+**DELIVERED 2026-10-25.** **DEC-2 CLOSED 2026-10-25** by the operator: **Google Gemini**, reached over plain `fetch` (no SDK, consistent with DEC-3). Pinned pair `gemini-2.5-flash` (primary) / `gemini-2.5-flash-lite` (fallback), both required as env values — `loadLlmConfig` has no default model id and refuses `-latest`/`@latest`.
 
 Delivered without it (all provider-agnostic, all tested):
 
@@ -83,7 +85,11 @@ Delivered without it (all provider-agnostic, all tested):
 
 Two defects found by these tests and fixed: the adapter was echoing a provider error body verbatim (a gateway that echoes headers would have leaked the key — now scrubbed from every string that can reach a log), and `loadLlmConfig`'s default base URL still pointed at OpenAI.
 
-Remaining work (not started): `src/ai/answer.ts` — the pipeline itself (classify → policy → fact short-circuit → hybrid retrieval → retrieve-gate → generate → verify → persist `ai_runs` + `citations` in one transaction → emit events) and its DB tests.
+- `src/ai/answer.ts` — the pipeline: policy → verified facts → hybrid retrieval → retrieve-gate → generate → `parseAiOutput` → persist `ai_runs` + `citations` → emit `ai_run_completed` / `ai_answer_sent` / `ai_escalated` / `no_answer_emitted`.
+- `src/ai/runs.ts` — `recordAiRun` / `recordCitations` in the caller's transaction; D5 enforced by the FK as well as by the contract.
+- `tests/db/ai-runs.db.test.ts` — 8 cases: one run per call with pinned model + prompt version, malformed output escalated and still recorded (with zero citations), a citation outside the retrieved set rejected, policy escalation before any model call, unenabled topic escalated, no-retrieval `no_answer`, fact answer with no model call, article-id citation refused.
+
+Remaining by charter, not by omission: guardrails (S05-02), eval harness (S06-03), state machine (S06-02), and topic classification — the caller may pass `topicKey`; when absent, topic-scoped policy is skipped and said so in code.
 
 Open decisions / blockers:
 

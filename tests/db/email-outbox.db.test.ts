@@ -377,7 +377,13 @@ describe("email outbox (db)", () => {
       const serialised = JSON.stringify(row.payload);
       expect(serialised).not.toContain("Tarjeta");
       expect(serialised).not.toContain("ayuda urgente");
-      expect(serialised).not.toContain("402");
+      // Asserted as a PHRASE, not as the bare room number "402": the payload is
+      // mostly random UUIDs, and hex contains digits, so a conversation id like
+      // 5b402b98-... satisfies not.toContain("402") by accident. That made this test
+      // a ~3% flake (4 UUIDs x ~30 start positions / 16^3) which passed locally every
+      // time and failed in CI on the first run. A phrase with a space and an accented
+      // letter cannot occur in a UUID.
+      expect(serialised).not.toContain("habitación 402");
       expect(Object.keys(row.payload).sort()).toEqual(
         ["conversation_id", "dedupe_key", "message_id", "request_id", "stage"].sort(),
       );
@@ -470,7 +476,9 @@ describe("email outbox (db)", () => {
       expect(provider.sent[0]!.text).toContain(`https://console.example/inbox/${captured.conversationId}`);
       // §7: the subject carries the property and the request id, and nothing the
       // guest wrote.
-      expect(provider.sent[0]!.subject).not.toContain("402");
+      // Phrase, not the bare "402": the subject carries a random request UUID and
+      // hex contains digits. See the payload test above.
+      expect(provider.sent[0]!.subject).not.toContain("habitación 402");
       expect(provider.sent[0]!.subject).not.toContain("agua caliente");
 
       const sent = await audits("notification.sent", captured.requestId);
@@ -622,7 +630,7 @@ describe("email outbox (db)", () => {
       // pointer and not the content: forwarding one property's guest conversation to
       // an address outside that property's access boundary would be a disclosure.
       expect(provider.sent[0]!.text).not.toContain(GUEST_TEXT);
-      expect(provider.sent[0]!.text).not.toContain("402");
+      expect(provider.sent[0]!.text).not.toContain("habitación 402");
       expect(provider.sent[0]!.text).toContain(captured.requestId);
       expect(provider.sent[0]!.text).toContain(`https://console.example/inbox/${captured.conversationId}`);
 

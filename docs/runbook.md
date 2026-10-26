@@ -1661,6 +1661,35 @@ then failed to fix, they were bugs the tests could not see. Each one now has a c
    entirely — the email still names the request, the property and the guest's words,
    and says the conversation is no longer available.
 
+**A test flake CI caught that local did not, and the arithmetic is the lesson.**
+`db-test` failed on the first CI run of the review fixes:
+
+```text
+AssertionError: expected '{"stage":"new","dedupe_key":"b3c1a9b2…' not to contain '402'
+Received: {"stage":"new", …, "conversation_id":"5b402b98-b6a3-47c9-9290-4da409d95dce"}
+```
+
+The assertion proving the guest's words never enter the cross-tenant payload used the
+bare room number `"402"` as the thing that must be absent. But the payload is mostly
+random UUIDs, and **hex contains digits** — `conversation_id` began `5b402b98`, so the
+substring was there legitimately. The test was asserting that four random UUIDs happen
+not to contain a particular three-character hex sequence.
+
+Probability per run: 4 UUIDs x roughly 30 start positions x (1/16)^3 ≈ **3%**. That is
+why it passed every local run — including fifteen in a row while developing it — and
+failed on the first CI run. A 3% flake is worse than a reliable failure, because it
+survives review and then fails on someone else's commit.
+
+Fixed by asserting a *phrase* — `"habitación 402"` — which contains a space and an
+accented letter and therefore cannot occur in a UUID. Every other absence assertion in
+the file was audited for the same collision and is safe (all contain spaces, accents,
+`/`, or non-hex letters). Confirmed with 15 consecutive clean runs, each generating
+fresh random UUIDs.
+
+**The general rule:** never assert the absence of a short alphanumeric token from a
+string that contains generated ids. Assert the absence of something that could only
+come from the data you are worried about.
+
 **Evidence (local, PostgreSQL 16.2 + pgvector 0.6.2 + pg_trgm 1.6), after review round 1:**
 ```text
 $ npm run db:migrate   # 28 applied from an EMPTY database (0028 lands)

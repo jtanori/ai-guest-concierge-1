@@ -220,7 +220,9 @@ describe("composeRequestEmail", () => {
     expect(email.subject).toContain("Casa Mesa");
     expect(email.subject).toContain(base.requestId);
     // The specific things a preview would leak: the room number and the complaint.
-    expect(email.subject).not.toContain("402");
+    // Asserted as a phrase rather than the bare room number: "402" is hex-safe
+    // nowhere, and any UUID in the subject could contain it by accident.
+    expect(email.subject).not.toContain("habitación 402");
     expect(email.subject).not.toContain("agua caliente");
     expect(email.subject).not.toContain(GUEST_TEXT);
     // And it is not smuggled in as the property name or topic either.
@@ -255,7 +257,7 @@ describe("composeRequestEmail", () => {
     });
     expect(email.redacted).toBe(true);
     expect(email.text).not.toContain(GUEST_TEXT);
-    expect(email.text).not.toContain("402");
+    expect(email.text).not.toContain("habitación 402");
     expect(email.text).toContain("destinatario de respaldo");
     // Still actionable.
     expect(email.text).toContain(base.requestId);

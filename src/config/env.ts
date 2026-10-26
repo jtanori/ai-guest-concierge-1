@@ -187,7 +187,7 @@ export interface LlmConfig {
   timeoutMs: number;
 }
 
-export const DEFAULT_LLM_BASE_URL = "https://api.openai.com/v1";
+export const DEFAULT_LLM_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 
 /** `-latest`, `@latest`, or a bare family name: all float. */
 function assertPinnedModel(name: string, variable: string): void {

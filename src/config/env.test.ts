@@ -123,7 +123,7 @@ describe("loadLlmConfig (S05-01 / DEC-2)", () => {
   it("allows a missing key locally (stub provider) but not in prod", () => {
     const local = loadLlmConfig(base, "local");
     expect(local.apiKey).toBe("");
-    expect(local.baseUrl).toBe("https://api.openai.com/v1");
+    expect(local.baseUrl).toBe("https://generativelanguage.googleapis.com/v1beta");
     expect(local.timeoutMs).toBe(8000);
     expect(() => loadLlmConfig(base, "staging")).toThrow(/LLM_API_KEY is required/);
     expect(() => loadLlmConfig(base, "prod")).toThrow(/LLM_API_KEY is required/);

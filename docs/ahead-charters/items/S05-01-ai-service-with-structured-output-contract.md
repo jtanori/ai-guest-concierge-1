@@ -69,7 +69,7 @@ Provider calls carry no tenant id in the prompt; log only `org_id/property_id/co
 
 ## 8. Pickup status, blockers and decisions
 
-**IN PROGRESS.** DEC-2 is the only thing gating the vendor-facing half.
+**IN PROGRESS.** **DEC-2 CLOSED 2026-10-25** by the operator: **Google Gemini**, reached over plain `fetch` (no SDK, consistent with DEC-3). Pinned pair `gemini-2.5-flash` (primary) / `gemini-2.5-flash-lite` (fallback), both required as env values — `loadLlmConfig` has no default model id and refuses `-latest`/`@latest`.
 
 Delivered without it (all provider-agnostic, all tested):
 
@@ -77,7 +77,13 @@ Delivered without it (all provider-agnostic, all tested):
 - `src/ai/prompt.ts` — `PROMPT_VERSION = "answer-v1"`, a pure `buildPrompt`, and `AI_OUTPUT_JSON_SCHEMA` for provider-native structured outputs. Articles are labelled with `article_version_id` only (never `article_id`), and `no_answer` is offered to the model explicitly.
 - `src/ai/provider.ts` — `AiProvider` + `withResilience`: 8s/3s timeouts enforced on the caller side too, two jittered retries on 429/5xx only, a 60s circuit break to the secondary, `AiUnavailableError` when both fail, and a refusal to accept the same pinned model twice as primary and fallback.
 - `src/config/env.ts` — `loadLlmConfig`: no default model ids, `-latest`/`@latest` refused, key required outside `local`.
-- Tests: `tests/ai/contract.test.ts` (16), `tests/ai/transport.test.ts` (8), `src/config/env.test.ts` (+4).
+- `src/providers/gemini.ts` — the DEC-2 adapter: `x-goog-api-key` header, temperature 0, `responseMimeType: "application/json"` with the JSON schema translated to Gemini's OpenAPI subset (`type: ["string","null"]` → `nullable: true`; nulls dropped from `enum`; nullable fields dropped from `required`), and a retryable-vs-fatal classification (429/5xx retryable; `SAFETY`/`RECITATION`/`MAX_TOKENS` not). It returns TEXT, so `parseAiOutput` remains the only validator.
+- `src/ai/stub.ts` — `createScriptedProvider` / `createFixedProvider` for CI and tests: no network, no key, and no `APP_ENV` switch that could select a stub in production.
+- Tests: `tests/ai/contract.test.ts` (16), `tests/ai/transport.test.ts` (8), `tests/ai/gemini.test.ts` (11), `src/config/env.test.ts` (+4).
+
+Two defects found by these tests and fixed: the adapter was echoing a provider error body verbatim (a gateway that echoes headers would have leaked the key — now scrubbed from every string that can reach a log), and `loadLlmConfig`'s default base URL still pointed at OpenAI.
+
+Remaining work (not started): `src/ai/answer.ts` — the pipeline itself (classify → policy → fact short-circuit → hybrid retrieval → retrieve-gate → generate → verify → persist `ai_runs` + `citations` in one transaction → emit events) and its DB tests.
 
 Open decisions / blockers:
 

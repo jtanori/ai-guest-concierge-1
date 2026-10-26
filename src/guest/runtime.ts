@@ -27,11 +27,18 @@ import { withResilience, type ResilientAi } from "../ai/provider.ts";
 import { createGeminiProvider } from "../providers/gemini.ts";
 import { createEmbeddingProvider, type EmbeddingProvider } from "../providers/embedding.ts";
 import { loadGuestConfig, type GuestConfig } from "./cookie.ts";
+import { botCheckConfigFromEnv, type BotCheckConfig } from "../security/botcheck.ts";
 
 export interface GuestRuntime {
   cookieSecret: string;
   ai: ResilientAi;
   embed?: (text: string) => Promise<number[]>;
+  /**
+   * S07-04: the bot check. Always present in the resolved runtime — `disabled`
+   * is a real config value in local, and a boot failure everywhere else, so
+   * "there is no bot check configuration" is not a state a host can be in.
+   */
+  botCheck: BotCheckConfig;
 }
 
 /**
@@ -76,6 +83,7 @@ export function guestRuntimeFromEnv(source: NodeJS.ProcessEnv): GuestRuntime & G
   return {
     ...config,
     ai: buildAi(source),
+    botCheck: botCheckConfigFromEnv(source),
     ...(embed === undefined ? {} : { embed }),
   };
 }

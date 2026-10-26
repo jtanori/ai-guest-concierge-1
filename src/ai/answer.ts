@@ -59,6 +59,7 @@ import {
 } from "./prompt.ts";
 import { AiUnavailableError, GENERATION_TIMEOUT_MS, type ResilientAi } from "./provider.ts";
 import { recordAiRun, recordCitations } from "./runs.ts";
+import { estimateTokens, recordSpend } from "./spend.ts";
 
 export interface AnswerMessageInput {
   conversationId: string;
@@ -334,6 +335,22 @@ export async function answerMessage(
     }
     throw error;
   }
+
+  // ---- 4b. S07-04 AC-2: charge the call that just happened ---------------
+  // Before parsing, because the money is spent whether or not the output is
+  // usable — a contract violation still bills. `prompt.system` is included: it
+  // is the larger half of a Gemini call with a retrieved article in it.
+  await recordSpend(client, context, {
+    conversationId: input.conversationId,
+    modelId: generated.modelId,
+    usage: {
+      promptTokens: estimateTokens(`${prompt.system}\n${prompt.prompt}`),
+      completionTokens: estimateTokens(
+        typeof generated.raw === "string" ? generated.raw : JSON.stringify(generated.raw),
+      ),
+    },
+    at,
+  });
 
   const promptVersion = deps.promptVersion ?? PROMPT_VERSION;
   const baseRun = {

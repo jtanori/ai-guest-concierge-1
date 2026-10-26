@@ -36,6 +36,10 @@ export const PLAN_TABLES = [
   "article_reviews", "fact_resolutions",
   // S04-02 (0011): the retrieval unit.
   "article_chunks",
+  // S07-04 (0019): the flood counters and the money counters. Both are tenant
+  // tables with RLS rather than a Redis-shaped side channel, because a limit
+  // that a replica can reset is not a limit.
+  "rate_limits", "spend_counters",
 ] as const;
 
 async function publicTables(client: pg.Client): Promise<Array<string>> {
@@ -87,15 +91,16 @@ describe("schema (db)", () => {
       "0016_conversation_state.sql",
       "0017_handoff_from_resolved.sql",
       "0018_request_capture.sql",
+      "0019_abuse_and_spend.sql",
     ]);
   });
 
-  it("has exactly the plan's 25 tables plus S04-01's two", async () => {
+  it("has exactly the plan's 25 tables plus the items that added tables", async () => {
     const tables = (await publicTables(client)).filter(
       (t) => t !== "schema_migrations",
     );
     expect(new Set(tables)).toEqual(new Set(PLAN_TABLES));
-    expect(tables).toHaveLength(28);
+    expect(tables).toHaveLength(30);
   });
 
   it("fails loudly when an applied migration's file content drifts (checksum guard)", async () => {

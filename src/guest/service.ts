@@ -35,6 +35,9 @@ import type { Channel, EventContext } from "../events/taxonomy.ts";
 import { emitEvent } from "../events/emit.ts";
 import { lockState, takeover, transition } from "../conversation/state.ts";
 import { captureRequest, type RequestTopic } from "../requests/capture.ts";
+import { checkRate, type RateVerdict } from "../security/ratelimit.ts";
+import { verifyBotCheck, type BotCheckConfig } from "../security/botcheck.ts";
+import { loadSpend, type SpendSnapshot } from "../ai/spend.ts";
 import { t, type Lang } from "../i18n/catalog.ts";
 import type { TenantContext } from "../db/tenant.ts";
 import { signGuestTicket, type GuestTicket } from "./cookie.ts";
@@ -47,6 +50,36 @@ import {
 
 export class GuestInputError extends Error {}
 
+/**
+ * S07-04 — the flood ceiling was hit. Carries the numbers the HTTP layer needs
+ * to answer 429 honestly (`Retry-After`), because "slow down" without a number
+ * is a puzzle, not an instruction.
+ */
+export class RateLimitedError extends Error {
+  readonly bucket: string;
+  readonly retryAfterSeconds: number;
+  readonly limit: number;
+
+  constructor(verdict: RateVerdict, message: string) {
+    super(`${message} (${verdict.blocked?.bucket ?? "unknown"} limit)`);
+    this.name = "RateLimitedError";
+    this.bucket = verdict.blocked?.bucket ?? "unknown";
+    this.retryAfterSeconds = verdict.blocked?.retryAfterSeconds ?? 60;
+    this.limit = verdict.blocked?.limit ?? 0;
+  }
+}
+
+/** S07-04 — the first message had no valid bot-check token. */
+export class BotCheckFailedError extends Error {
+  readonly reason: string;
+
+  constructor(reason: string, detail?: string) {
+    super(detail === undefined ? `bot check failed: ${reason}` : `bot check failed: ${reason} (${detail})`);
+    this.name = "BotCheckFailedError";
+    this.reason = reason;
+  }
+}
+
 /** A message long enough to be a paste of the manual is not a question. */
 export const MAX_MESSAGE_CHARS = 2_000;
 /** How much history a transcript read returns (newest last). */
@@ -57,6 +90,13 @@ export interface GuestDeps {
   ai: ResilientAi;
   /** HMAC key for the identity cookie (`loadGuestConfig`). */
   cookieSecret: string;
+  /**
+   * S07-04: the bot check. Omitted means disabled — which `loadBotCheckConfig`
+   * only permits in local; a staging/prod host refuses to boot without it.
+   */
+  botCheck?: BotCheckConfig;
+  /** Injected so the tests exercise the real call shape without a network. */
+  botCheckFetch?: typeof fetch;
   /** Optional question embedding (DEC-3); omitted means no vector branch. */
   embed?: (text: string) => Promise<number[]>;
   /** Guest's clock, for after-hours policy. Injected so tests can pin it. */
@@ -394,6 +434,8 @@ async function askModel(
     language: Lang;
     channel: Channel;
     at: Date;
+    /** S07-04 AC-2: counters read before this turn, fed to `policyGate`. */
+    spend: SpendSnapshot;
   },
 ): Promise<AnswerOutcome> {
   let embedding: number[] | undefined;
@@ -420,7 +462,11 @@ async function askModel(
         at: input.at,
         ...(embedding === undefined ? {} : { embedding }),
       },
-      { ai: deps.ai },
+      {
+        ai: deps.ai,
+        spendTodayUsd: input.spend.todayUsd,
+        conversationSpendUsd: input.spend.conversationUsd,
+      },
     );
   } catch (error) {
     // `answerMessage` maps both-providers-failed to `unavailable`; this is the
@@ -441,7 +487,16 @@ async function askModel(
 export async function postGuestMessage(
   deps: GuestDeps,
   client: pg.Client | pg.PoolClient,
-  input: { slug: string; text: string; language?: string | null; ticket?: GuestTicket | null },
+  input: {
+    slug: string;
+    text: string;
+    language?: string | null;
+    ticket?: GuestTicket | null;
+    /** S07-04: the client address, for the ip bucket. Null when unknown. */
+    ip?: string | null;
+    /** S07-04: Turnstile token from the widget, on the first message only. */
+    turnstileToken?: string | null;
+  },
 ): Promise<GuestTurn> {
   const text = typeof input.text === "string" ? input.text.trim() : "";
   if (text === "") throw new GuestInputError("message text is required");
@@ -469,6 +524,50 @@ export async function postGuestMessage(
     // S07-02 AC-1: computed under the lock, before this turn's outbound row
     // exists, so exactly one message in a conversation can ever be the first.
     const firstReply = await isFirstReply(scoped, conversation.conversationId);
+
+    // ---- S07-04 AC-1: is this client allowed to talk at all? --------------
+    // Consumed inside this transaction, so a turn that rolls back does not
+    // charge the guest's budget (see ratelimit.ts). Runs before the bot check
+    // and before any database write beyond the counters, so a flood costs one
+    // upsert, not a conversation.
+    const rate = await checkRate(scoped, session.context, {
+      ip: input.ip ?? null,
+      conversationId: conversation.conversationId,
+      at,
+    });
+    if (!rate.allowed) {
+      // 429, never a 5xx and never a queue entry: a flood is not a guest
+      // request, and letting it write `service_requests` rows would hand an
+      // attacker a denial of service against the staff inbox (S08-01).
+      throw new RateLimitedError(rate, "too many messages in this window");
+    }
+
+    // The bot check applies to the FIRST message only: Turnstile tokens are
+    // single use, and a check on every turn would reject a real guest's second
+    // message. `conversation.created` is the honest signal here (unlike the
+    // disclosure, which needs "no outbound yet").
+    if (conversation.created && deps.botCheck !== undefined) {
+      const check = await verifyBotCheck(
+        deps.botCheck,
+        {
+          token: input.turnstileToken ?? null,
+          remoteIp: input.ip ?? null,
+          firstMessage: true,
+        },
+        deps.botCheckFetch ?? fetch,
+      );
+      if (!check.ok) throw new BotCheckFailedError(check.reason, check.detail);
+    }
+
+    // ---- S07-04 AC-2: what has this property spent today? ----------------
+    // Read from the counter table (never from memory: the cap must not multiply
+    // by the number of replicas). Passed to the pipeline, which refuses to
+    // generate once a cap is reached and degrades to the honest acknowledgement
+    // instead — a product state, not an error.
+    const spend = await loadSpend(scoped, session.context, {
+      conversationId: conversation.conversationId,
+      at,
+    });
 
     const eventBase: EventContext = {
       orgId: session.context.orgId,
@@ -529,6 +628,7 @@ export async function postGuestMessage(
       language,
       channel: "web",
       at,
+      spend,
     });
     const reply = replyFor(outcome, language);
 

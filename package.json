@@ -20,6 +20,7 @@
     "start": "node --env-file=.env.local src/server.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
+    "progress": "node scripts/progress.mjs",
     "format": "prettier --write .",
     "test": "vitest run",
     "web:install": "npm --prefix web install",

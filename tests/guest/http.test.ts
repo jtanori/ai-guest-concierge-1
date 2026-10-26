@@ -12,6 +12,7 @@ import { createFixedProvider } from "../../src/ai/stub.ts";
 import { withResilience } from "../../src/ai/provider.ts";
 import {
   classifyGuestError,
+  clientIp,
   handleGuestRequest,
   ownsGuestPath,
   requestedLanguage,
@@ -19,7 +20,12 @@ import {
   type GuestHttpDeps,
 } from "../../src/guest/http.ts";
 import { GuestConfigError } from "../../src/guest/cookie.ts";
-import { GuestInputError, UnknownPropertyError } from "../../src/guest/service.ts";
+import {
+  BotCheckFailedError,
+  GuestInputError,
+  RateLimitedError,
+  UnknownPropertyError,
+} from "../../src/guest/service.ts";
 import { GuestRoleUnavailableError } from "../../src/guest/session.ts";
 
 const SECRET = "s".repeat(32);
@@ -157,6 +163,47 @@ describe("guest surface: routing and tenant extraction (S06-01)", () => {
       status: 500,
       error: "internal_error",
     });
+  });
+
+  /**
+   * S07-04: a refusal is a status code with a number attached, never a 500.
+   * `Retry-After` is part of the contract because a client that is told when to
+   * come back waits, and a client that is told nothing retries immediately.
+   */
+  it("maps a rate limit to 429 with Retry-After, and a bot check to 403", () => {
+    const limited = classifyGuestError(
+      new RateLimitedError(
+        {
+          allowed: false,
+          decisions: [],
+          blocked: {
+            allowed: false,
+            bucket: "ip",
+            limit: 20,
+            count: 21,
+            retryAfterSeconds: 17,
+            resetAt: "2026-10-25T17:01:00.000Z",
+          },
+        },
+        "too many messages in this window",
+      ),
+    );
+    expect(limited.status).toBe(429);
+    expect(limited.error).toBe("rate_limited");
+    expect(limited.headers).toEqual({ "retry-after": "17" });
+    expect(limited.detail).toContain("ip");
+
+    const bot = classifyGuestError(new BotCheckFailedError("missing_token"));
+    expect(bot).toEqual({ status: 403, error: "bot_check_failed", detail: "missing_token" });
+  });
+
+  it("reads the client address from the transport, first hop only", () => {
+    const withHeader = (headers: Record<string, string>) =>
+      clientIp({ headers, socket: { remoteAddress: "10.0.0.1" } } as unknown as IncomingMessage);
+    expect(withHeader({ "x-forwarded-for": "203.0.113.5, 70.41.3.18" })).toBe("203.0.113.5");
+    expect(withHeader({ "x-real-ip": "203.0.113.6" })).toBe("203.0.113.6");
+    // No proxy header at all: the socket's address is the honest answer.
+    expect(withHeader({})).toBe("10.0.0.1");
   });
 });
 

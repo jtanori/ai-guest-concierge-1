@@ -73,3 +73,16 @@ export function messagesPath(slug: string, lang: string): string {
 export function handoffPath(slug: string, lang: string): string {
   return `/api/chat/handoff?property=${encodeURIComponent(slug)}&lang=${encodeURIComponent(lang)}`;
 }
+
+/**
+ * S07-04 — the one interpolation in guest copy.
+ *
+ * The retry countdown is only known in the browser (it comes from the 429 that
+ * just happened), so the catalogue holds the sentence with a `{seconds}` hole in
+ * it and this fills the hole. Kept here rather than in the component so both the
+ * English and the Spanish sentence are formatted by the same line of code.
+ */
+export function retryMessage(template: string, seconds: number): string {
+  const safe = Number.isFinite(seconds) && seconds > 0 ? Math.ceil(seconds) : 30;
+  return template.split("{seconds}").join(String(safe));
+}

@@ -316,6 +316,23 @@ erDiagram
         uuid resolved_by FK
         timestamptz resolved_at
     }
+    rate_limits {
+        uuid org_id FK
+        uuid property_id FK
+        text bucket
+        text key
+        timestamptz window_start
+        integer count
+    }
+    spend_counters {
+        uuid org_id FK
+        uuid property_id FK
+        text scope
+        text key
+        numeric cost_usd
+        integer calls
+        timestamptz updated_at
+    }
     article_chunks {
         uuid chunk_id PK
         uuid org_id FK

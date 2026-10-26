@@ -3,9 +3,11 @@
 import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { BotCheck } from "@/components/bot-check";
 import {
   handoffPath,
   messagesPath,
+  retryMessage,
   type ApiFailure,
   type GuestHandoffWire,
   type GuestMessageWire,
@@ -41,6 +43,12 @@ export interface GuestChatLabels {
   error: string;
   disclosure: string;
   talkToPerson: string;
+  /** S07-04: said when the server answers 429. */
+  rateLimited: string;
+  /** The same sentence with a `{seconds}` hole (see `retryMessage`). */
+  rateLimitedSeconds: string;
+  /** S07-04: said when the first message fails the bot check (403). */
+  botCheck: string;
 }
 
 interface Props {
@@ -48,6 +56,12 @@ interface Props {
   lang: "es" | "en";
   propertyName: string;
   labels: GuestChatLabels;
+  /**
+   * S07-04: the Turnstile site key, or undefined when the host does not enforce
+   * a bot check. A public value by design — Cloudflare's own docs say so — which
+   * is why it can be a prop and not a secret.
+   */
+  botCheckSiteKey?: string | undefined;
 }
 
 export function GuestChat({
@@ -55,6 +69,7 @@ export function GuestChat({
   lang,
   propertyName,
   labels,
+  botCheckSiteKey,
 }: Props): React.ReactElement {
   const [messages, setMessages] = React.useState<GuestMessageWire[]>([]);
   const [draft, setDraft] = React.useState("");
@@ -62,6 +77,10 @@ export function GuestChat({
   const [problem, setProblem] = React.useState<string | null>(null);
   /** S07-02: the guest asked for a person; the button becomes a status. */
   const [handedOff, setHandedOff] = React.useState(false);
+  /** S07-04: a Turnstile token, held only until the first message uses it. */
+  const [botToken, setBotToken] = React.useState<string | null>(null);
+  /** Bumped to reset the widget after a send: tokens are single use. */
+  const [botResetKey, setBotResetKey] = React.useState(0);
   const endRef = React.useRef<HTMLDivElement | null>(null);
 
   const load = React.useCallback(async (): Promise<void> => {
@@ -106,10 +125,26 @@ export function GuestChat({
       const response = await fetch(messagesPath(slug, lang), {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: trimmed }),
+        body: JSON.stringify({
+          text: trimmed,
+          // Only ever meaningful on the first message (the server ignores it
+          // afterwards); sent anyway so the client has one code path.
+          ...(botToken === null ? {} : { turnstileToken: botToken }),
+        }),
       });
       const body = (await response.json()) as GuestTurnWire | ApiFailure;
       if (!response.ok || !("messages" in body)) {
+        // S07-04: a refusal is not a failure to apologise for — say which one
+        // it was, in the guest's language, from the catalogue.
+        if (response.status === 429) {
+          const seconds = Number(response.headers.get("retry-after") ?? "30");
+          setProblem(retryMessage(labels.rateLimitedSeconds, seconds));
+          return;
+        }
+        if (response.status === 403 && "error" in body && body.error === "bot_check_failed") {
+          setProblem(labels.botCheck);
+          return;
+        }
         setProblem(labels.error);
         return;
       }
@@ -122,6 +157,9 @@ export function GuestChat({
       setProblem(labels.error);
     } finally {
       setBusy(false);
+      // The token was consumed (or the send never reached the server), so the
+      // widget starts a fresh one for the next attempt.
+      setBotResetKey((key) => key + 1);
     }
   }
 
@@ -183,6 +221,10 @@ export function GuestChat({
         {busy ? <p className="text-xs text-muted-foreground">…</p> : null}
         <div ref={endRef} />
       </div>
+
+      {/* S07-04: the challenge sits where the guest types, so it is completed
+          before the first message can be sent rather than after a refusal. */}
+      <BotCheck siteKey={botCheckSiteKey} onToken={setBotToken} resetKey={botResetKey} />
 
       {problem !== null ? (
         <p className="mt-3 rounded-md border border-destructive/40 px-3 py-2 text-sm text-destructive">

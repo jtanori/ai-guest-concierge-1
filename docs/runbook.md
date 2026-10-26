@@ -891,3 +891,32 @@ $ npm run typecheck && npm run lint && npm run web:build   # clean
 ```
 
 **Not done, by design or by dependency:** G2 as a *pass* (needs G1: golden v2 and 25 current articles — the number stays red until then, and S05-02 AC-3 stays unmeasurable until it does); the nightly canary's first observed run (needs `GEMINI_API_KEY` as a repo secret — operator work, like S06-01's staging deploy); `--enforce` in CI (deliberately off until the corpus can pass it — switching it on today would make every PR red for a reason no author can fix, which is how a gate gets deleted).
+
+## S07-02 - AI disclosure + 'talk to a person' (0.50d)
+
+**AC (verbatim):** A human is reachable in one tap from any state.
+
+- **AC-1** First AI reply contains `guest.ai_disclosure` (ES+EN from the catalogue).
+- **AC-2** One tap posts a handoff that works from `idle`, `awaiting_ai`, `awaiting_staff` and `resolved`.
+
+**Status: DONE (2026-10-25).** `POST /api/chat/handoff` → `postGuestHandoff` (`src/guest/service.ts`) → `takeover()`; migration `0017_handoff_from_resolved.sql`; the button in `web/components/guest-chat.tsx` now calls that route instead of sending a message.
+
+**The decisions that shaped the code:**
+
+- *The button stopped being a message.* S06-01 made "talk to a person" send the catalogue sentence, which the sensitive-topic classifier escalates. That was real, but it was not *one tap from any state*: on `awaiting_staff` it was answered with "a member of our team has this" **without recording that the guest asked for a human or opening a request**, and on `resolved` it went to the model. A guest's only route to a person must not depend on the provider, the guardrail, or the state of the thread. The handoff route takes the conversation row lock, takes the conversation over (state + `handoff_reasons` + `human_takeover` in one transaction), and answers with catalogue copy. No provider is constructed on that path; the test asserts **zero** provider calls, not merely "it did not throw".
+- *`resolved -> awaiting_staff` is now legal, and 0016 said it was not.* 0016 refused the edge because resolving is a conclusion. S07-02's AC is the better rule: if a guest taps "talk to a person" on a concluded thread, refusing because the row says `resolved` disables the one control that exists to protect them, at the moment the bot has already given up. Nothing is discarded — `status`, the transcript and the events all keep the history, and `handoff_reasons` gains the reason the reopening happened. Routing through `awaiting_ai` to reach `awaiting_staff` would have claimed a model was answering when none was, so the matrix widened instead. `resolved -> idle` stays illegal: asking for a human must never hand the thread back to the bot.
+- *One open request per conversation.* A second tap reuses the open `service_requests` row and does not re-emit `request_created`; `takeover()` is already idempotent for state and reason. A guest who taps twice has one problem, and a human should see one row. Partial index `service_requests_open_by_conversation` makes that lookup cheap on the table S09-01 will make the busiest.
+- *`handoff_reasons.reason_code` is now a closed vocabulary* (Appendix B + `ai_unavailable`), `NOT VALID` on purpose: it constrains every new write immediately and tolerates rows written before the vocabulary existed. Extending it is a deliberate one-line migration — which is the point, per S05-02's "a code nobody can alert on is a code nobody will read". The isolation fixture was writing an invented code (`refresh_needed`) and now uses a real one; the constraint caught that on its first run.
+- *The disclosure is prepended to the first outbound message and stored with it*, so the transcript staff read (S08) is the text the guest read, and no client can drop it. It is sent once, not on every bubble: repeating it trains guests to ignore it, and the page keeps it in the header anyway. "First" is decided by a query under the conversation's row lock (`isFirstReply`), not by `conversation.created` — a guest can tap "talk to a person" before typing, and that conversation already exists with no messages in it.
+- *A stranger who taps before typing gets a conversation.* The route creates the identity and the conversation, then the handoff, so the state with no thread at all is covered by "from any state" too. The cookie round-trips, so tapping and then typing continues the same thread (asserted).
+- *The acknowledgement is `author_role = 'ai'`.* The schema allows guest/ai/staff. It is a system message; `ai` is the honest label of the three (the guest did not write it, and no staff member typed it), and the disclosure on it makes that literal.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector + pg_trgm):**
+```text
+$ npm test        # 30 files / 403 passed
+$ npm run db:test # 24 files / 212 passed (8 new handoff cases; the 17-migration chain applies)
+$ npm run eval    # unchanged: same four scores, regression gate pass
+$ npm run typecheck && npm run lint && npm run web:build   # clean
+```
+
+**Not done, by charter:** staff inbox rendering (S08-01) — the request row exists and `human_takeover` fires, but nothing displays it yet; notification delivery (S09-05) — `service_requests` is written, email is not sent. `takeover()` still records *why* but not *who* (no staff identity on this path until S08-01).

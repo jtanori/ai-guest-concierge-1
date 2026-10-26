@@ -33,7 +33,7 @@ import { answerMessage, type AnswerOutcome } from "../ai/answer.ts";
 import { AiUnavailableError, type ResilientAi } from "../ai/provider.ts";
 import type { Channel, EventContext } from "../events/taxonomy.ts";
 import { emitEvent } from "../events/emit.ts";
-import { lockState, transition } from "../conversation/state.ts";
+import { lockState, takeover, transition } from "../conversation/state.ts";
 import { t, type Lang } from "../i18n/catalog.ts";
 import type { TenantContext } from "../db/tenant.ts";
 import { signGuestTicket, type GuestTicket } from "./cookie.ts";
@@ -93,6 +93,26 @@ export interface GuestTranscript {
   property: PublicPropertyView;
   conversationId: string | null;
   messages: GuestMessage[];
+}
+
+/**
+ * S07-02 — the answer to one tap. There is no `messages` array of a guest turn
+ * and no `decision` other than `handoff`: a handoff never asks the model
+ * anything, so there is nothing to answer and nothing to classify.
+ */
+export interface GuestHandoff {
+  property: PublicPropertyView;
+  conversationId: string;
+  ticket: string;
+  /** The acknowledgement the guest sees. Catalogue copy, never model text. */
+  message: GuestMessage;
+  decision: "handoff";
+  reasonCode: "guest_asked_human";
+  language: Lang;
+  /** The request S09-05 notifies on; reused when one is already open. */
+  requestId: string;
+  /** False when this tap joined an existing handoff instead of starting one. */
+  requestCreated: boolean;
 }
 
 function normaliseLanguage(value: string | null | undefined, fallback: Lang): Lang {
@@ -270,6 +290,36 @@ async function insertMessage(
 }
 
 /**
+ * S07-02 AC-1 — has anything been said in this conversation yet?
+ *
+ * Read inside the caller's transaction, under the conversation's row lock, so
+ * two visitors cannot both be told they are the first. Deliberately not
+ * `conversation.created`: a conversation can exist with no messages (a guest
+ * tapped "talk to a person" before typing anything), and the disclosure still
+ * has to be in the first thing that is said.
+ */
+async function isFirstReply(
+  client: pg.Client | pg.PoolClient,
+  conversationId: string,
+): Promise<boolean> {
+  const result = await client.query(
+    "SELECT 1 FROM messages WHERE conversation_id = $1 AND direction = 'outbound' LIMIT 1",
+    [conversationId],
+  );
+  return (result.rowCount ?? 0) === 0;
+}
+
+/**
+ * The disclosure is prepended to the first outbound message and stored with it,
+ * so the transcript a staff member reads (S08) is the text the guest read. It is
+ * not re-sent on later turns: repeating it in every bubble trains guests to
+ * ignore it, and the page keeps it visible in the header anyway.
+ */
+function withDisclosure(body: string, language: Lang, first: boolean): string {
+  return first ? `${t("guest.ai_disclosure", language)}\n\n${body}` : body;
+}
+
+/**
  * The outbound text for one pipeline outcome. A single place, because "what does
  * the guest see" must never be decided twice: the verified answer for a model
  * answer, the verified fact's value for a fact, and a catalogue string for
@@ -389,6 +439,9 @@ export async function postGuestMessage(
     // happens under it, which is what makes a concurrent staff takeover and this
     // turn mutually exclusive rather than merely unlikely.
     const state = await lockState(scoped, session.context, conversation.conversationId);
+    // S07-02 AC-1: computed under the lock, before this turn's outbound row
+    // exists, so exactly one message in a conversation can ever be the first.
+    const firstReply = await isFirstReply(scoped, conversation.conversationId);
 
     const eventBase: EventContext = {
       orgId: session.context.orgId,
@@ -423,7 +476,7 @@ export async function postGuestMessage(
     // someone will reply, and do NOT call the model. This is the state S08's
     // inbox produces and S08-03 depends on.
     if (state === "awaiting_staff") {
-      const pending = t("guest.staff_reply_pending", language);
+      const pending = withDisclosure(t("guest.staff_reply_pending", language), language, firstReply);
       const outbound = await insertMessage(scoped, session.context, {
         conversationId: conversation.conversationId,
         direction: "outbound",
@@ -451,11 +504,12 @@ export async function postGuestMessage(
       at,
     });
     const reply = replyFor(outcome, language);
+    const body = withDisclosure(reply.body, language, firstReply);
     const outbound = await insertMessage(scoped, session.context, {
       conversationId: conversation.conversationId,
       direction: "outbound",
       authorRole: "ai",
-      body: reply.body,
+      body,
       language,
     });
 
@@ -474,7 +528,7 @@ export async function postGuestMessage(
       reply.decision === "answer" || reply.decision === "fact" ? "idle" : "awaiting_staff",
     );
 
-    return finish(reply.decision, reasonFor(outcome), { ...outbound, body: reply.body });
+    return finish(reply.decision, reasonFor(outcome), { ...outbound, body });
 
     /**
      * Shared tail: the ticket, the wire shape and the language. Written as a
@@ -518,6 +572,139 @@ export async function postGuestMessage(
         language,
       };
     }
+  });
+}
+
+/**
+ * S07-02 — one tap, from any state.
+ *
+ * Why this is not `postGuestMessage(t("guest.talk_to_person"))`: a message is
+ * *answered*. It reaches the classifier, which escalates, which still runs the
+ * pipeline's policy and persistence steps — and on an `awaiting_staff` thread it
+ * is answered with "a member of our team has this" without ever recording that
+ * the guest asked for a human, and on a `resolved` thread it goes to the model.
+ * The one control a guest has to reach a person must not depend on the model,
+ * the provider, the guardrail or the state the thread happens to be in.
+ *
+ * So: lock the conversation row, take it over (state + `handoff_reasons` +
+ * `human_takeover` in one transaction), open a `service_requests` row so S09-05
+ * can notify even when nobody has opened the inbox, and answer with catalogue
+ * copy. No provider is constructed, imported or called on this path.
+ */
+export async function postGuestHandoff(
+  deps: GuestDeps,
+  client: pg.Client | pg.PoolClient,
+  input: { slug: string; language?: string | null; ticket?: GuestTicket | null },
+): Promise<GuestHandoff> {
+  const at = (deps.now ?? (() => new Date()))();
+
+  return withGuestSession(client, input.slug, async (session, scoped) => {
+    const language = normaliseLanguage(input.language, defaultLanguage(session.property));
+    // A first-time visitor can tap the button before typing. Creating the
+    // identity and the conversation here is what makes "from any state" true
+    // for the state that has no conversation yet.
+    const identity = await resolveIdentity(scoped, session, input.ticket ?? null, language);
+    const conversation = await resolveConversation(
+      scoped,
+      session,
+      input.ticket ?? null,
+      identity,
+      language,
+    );
+    const conversationId = conversation.conversationId;
+
+    // Same row lock the model's writer takes (S06-02 AC-2): a turn that is
+    // mid-answer either finishes first and this handoff applies to the next
+    // message, or commits first and that turn stays silent.
+    await lockState(scoped, session.context, conversationId);
+    const firstReply = await isFirstReply(scoped, conversationId);
+
+    await takeover(scoped, session.context, {
+      conversationId,
+      reasonCode: "guest_asked_human",
+      detail: "guest_tapped_talk_to_person",
+      at,
+      channel: "web",
+      language,
+    });
+
+    // One open request per conversation. A guest who taps twice (or taps after
+    // a page reload) has one problem, and a human should see one row.
+    const openRequest = await scoped.query<{ request_id: string }>(
+      `SELECT request_id
+         FROM service_requests
+        WHERE org_id = $1 AND property_id = $2 AND conversation_id = $3
+          AND status IN ('new', 'acknowledged', 'assigned')
+        LIMIT 1`,
+      [session.context.orgId, session.context.propertyId, conversationId],
+    );
+    let requestId = openRequest.rows[0]?.request_id;
+    const requestCreated = requestId === undefined;
+    if (requestId === undefined) {
+      const created = await scoped.query<{ request_id: string }>(
+        `INSERT INTO service_requests (org_id, property_id, conversation_id, topic, status)
+         VALUES ($1, $2, $3, 'guest_requested_human', 'new')
+         RETURNING request_id`,
+        [session.context.orgId, session.context.propertyId, conversationId],
+      );
+      requestId = created.rows[0]!.request_id;
+      await emitEvent(
+        scoped,
+        session.context,
+        "request_created",
+        {
+          orgId: session.context.orgId,
+          propertyId: session.context.propertyId,
+          conversationId,
+          channel: "web",
+          language,
+          topic: null,
+          createdAt: at.toISOString(),
+        },
+        { request_id: requestId, topic: "guest_requested_human", source: "guest_handoff" },
+      );
+    }
+
+    const body = withDisclosure(t("guest.staff_reply_pending", language), language, firstReply);
+    const outbound = await insertMessage(scoped, session.context, {
+      conversationId,
+      direction: "outbound",
+      // The schema's author roles are guest | ai | staff. This is a system
+      // acknowledgement; `ai` is the honest label of the three (the guest is not
+      // writing it and no staff member has typed it).
+      authorRole: "ai",
+      body,
+      language,
+    });
+    await scoped.query(
+      `UPDATE conversations SET last_activity_at = $2::timestamptz WHERE conversation_id = $1`,
+      [conversationId, outbound.createdAt],
+    );
+
+    return {
+      property: propertyView(session.property, language),
+      conversationId,
+      ticket: signGuestTicket(
+        {
+          identityId: identity.identityId,
+          conversationId,
+          propertyId: session.context.propertyId,
+        },
+        deps.cookieSecret,
+      ),
+      message: {
+        messageId: outbound.messageId,
+        direction: "outbound",
+        authorRole: "ai",
+        body,
+        createdAt: outbound.createdAt,
+      },
+      decision: "handoff",
+      reasonCode: "guest_asked_human",
+      language,
+      requestId,
+      requestCreated,
+    };
   });
 }
 

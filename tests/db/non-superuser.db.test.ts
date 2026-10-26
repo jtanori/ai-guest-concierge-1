@@ -74,7 +74,7 @@ describe("non-superuser owner (db)", () => {
     }
 
     const applied = await migrateDatabase(urlFor(DB, ROLE, PASSWORD));
-    expect(applied).toBe(16);
+    expect(applied).toBe(17);
 
     // What the migrations granted, the migrations revoked: no membership in
     // any definer role was granted BY the owner itself.

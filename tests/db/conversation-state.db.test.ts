@@ -101,7 +101,7 @@ describe("conversation state machine (db)", () => {
     expect(await readState(conversationId)).toBe("idle");
   });
 
-  it("accepts all eight legal edges through raw SQL", async () => {
+  it("accepts all nine legal edges through raw SQL", async () => {
     for (const from of AI_STATES) {
       for (const to of TRANSITIONS[from]) {
         const conversationId = await newConversation();
@@ -275,7 +275,10 @@ describe("conversation state machine (db)", () => {
 
     expect(turn.decision).toBe("handoff");
     expect(turn.reasonCode).toBe("awaiting_staff");
-    expect(turn.messages[1]!.body).toBe(t("guest.staff_reply_pending", "es"));
+    // S07-02 AC-1 prepends the disclosure to the first outbound message.
+    expect(turn.messages[1]!.body).toBe(
+      `${t("guest.ai_disclosure", "es")}\n\n${t("guest.staff_reply_pending", "es")}`,
+    );
     // The model was never asked: a takeover is not a prompt.
     expect(provider.requests).toHaveLength(0);
     expect(await readState(conversationId)).toBe("awaiting_staff");

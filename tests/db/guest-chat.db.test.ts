@@ -35,6 +35,9 @@ import {
 import { connectScratch, dropScratch, recreateScratch } from "./helpers.db.ts";
 
 const SECRET = "g".repeat(40);
+/** S07-02 AC-1: the first outbound message of a conversation carries this. */
+const DISCLOSURE_ES = t("guest.ai_disclosure", "es");
+const firstReply = (body: string): string => `${DISCLOSURE_ES}\n\n${body}`;
 const SLUG = "casa-mesa";
 const BODY = "La alberca abre a las 07:00 y cierra a las 21:00 todos los días.";
 
@@ -226,8 +229,10 @@ describe("guest chat (db)", () => {
     expect(turn.messages).toHaveLength(2);
     // The guest's exact words, and the catalogue string — never model text.
     expect(turn.messages[0]!.body).toBe("Quiero un reembolso de la noche del sábado");
-    expect(turn.messages[1]!.body).toBe(t("guest.idontknow", "es"));
-    expect(turn.property.disclosure).toBe(t("guest.ai_disclosure", "es"));
+    // S07-02 AC-1: the first thing said in a conversation discloses the AI.
+    expect(turn.messages[1]!.body).toBe(firstReply(t("guest.idontknow", "es")));
+    expect(turn.messages[1]!.body).toContain(DISCLOSURE_ES);
+    expect(turn.property.disclosure).toBe(DISCLOSURE_ES);
 
     const stored = await client.query<{ direction: string; author_role: string; body: string }>(
       "SELECT direction, author_role, body FROM messages WHERE conversation_id = $1 ORDER BY created_at, message_id",
@@ -358,8 +363,10 @@ describe("guest chat (db)", () => {
       language: "es",
     });
     expect(turn.reasonCode).toBe("guest_asked_human");
-    expect(turn.messages[1]!.body).toBe(t("guest.idontknow", "es"));
-    // The human route is a message, so the handoff is in the transcript.
+    expect(turn.messages[1]!.body).toBe(firstReply(t("guest.idontknow", "es")));
+    // A guest who TYPES "talk to a human" is still classified, escalated and
+    // recorded — the type-it path and the one-tap path (S07-02) both work, and
+    // they agree on the reason code.
     const stored = await client.query<{ body: string }>(
       "SELECT body FROM messages WHERE conversation_id = $1 AND direction = 'inbound'",
       [turn.conversationId],
@@ -374,7 +381,9 @@ describe("guest chat (db)", () => {
       language: "es",
     });
     expect(turn.decision).toBe("answer");
-    expect(turn.messages[1]!.body).toBe("La alberca abre a las 07:00 y cierra a las 21:00.");
+    expect(turn.messages[1]!.body).toBe(
+      firstReply("La alberca abre a las 07:00 y cierra a las 21:00."),
+    );
 
     const run = await client.query<{ decision: string; model_id: string }>(
       "SELECT decision, model_id FROM ai_runs WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT 1",
@@ -396,7 +405,7 @@ describe("guest chat (db)", () => {
     );
     expect(turn.decision).toBe("unavailable");
     expect(turn.reasonCode).toBe("ai_unavailable");
-    expect(turn.messages[1]!.body).toBe(t("guest.unavailable", "es"));
+    expect(turn.messages[1]!.body).toBe(firstReply(t("guest.unavailable", "es")));
     expect(turn.messages).toHaveLength(2);
   });
 

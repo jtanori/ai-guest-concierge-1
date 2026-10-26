@@ -85,6 +85,7 @@ describe("schema (db)", () => {
       "0014_ai_runs_indexes.sql",
       "0015_guest_chat.sql",
       "0016_conversation_state.sql",
+      "0017_handoff_from_resolved.sql",
     ]);
   });
 

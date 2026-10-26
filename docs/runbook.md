@@ -713,3 +713,28 @@ $ npm run typecheck && npm run lint && npm run build   # clean
 ```
 
 **Not in this item, by charter:** the guardrail pass (S05-02), the eval harness (S06-03), the conversation state machine (S06-02). **Topic classification does not exist yet**: the caller may pass `topicKey` (golden-set harness, or a future classifier); when it is absent, topic-scoped policy cannot be evaluated and is skipped — stated in the code, not silently assumed to pass.
+## S05-03 - AI runs, citations and logging (1.00d)
+
+**AC (verbatim):** Any historical answer reconstructable from the database.
+
+**Status: DONE (2026-10-25).** `db/migrations/0014_ai_runs_indexes.sql`, `src/ai/history.ts::reconstructAnswer`, and — from S05-01, which landed the write side — `src/ai/runs.ts` + `src/ai/answer.ts`.
+
+**Why this works at all, and why it would not have without two earlier decisions.** Reconstruction reads `ai_runs → citations → article_versions`. It is exact because 0003 makes a version immutable (editing an article adds a version) and D5 makes a citation point at a version rather than an article. Had citations pointed at `knowledge_articles`, "what did the bot cite last March" would return today's text — the single most misleading answer a support tool can give. The test proves it: v1 is cited, v2 is published, and the reconstruction still returns v1's body with `isCurrent: false`.
+
+**The decisions that shaped the code:**
+
+- *The migration number was rebased.* The charter calculated `0013_ai_runs_indexes.sql`; 0013 is S04-03's `retrieval_weights`, and the charter itself said to rebase on whatever merged first. It is `0014`, and the header says so.
+- *Both indexes lead with the tenant columns.* Under FORCE RLS every query carries `org_id`/`property_id`, so `ai_runs (property_id, created_at DESC)` and `citations (org_id, property_id, ai_run_id)` are the shapes the planner can actually use for "this property's last 50 answers" and for one answer's citations.
+- *`usage` gets a shape, not a type.* `jsonb` accepts anything; a caller writing an array is writing something no reader can read as a map, so 0014 adds `CHECK (jsonb_typeof(usage) = 'object')` and the test pins the 23514.
+- *A foreign or unknown `ai_run_id` is `AiRunNotFoundError`, never an empty object.* An empty citation list reads like "the model cited nothing", which is a different (and alarming) fact. RLS already hides other tenants' rows; the error maps "0 rows" to one honest answer.
+- *The verbatim model `quote` is NOT reconstructable, and this is recorded rather than papered over.* 0001's `citations` has no quote column and the charter puts schema changes to those tables out of scope. AC-1 asks for "citations and cited article_version bodies" — both are here. If dispute resolution ever needs the quote it belongs in a real column, as a migration.
+- *Write-side rules live in S05-01's modules, not a parallel logger.* `recordAiRun`/`recordCitations` run inside the caller's transaction, so a rolled-back turn leaves no `ai_runs` row claiming an answer that was never sent.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector + pg_trgm):**
+```text
+$ npm run db:test    # 20 files / 180 passed - incl. 6 ai-history cases
+$ npm test           # 333 passed
+$ npm run typecheck && npm run lint && npm run build   # clean
+```
+
+**Not done, by charter:** nothing in this item. S10-01 will instrument the event writer further; S08-02 renders this reconstruction in the staff UI.

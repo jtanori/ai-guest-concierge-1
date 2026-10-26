@@ -62,6 +62,26 @@ describe("property settings policy", () => {
     expect(isAfterHours(saturdayClosed, new Date("2026-10-24T18:00:00Z"), MEXICO)).toBe(true);
   });
 
+  it("evaluates after-hours on the wall clock across a DST change (S08-04)", () => {
+    // 09:00-17:00 every day, New York. The offset moves -5 → -4 on 2026-03-08, so
+    // 13:30Z is 08:30 (closed) the day before and 09:30 (open) on the day itself.
+    // A server that computed "after hours" from UTC, or that cached the offset at
+    // boot, gets one of these two wrong.
+    const daily = Array.from({ length: 7 }, (_unused, day) => ({
+      day,
+      closed: false,
+      open: "09:00",
+      close: "17:00",
+    }));
+    const ny = withHours(daily);
+
+    expect(isAfterHours(ny, new Date("2026-03-07T13:30:00Z"), "America/New_York")).toBe(true);
+    expect(isAfterHours(ny, new Date("2026-03-08T13:30:00Z"), "America/New_York")).toBe(false);
+    expect(isAfterHours(ny, new Date("2026-03-09T13:30:00Z"), "America/New_York")).toBe(false);
+    // Fall back (2026-11-01): the same UTC hour is 08:30 again, so closed again.
+    expect(isAfterHours(ny, new Date("2026-11-01T13:30:00Z"), "America/New_York")).toBe(true);
+  });
+
   it("follows the four-mode decision table", () => {
     const value = settings();
     value.enabled_topics = ["wifi"];

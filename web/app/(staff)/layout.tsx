@@ -31,6 +31,10 @@ export default async function StaffLayout({
             <Link href="/review" className="text-muted-foreground hover:text-foreground">
               {tr("staff.review.title")}
             </Link>
+            {/* S08-04: the operating mode lives with the other staff surfaces. */}
+            <Link href="/settings" className="text-muted-foreground hover:text-foreground">
+              {tr("staff.mode.nav")}
+            </Link>
             <span className="text-xs text-muted-foreground">{lang.toUpperCase()}</span>
           </nav>
         </div>

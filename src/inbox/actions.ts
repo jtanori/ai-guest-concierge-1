@@ -54,12 +54,17 @@ export class ActionInputError extends Error {
 
 /** The request the caller asked about is not this conversation's, or is closed. */
 export class RequestNotActionableError extends Error {
-  constructor(
-    readonly reason: "not_found" | "not_open",
-    message: string,
-  ) {
+  // Declared and assigned explicitly: TypeScript parameter properties are
+  // "erasable syntax" that Node's `--experimental-strip-types` REFUSES, so the
+  // `constructor(readonly reason: ...)` shorthand type-checks, passes vitest, and
+  // stops the server from booting. `tests/runtime/strip-types.test.ts` is the
+  // guard that now catches that class of mistake.
+  readonly reason: "not_found" | "not_open";
+
+  constructor(reason: "not_found" | "not_open", message: string) {
     super(message);
     this.name = "RequestNotActionableError";
+    this.reason = reason;
   }
 }
 

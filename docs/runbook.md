@@ -1751,3 +1751,51 @@ the gap is not discovered by someone waiting for an email that was queued and ne
 sent.
 
 **Not done, by charter:** nothing schedules `processEmailOutbox` — S11-01 owns worker lifecycle for both outboxes (interval, shutdown, concurrency, the `sending` reaper), and this loop never writes `sending` so it cannot strand a row. Also out: a Resend webhook to reconcile provider-side bounces and complaints against rows we marked `sent` (we record that the provider *accepted* the message, not that a human read it); per-property fallback addresses (the current one is deployment-wide, which is why it is redacted); any non-email channel — `ESCALATION_CHANNELS` includes `in_app`, and `outbox.kind` has allowed `sms` since 0001, but neither has a sender; jitter and worker metrics.
+
+## S10-01 - Event emission across the product (1.50d)
+
+**AC (verbatim):** Dashboard numbers reconcile exactly to raw events.
+
+- **AC-1** All 18 canonical events (plan Appendix C / `src/events/taxonomy.ts`) are emitted from production paths, not just tests.
+- **AC-2** Every event carries `org_id, property_id, conversation_id, channel, language, topic, created_at`.
+- **AC-3** A seeded set of 100 actions produces exactly 100 matching event rows.
+
+**Status: 🚧 — AC-1 is 16 of 18 by owner decision, and the workbook says so rather than ✅.** See DEC-1 below. Everything else is met and verified.
+
+**What this item actually was.** The draft charter scoped it as "instrument the S04–S09 paths". By the time it was picked up, **sixteen of the eighteen canonical events were already emitted** — S05/S06/S07 emitted theirs as they were built, and S09-01/02/03 emitted `request_*`, `answer_flagged_wrong` and `knowledge_gap_*`. `emitEvent` had 22 call sites across seven modules. What was missing was not instrumentation but *proof* of it, two hardening gaps, and the reconciliation itself. The charter's §4 has been rebased on `main` = `1e27542` and records the correction; its proposed migration number `0022` was already taken by `citation_quotes`, so this is **0029**.
+
+**Migration 0029 — three changes, none of them new behaviour.** Each closes a gap between what `events` claimed and what it enforced.
+
+1. `REVOKE UPDATE, DELETE ON events FROM concierge_app` — 0007's exact pattern for `audit_log`. 0002's `ALTER DEFAULT PRIVILEGES ... GRANT SELECT, INSERT, UPDATE, DELETE` had left the app role *holding* both privileges, so append-only rested entirely on 0003's trigger. The trigger deliberately stays: it is the layer that still refuses a **superuser**, who bypasses privileges but not triggers. Denial now happens at two layers that fail differently — `42501 permission denied for table events` for the app role, `P0001 … append-only` for everyone else — and `tests/db/events.db.test.ts` asserts **both**, because a test that checks only the trigger cannot tell you the grant was ever tightened.
+2. `ADD CONSTRAINT events_payload_object CHECK (jsonb_typeof(payload) = 'object')` — `emitEvent` already refuses a non-object payload, so this constrains the path that goes *around* the writer. Without it a scalar payload makes every `payload->>'request_id'` read return NULL, which reads as "this event has no request" rather than "this event is malformed": a silent wrong answer instead of a refused write.
+3. `CREATE INDEX events_property_type_time ON events (property_id, event_type, created_at DESC)` — the read S10-02's rollups and every per-metric reconciliation make. 0001's two indexes are **kept on purpose**: the composite puts `event_type` second, so it cannot serve a property-wide time-ordered scan, and `events_type` cannot serve a per-property one. Three indexes on an append-only table is the cheap side of the trade — nothing here is ever updated, so maintenance is insert-only.
+
+**`src/events/reconcile.ts`** — `reconcile(client, context, window?)` counts eight business-row/event pairs and returns per-metric deltas; `describeDrift()` turns a drift into a diagnosis that names the metric instead of saying "reconciliation failed". One statement, so every count comes from one snapshot: fourteen separate queries could straddle a concurrent write and report a delta that never existed. `RECONCILE_METRICS` is exported so a test can pin the set — adding a business table without adding its metric is how a reconciliation quietly stops covering the product.
+
+**Two pairings that are not what they look like**, both found by checking every INSERT site rather than assuming:
+
+- `request_assigned` pairs with **`assignments`**, not `service_requests`. One request can carry several assignees, so counting requests under-reports by one per additional assignee and reads as missing instrumentation. Two INSERT sites feed it — `lifecycle.ts` for the first assignee, `inbox/actions.ts` for an additional one — and they are **mutually exclusive**, not a double emission: `actions.ts` returns early after `transitionRequest` and only emits directly on the append-only additional-assignee path, guarded by `if (created)`.
+- `ai_runs` **cannot** be paired with one event type. `recordAiRun` is called from four paths in `src/ai/answer.ts` and each emits a *different* terminal event: `ai_run_completed` on success, `message_failed` for a provider outage, `ai_escalated` for the policy-block and guardrail gates. Counting one type under-reports; counting all three over-reports, because `ai_escalated` is also emitted on paths that never record a run. All four carry `ai_run_id` in the payload, so the reconciliation counts **distinct `payload->>'ai_run_id'`**, which is the exact image of the table.
+
+**DEC-1 (owner, 2026-10-26) — two canonical events are deferred, so AC-1 is 16/18.** `booking_link_clicked` and `outbound_webhook_delivered` have **no producer anywhere in the product**; their only appearances are `taxonomy.ts` and its test. The features that would produce them are DF-02 (opportunity click tracking) and DF-01 (outbound webhook per property), both deferred to MVP-1.5 and neither started. The owner chose to defer rather than pull either forward. Both names **stay** in `EVENT_NAMES` and in 0001's CHECK constraint as reserved taxonomy, and a test asserts they are *declared but unemitted* — so wiring a producer for either one **fails the suite** until the charter is updated. The deferral is enforced rather than remembered.
+
+**DEC-2 — the workbook row is 🚧, not ✅.** The backlog AC says "all 18", and two are not emitted, so it is not objectively met however sensible the deferral is. `✅` in this repository means the AC was met and verified; using it here would make the workbook the only place claiming a completeness the code does not have. The pending half is DF-01/DF-02.
+
+**CAVEAT — the demo seed does not reconcile, and cannot.** `src/seed/demo.ts` has **zero** `emitEvent` calls: it writes business rows (including `knowledge_gaps`) directly. A demo property's dashboard numbers will not reconcile to its events, because its rows were never actions. Reconciliation is defined over rows written through production code, and the test fixtures follow the same rule — `tests/db/events.db.test.ts` seeds org/property/channel only and emits `conversation_started` alongside each conversation it creates, rather than using `helpers.db.ts`'s `seedTenant`, which inserts a conversation with no event and would leave a delta the test had to explain away. Making the seed emit would change what the fixture means; wanting that is S10-03's decision.
+
+**AC-1's coverage test is a static scan of `src/`, which is unusual and deliberate.** AC-1 says the events are emitted "from production paths, not just tests", and the only way to make that executable is to read the production paths — a DB test can only ever prove the events it happened to drive. The scan expands `lifecycle.ts`'s computed `` `request_${to}` `` against `REQUEST_STATUSES` minus `new` (rejected as a target) and `cancelled` (guarded out by `if (to !== "cancelled")`), and **throws on any template it does not recognise**, so a new computed event name fails loudly instead of being silently skipped.
+
+**Two failures found while writing the tests, both in the tests themselves, both worth keeping:**
+- `'scalar'::jsonb` is *not valid JSON at all* (JSON strings use double quotes), so the payload-constraint case failed at the cast and never reached the constraint — it would have tested the parser and passed for the wrong reason. The fixtures are now valid JSON that is not an object.
+- The window test tried to `UPDATE events SET created_at` to backdate a row, which 0003's trigger refuses. That is the constraint working, and it is why backdating is an **emission** parameter (`addConversation(graph, at)`) rather than an update: an event and its business row must move together, or the window test measures the skew between them instead of the window.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector 0.6.2 + pg_trgm 1.6):**
+```text
+$ npm run db:migrate   # 29 applied from an EMPTY database (0029 lands)
+$ npm run db:test      # 39 files / 415 passed (events: 15)
+$ npm test             # 48 files / 629 passed (reconcile pure: 7)
+$ npx tsc --noEmit && npx tsc --noEmit -p web/tsconfig.json && npm run lint   # clean
+```
+0029 verified by catalog inspection after a from-empty apply: `concierge_app` holds exactly `INSERT, SELECT` on `events`; `events_payload_object` present; `events_property_type_time` present with 0001's `events_property_time` and `events_type` both retained.
+
+**AC-3 is exactness in both directions, and the suite asserts the failure too.** 100 `captureRequest` calls across 100 conversations produce exactly 100 `service_requests`, exactly 100 `request_created` and exactly 200 event rows in total — the point is not "at least one event per action" but that no action produced two and no event appeared for an action that did not happen. 100 distinct questions through `recordGap` produce exactly 100 gaps and 100 events, while a *repeated* question correctly produces neither a second row nor a second event (it increments `hits`). And `reconcile()` is asserted to **detect** a request inserted behind the writer's back — `delta +1`, naming `service_requests` — because a reconciliation that cannot fail is a decoration.

@@ -105,6 +105,7 @@ describe("schema (db)", () => {
       "0026_answer_flags.sql",
       "0027_answer_review_outbox.sql",
       "0028_email_outbox.sql",
+      "0029_events_hardening.sql",
     ]);
   });
 

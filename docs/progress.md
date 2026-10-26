@@ -1,4 +1,4 @@
-<!-- progress-snapshot: {"generatedAt":"2026-10-26 20:20","items":{"done":37,"partial":4,"todo":39,"total":80},"days":{"done":40.5,"partial":8,"todo":30.5,"total":79},"remainingDays":38.5,"perSprint":{"W00":{"doneItems":6,"items":20,"doneDays":2.75,"totalDays":8},"S01":{"doneItems":3,"items":3,"doneDays":5.75,"totalDays":5.75},"S02":{"doneItems":5,"items":5,"doneDays":5.5,"totalDays":5.5},"S03":{"doneItems":3,"items":3,"doneDays":5,"totalDays":5},"S04":{"doneItems":2,"items":3,"doneDays":3,"totalDays":5},"S05":{"doneItems":2,"items":3,"doneDays":3,"totalDays":5.5},"S06":{"doneItems":1,"items":3,"doneDays":1.5,"totalDays":5},"S07":{"doneItems":6,"items":6,"doneDays":4,"totalDays":4},"S08":{"doneItems":4,"items":4,"doneDays":5.5,"totalDays":5.5},"S09":{"doneItems":5,"items":5,"doneDays":4.5,"totalDays":4.5},"S10":{"doneItems":0,"items":3,"doneDays":0,"totalDays":4.5},"S11":{"doneItems":0,"items":5,"doneDays":0,"totalDays":5},"S12":{"doneItems":0,"items":4,"doneDays":0,"totalDays":4.5},"S13":{"doneItems":0,"items":3,"doneDays":0,"totalDays":2},"WA":{"doneItems":0,"items":8,"doneDays":0,"totalDays":7.75},"DEF":{"doneItems":0,"items":2,"doneDays":0,"totalDays":1.5}}} -->
+<!-- progress-snapshot: {"generatedAt":"2026-10-26 20:21","items":{"done":37,"partial":5,"todo":38,"total":80},"days":{"done":40.5,"partial":9.5,"todo":29,"total":79},"remainingDays":38.5,"perSprint":{"W00":{"doneItems":6,"items":20,"doneDays":2.75,"totalDays":8},"S01":{"doneItems":3,"items":3,"doneDays":5.75,"totalDays":5.75},"S02":{"doneItems":5,"items":5,"doneDays":5.5,"totalDays":5.5},"S03":{"doneItems":3,"items":3,"doneDays":5,"totalDays":5},"S04":{"doneItems":2,"items":3,"doneDays":3,"totalDays":5},"S05":{"doneItems":2,"items":3,"doneDays":3,"totalDays":5.5},"S06":{"doneItems":1,"items":3,"doneDays":1.5,"totalDays":5},"S07":{"doneItems":6,"items":6,"doneDays":4,"totalDays":4},"S08":{"doneItems":4,"items":4,"doneDays":5.5,"totalDays":5.5},"S09":{"doneItems":5,"items":5,"doneDays":4.5,"totalDays":4.5},"S10":{"doneItems":0,"items":3,"doneDays":0,"totalDays":4.5},"S11":{"doneItems":0,"items":5,"doneDays":0,"totalDays":5},"S12":{"doneItems":0,"items":4,"doneDays":0,"totalDays":4.5},"S13":{"doneItems":0,"items":3,"doneDays":0,"totalDays":2},"WA":{"doneItems":0,"items":8,"doneDays":0,"totalDays":7.75},"DEF":{"doneItems":0,"items":2,"doneDays":0,"totalDays":1.5}}} -->
 # Build progress
 
 <!-- GENERATED FILE — do not edit by hand.
@@ -6,7 +6,7 @@
      Source of truth for status: docs/07-master-backlog.xlsx, column K.
      Re-run this as part of every item's close-out (see the charter DoD). -->
 
-_Generated 2026-10-26 20:20 UTC from the master backlog._
+_Generated 2026-10-26 20:21 UTC from the master backlog._
 
 ## Overall
 
@@ -17,10 +17,10 @@ _Generated 2026-10-26 20:20 UTC from the master backlog._
 
 ```
 done            ████████████░░░░░░░░░░░░  51.3%
-+ half of 🚧    ██████████████░░░░░░░░░░  56.3%
++ half of 🚧    ██████████████░░░░░░░░░░  57.3%
 ```
 
-**4 items in flight** (8 d), **39 not started** (30.5 d), **38.5 d remaining** in total.
+**5 items in flight** (9.5 d), **38 not started** (29 d), **38.5 d remaining** in total.
 
 > The second bar counts an in-flight item at half its days. It is a scheduling estimate, not a status: an item with an unmet acceptance criterion is not done, however much of its work exists.
 
@@ -38,7 +38,7 @@ done            ████████████░░░░░░░░░�
 | S07 | 6/6 | 4 | 4 | `████████████████` 100% |
 | S08 | 4/4 | 5.5 | 5.5 | `████████████████` 100% |
 | S09 | 5/5 | 4.5 | 4.5 | `████████████████` 100% |
-| S10 | 0/3 | 0 | 4.5 | `░░░░░░░░░░░░░░░░` 0% |
+| S10 | 0/3 | 0 | 4.5 | `███░░░░░░░░░░░░░` 16.67% |
 | S11 | 0/5 | 0 | 5 | `░░░░░░░░░░░░░░░░` 0% |
 | S12 | 0/4 | 0 | 4.5 | `░░░░░░░░░░░░░░░░` 0% |
 | S13 | 0/3 | 0 | 2 | `░░░░░░░░░░░░░░░░` 0% |
@@ -55,6 +55,7 @@ Every item whose cell starts with 🚧, with the reason recorded there.
 | S05-02 | S05 | Guardrail layer | 2.5 | AC-1/AC-2 done (citation+quote verification, banned content, sensitive/policy gate, reason codes; 356 unit + 184 db green). AC-3 (G2 ≤2% false answers) UNPROVEN — needs G1 golden set v2 + S06-03 harness. |
 | S06-01 | S06 | Public property-scoped web chat | 2 | AC-1/AC-2/AC-3 met as a working surface (real HTTP round trip, signed cookie, slug-only tenant, disclosure + handoff-as-message; 374 unit + 195 db green, web:build green). AC-1's 'on staging' half UNVERIFIED here — deploy is the operator step. |
 | S06-03 | S06 | Evaluation harness + CI job | 1.5 | Harness + CI done (2026-10-25) — npm run eval scores four ways on golden v1 through the real pipeline; regression gate armed on a recorded baseline; canary job in eval.yml. G2 itself is RED (25% false answers on the demo fixture) and stays red until G1: 1/13 answerable questions have their target topic in the corpus. |
+| S10-01 | S10 | Event emission across the product | 1.5 | AC-2 and AC-3 met and verified (0029 hardening; reconcile() over 8 pairs, deltas 0; 100 actions -> exactly 100 events; 39 db files / 415 + 48 unit / 629 green). AC-1 is 16 of 18: booking_link_clicked and outbound_webhook_delivered have no producer — they belong to DF-02 and DF-01, both deferred to MVP-1.5. Owner deferred on 2026-10-26; both names stay reserved in the taxonomy and a test fails if either gains a producer before the charter is updated. |
 
 ## Remaining work by block
 
@@ -73,10 +74,10 @@ Every item whose cell starts with 🚧, with the reason recorded there.
 | --- | --- | --- |
 | Items done | 37 | — |
 | Days done | 40.5 | — |
-| Items in flight | 4 | -1 |
+| Items in flight | 5 | +1 |
 | Days remaining | 38.5 | — |
 
-Previous report generated 2026-10-26 20:18.
+Previous report generated 2026-10-26 20:20.
 
 ## How to read this
 

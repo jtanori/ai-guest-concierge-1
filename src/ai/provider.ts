@@ -63,13 +63,24 @@ export class AiProviderError extends Error {
 /** Both providers failed. The caller degrades to "a human will reply". */
 export class AiUnavailableError extends Error {
   readonly attempts: number;
+  /**
+   * S07-05 — the models that were TRIED, primary first.
+   *
+   * The outage path records an `ai_runs` row, and that row's `model_id` must not
+   * name a model that never answered: per-model accuracy is sampled from this
+   * table, and attributing a failure to `gemini-2.5-flash` would put an outage in
+   * the denominator of that model's quality. The row records `model_id = "none"`
+   * and lists these in `usage`, so the distinction survives.
+   */
+  readonly modelIds: readonly string[];
 
-  constructor(attempts: number, cause?: unknown) {
+  constructor(attempts: number, cause?: unknown, modelIds: readonly string[] = []) {
     super(
       `no AI provider answered after ${attempts} attempt(s); the guest gets the outage path, not an error`,
     );
     this.name = "AiUnavailableError";
     this.attempts = attempts;
+    this.modelIds = modelIds;
     if (cause !== undefined) this.cause = cause;
   }
 }
@@ -248,7 +259,7 @@ export function withResilience(
           },
           "ai.provider.unavailable",
         );
-        throw new AiUnavailableError(attempts, fallbackError);
+        throw new AiUnavailableError(attempts, fallbackError, [primary.modelId, fallback.modelId]);
       }
     },
   };

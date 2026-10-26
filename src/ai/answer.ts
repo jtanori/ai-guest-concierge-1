@@ -114,8 +114,12 @@ export type AnswerOutcome =
       aiRunId: string | null;
       guestMessage: string;
     }
-  /** Both providers failed: the outage path (S07-05), never a 500. */
-  | { kind: "unavailable"; detail: string };
+  /**
+   * Both providers failed: the outage path (S07-05), never a 500. Carries the
+   * `ai_runs` row so the caller's `finish()` can report it and the runbook's
+   * "did the outage get recorded?" question has one answer.
+   */
+  | { kind: "unavailable"; detail: string; aiRunId: string };
 
 interface PropertyRow {
   ai_mode: AiMode;
@@ -158,6 +162,47 @@ async function recordKnowledgeGap(
     [context.orgId, context.propertyId, input.conversationId, input.text, input.language],
   );
   await emitEvent(client, context, "knowledge_gap_created", eventBase, why);
+}
+
+/**
+ * S07-05 — records an outage: one `ai_runs` row and one `message_failed` event,
+ * in the caller's transaction.
+ *
+ * Extracted because there are two places an outage can surface — the provider
+ * call inside `answerMessage`, and the belt-and-braces catch in `src/guest/
+ * service.ts` for an adapter that throws outside the wrapper — and "the outage
+ * was recorded" must not depend on which one happened. One function, one shape
+ * of evidence, one alert.
+ *
+ * `model_id` is `"none"`: no model produced this run. The attempted ids go in
+ * `usage.models` so an operator can still see what was tried, without polluting
+ * the per-model accuracy sample that reads `ai_runs`.
+ */
+export async function recordOutage(
+  client: pg.Client | pg.PoolClient,
+  context: TenantContext,
+  input: { conversationId: string; messageId: string | null; promptVersion?: string },
+  outage: { attempts: number; modelIds: readonly string[] },
+  eventBase: EventContext,
+): Promise<string> {
+  const aiRunId = await recordAiRun(client, context, {
+    conversationId: input.conversationId,
+    messageId: input.messageId,
+    modelId: "none",
+    promptVersion: input.promptVersion ?? PROMPT_VERSION,
+    decision: "escalate",
+    reasonCode: "provider_unavailable",
+    confidence: null,
+    latencyMs: null,
+    usage: { attempts: outage.attempts, models: [...outage.modelIds], outage: true },
+  });
+  await emitEvent(client, context, "message_failed", eventBase, {
+    reason_code: "provider_unavailable",
+    attempts: outage.attempts,
+    models: [...outage.modelIds],
+    ai_run_id: aiRunId,
+  });
+  return aiRunId;
 }
 
 export async function answerMessage(
@@ -330,8 +375,21 @@ export async function answerMessage(
     });
   } catch (error) {
     if (error instanceof AiUnavailableError) {
-      // The caller sends "our team will reply" and creates a request (S07-05).
-      return { kind: "unavailable", detail: error.message };
+      // S07-05: the outage leaves evidence, not just a message. The caller
+      // (S07-03) then captures the request and sends the catalogue "a person
+      // will reply" string; this function never invents copy.
+      const aiRunId = await recordOutage(
+        client,
+        context,
+        {
+          conversationId: input.conversationId,
+          messageId: input.messageId,
+          ...(deps.promptVersion === undefined ? {} : { promptVersion: deps.promptVersion }),
+        },
+        error,
+        eventBase,
+      );
+      return { kind: "unavailable", detail: error.message, aiRunId };
     }
     throw error;
   }

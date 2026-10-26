@@ -989,3 +989,36 @@ $ npm run typecheck && npm run lint && npm run web:build   # clean
 **New standing procedure — `docs/progress.md`.** `npm run progress` (`scripts/progress.mjs`) reads column K of `docs/07-master-backlog.xlsx` and writes the report: overall and per-sprint bars, in-flight items with their recorded blocker, remaining days by block, and the delta against the previous run (read from an HTML comment at the top of the previous file, so the comparison cannot be faked by editing prose). It fails loudly on a status it does not recognise rather than silently counting it as "not started" — the workbook uses two vocabularies (`✅ Done` and an older bare `Done (...)`), both are supported, and a third would be a mistake worth stopping for. Re-running it is part of every item's close-out (`docs/ahead-charters/README.md` §6.4).
 
 **Not done, by charter:** outage fallback (S07-05 — a provider outage is still handled by S05's `unavailable` path, not by this item's degradation); PII redaction (S11-03). **Open, and flagged:** DEC-9 / W00-18 — enabling the bot check in production sends guest IPs and browser metadata to Cloudflare, which must appear in the privacy notice and be covered by a DPA first. Until that closes, production runs with the check disabled and the rate limits as the only ceiling. **Also owed:** real token accounting and one invoice reconciliation (S07-06), a retention rule for both counter tables (S11), and the ip-hash salt joining the PII work (S11-03).
+
+## S07-05 - Outage fallback (0.50d)
+
+**AC (verbatim):** Kill the AI mid-conversation; guest still gets an honest message.
+
+- **AC-1** Provider failure mid-turn results in `guest.team_will_reply` + a `service_requests` row, never a 5xx or an empty reply.
+- **AC-2** `message_failed` event is emitted for observability.
+
+**Status: DONE (2026-10-25).** `src/ai/answer.ts` (`recordOutage`), `src/ai/contract.ts` (`AI_RUN_REASON_CODES`), `src/ai/provider.ts` (`AiUnavailableError.modelIds`), `src/ai/chaos.ts`, `src/guest/runtime.ts`, `src/guest/service.ts`, `.env.example`; tests `tests/ai/outage.test.ts`, `tests/db/outage.db.test.ts`. **No migration** — see below.
+
+**What was already true, and what was not.** S05-01's wrapper has thrown `AiUnavailableError` on a double provider failure since it was written, and the guest has been getting catalogue copy for it ever since. What the outage path did **not** do was leave any trace: no `ai_runs` row, no `message_failed` event — the `message_failed` name had been in the taxonomy since S01 and had never once been emitted. So "the AI was down" was invisible in the database, indistinguishable from a quiet evening, and an outage could not be told apart from a refusal when reading the accuracy numbers that sample `ai_runs`.
+
+**The decisions that shaped the code:**
+
+- *The evidence is written where the failure happens, in the caller's transaction.* `recordOutage` writes the `ai_runs` row and the `message_failed` event inside the turn's transaction, so a turn that rolls back leaves no outage behind — a dashboard must count failures a guest actually experienced, not attempts the system abandoned.
+- *One helper, two catches.* The provider call inside `answerMessage` is not the only place an outage can surface: an adapter that throws outside the resilience wrapper is caught in `src/guest/service.ts`. Both now call the same `recordOutage`, because "was it recorded?" must not depend on which catch saw it.
+- *`model_id = 'none'` on an outage row.* `ai_runs.model_id` is `NOT NULL` and per-model accuracy is sampled from this table. Naming `gemini-2.5-flash` for a call it never answered would put an outage in that model's denominator and quietly make it look worse. The attempted ids travel in `usage.models` instead, so the information is kept without the lie.
+- *Two reason-code vocabularies, not one.* The charter said to add `provider_unavailable` to "the closed reason_code enum used by `guard.ts`" — but that constant (`AI_REASON_CODES`) is also the enum shipped to the model in its JSON schema. Adding it there would let a model *claim* an outage, which is a sentence nobody should be able to write. So `AI_RUN_REASON_CODES` is the model's list **plus** `provider_unavailable`, and `recordAiRun` validates against that superset; the schema enum is untouched. No migration was needed because `ai_runs.reason_code` is unconstrained `text` and the vocabulary has always been enforced in TypeScript.
+- *`guest.team_will_reply` was not added* (the same call as S07-04, and for the same reason): `guest.unavailable` already says "I can't answer right now, but I've passed this to the team — a person will reply here shortly", and that is already the string this path sends. A third key carrying one promise is how two promises drift apart. The `service_requests` row behind it was already captured by S07-03 (`topic = 'ai_unavailable'`).
+- *The recovery is a human, not a silent resume.* After an outage turn the conversation sits in `awaiting_staff` (S06-02), so the guest's next message gets `guest.staff_reply_pending` instead of a model answer. The mid-conversation test asserts exactly that: the outage has a consequence, and the consequence is a person.
+- *`AI_FAIL_MODE` refuses to be on in production.* `none | once | always`, resolved at boot; anything but `none` under `APP_ENV=prod` is a **boot failure**. A host that can be made to fail its AI by an environment variable is a host where one copied `.env.staging` is an outage. The failure it injects is the real `AiUnavailableError` from the real class — a chaos hook with its own error type would only prove that the error type is handled.
+- *`once` is stateful, on purpose.* It consumes exactly one generation, so "answer, outage, answer" is testable in one process; `always` is the provider-is-down case. Neither touches the wrapped circuit state: a deliberate failure is not a provider outage, and letting it trip the real breaker would poison the next 60 seconds of genuine traffic.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector + pg_trgm):**
+```text
+$ npm test        # 35 files / 457 passed (15 new outage/chaos cases)
+$ npm run db:test # 27 files / 237 passed (5 outage cases)
+$ npm run eval    # unchanged four scores; regression gate pass
+$ npm run typecheck && npm run lint && npm run web:build   # clean
+$ npm run db:migrate   # still 19 applied — this item changed no schema
+```
+
+**Not done, by charter:** transport retry/circuit policy (S07-06 — it decides how often this path is reached, and `ai_runs.reason_code = 'provider_unavailable'` is the number to tune it against). **Also owed:** nothing alerts on `message_failed` yet (the reliability item owns dashboards), and the chaos run should join the staging smoke script rather than living only in tests.

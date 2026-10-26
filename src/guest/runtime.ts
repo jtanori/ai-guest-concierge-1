@@ -28,6 +28,7 @@ import { createGeminiProvider } from "../providers/gemini.ts";
 import { createEmbeddingProvider, type EmbeddingProvider } from "../providers/embedding.ts";
 import { loadGuestConfig, type GuestConfig } from "./cookie.ts";
 import { botCheckConfigFromEnv, type BotCheckConfig } from "../security/botcheck.ts";
+import { chaosModeFromEnv, withChaos, type ChaosMode } from "../ai/chaos.ts";
 
 export interface GuestRuntime {
   cookieSecret: string;
@@ -39,6 +40,12 @@ export interface GuestRuntime {
    * "there is no bot check configuration" is not a state a host can be in.
    */
   botCheck: BotCheckConfig;
+  /**
+   * S07-05: `none` unless `AI_FAIL_MODE` was set on a non-production host. Always
+   * present so "is this host deliberately failing its AI?" is answerable, and so
+   * `/healthz`-style output cannot go looking for an undefined.
+   */
+  aiFailMode: ChaosMode;
 }
 
 /**
@@ -80,9 +87,13 @@ export function buildEmbedder(source: NodeJS.ProcessEnv): ((text: string) => Pro
 export function guestRuntimeFromEnv(source: NodeJS.ProcessEnv): GuestRuntime & GuestConfig {
   const config = loadGuestConfig(source);
   const embed = buildEmbedder(source);
+  // S07-05: resolved first, so a bad or production-illegal value fails at boot
+  // rather than on a guest's turn.
+  const aiFailMode = chaosModeFromEnv(source);
   return {
     ...config,
-    ai: buildAi(source),
+    ai: withChaos(buildAi(source), aiFailMode),
+    aiFailMode,
     botCheck: botCheckConfigFromEnv(source),
     ...(embed === undefined ? {} : { embed }),
   };

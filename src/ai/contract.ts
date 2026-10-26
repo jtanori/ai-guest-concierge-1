@@ -24,7 +24,14 @@
 export const AI_DECISIONS = ["answer", "needs_human", "no_answer"] as const;
 export type AiDecision = (typeof AI_DECISIONS)[number];
 
-/** Appendix B, verbatim. A fixed set: a made-up code cannot be alerted on. */
+/**
+ * Appendix B, verbatim — **the model's** vocabulary.
+ *
+ * A fixed set: a made-up code cannot be alerted on. This is also the enum sent
+ * to the model in the JSON schema (`prompt.ts`), which is why it does not grow
+ * to hold the pipeline's own codes: "the model said `provider_unavailable`" is
+ * not a sentence anyone should be able to write.
+ */
 export const AI_REASON_CODES = [
   "low_retrieval",
   "sensitive_topic",
@@ -34,6 +41,22 @@ export const AI_REASON_CODES = [
   "contradiction",
 ] as const;
 export type AiReasonCode = (typeof AI_REASON_CODES)[number];
+
+/**
+ * S07-05 — what `ai_runs.reason_code` may hold: the model's codes **plus the
+ * reasons the pipeline itself refuses**. Currently one:
+ *
+ *  - `provider_unavailable` — both providers failed, so no model produced this
+ *    run. The row exists precisely because "the AI was down" must be
+ *    distinguishable in `ai_runs` from "the AI answered badly", and neither is a
+ *    reason to leave no row: an outage that leaves no trace is invisible in
+ *    every accuracy number that samples `ai_runs`.
+ *
+ * A superset rather than a widened `AiReasonCode`, so the two vocabularies stay
+ * honest about who says what. `recordAiRun` validates against this one.
+ */
+export const AI_RUN_REASON_CODES = [...AI_REASON_CODES, "provider_unavailable"] as const;
+export type AiRunReasonCode = (typeof AI_RUN_REASON_CODES)[number];
 
 /** `ai_runs.decision` (0001). The table's vocabulary, not the model's. */
 export const AI_RUN_DECISIONS = ["answer", "escalate", "no_answer"] as const;

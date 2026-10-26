@@ -121,7 +121,7 @@ describe("outbound copy honesty (S07-03 AC-2)", () => {
         aiRunId: null,
         guestMessage: t("guest.request_ack", "es"),
       },
-      { kind: "unavailable", detail: "both providers failed" },
+      { kind: "unavailable", detail: "both providers failed", aiRunId: "run" },
     ];
 
     for (const lang of LANGS) {

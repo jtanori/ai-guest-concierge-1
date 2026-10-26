@@ -19,6 +19,10 @@ const DB = `scratch_ns_${process.pid}`;
 const PASSWORD = "neon_owner_pw";
 const CLUSTER_ROLES = [
   "concierge_app",
+  // 0015 adds the guest lookup role; like the others it is cluster-scoped, so
+  // the owner needs ADMIN OPTION on it to be able to grant it on a Neon-shaped
+  // cluster (where it may already exist from another database).
+  "concierge_public",
   "concierge_membership",
   "concierge_promoter",
   "concierge_fact_verifier",
@@ -70,7 +74,7 @@ describe("non-superuser owner (db)", () => {
     }
 
     const applied = await migrateDatabase(urlFor(DB, ROLE, PASSWORD));
-    expect(applied).toBe(14);
+    expect(applied).toBe(15);
 
     // What the migrations granted, the migrations revoked: no membership in
     // any definer role was granted BY the owner itself.

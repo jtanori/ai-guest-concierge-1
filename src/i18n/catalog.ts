@@ -10,6 +10,14 @@ export const en = {
   "guest.ai_disclosure":
     "I'm the hotel's virtual concierge. I can connect you with a person at any time.",
   "guest.talk_to_person": "Talk to a person",
+  "guest.unavailable":
+    "I can't answer right now, but I've passed this to the team — a person will reply here shortly.",
+  "guest.fact_prefix": "According to our records: ",
+  "guest.chat.heading": "Concierge",
+  "guest.chat.empty": "Ask us anything about your stay.",
+  "guest.chat.placeholder": "Write your question",
+  "guest.chat.send": "Send",
+  "guest.chat.error": "That message didn't go through. Please try again.",
   "guest.idontknow":
     "I don't want to guess on that one — I've asked the front desk to reply directly.",
   "staff.inbox.title": "Inbox",
@@ -52,6 +60,14 @@ export const es: Record<StringId, string> = {
   "guest.ai_disclosure":
     "Soy el conserje virtual del hotel. Puedo ponerlo en contacto con una persona en cualquier momento.",
   "guest.talk_to_person": "Hablar con una persona",
+  "guest.unavailable":
+    "No puedo responder en este momento, pero ya lo pasé al equipo: una persona le responderá por aquí en breve.",
+  "guest.fact_prefix": "Según nuestro registro: ",
+  "guest.chat.heading": "Conserje",
+  "guest.chat.empty": "Pregúntenos lo que necesite sobre su estancia.",
+  "guest.chat.placeholder": "Escriba su pregunta",
+  "guest.chat.send": "Enviar",
+  "guest.chat.error": "El mensaje no se envió. Inténtelo de nuevo.",
   "guest.idontknow":
     "No quiero adivinar en esa — le pedí a recepción que le responda directamente.",
   "staff.inbox.title": "Bandeja",

@@ -22,6 +22,11 @@ export const en = {
   "guest.chat.error": "That message didn't go through. Please try again.",
   "guest.idontknow":
     "I don't want to guess on that one — I've asked the front desk to reply directly.",
+  // S07-03: sent when a request was captured for a reason other than a missing
+  // article (money, a booking, a medical or accessibility question, an outage).
+  // It says what happened — the request exists — and promises nothing more.
+  "guest.request_ack":
+    "I've passed this to our team. A person will reply here, and you'll see their answer in this chat.",
   "staff.inbox.title": "Inbox",
   "staff.inbox.needs_attention": "Needs attention",
   "staff.inbox.mine": "Mine",
@@ -74,6 +79,8 @@ export const es: Record<StringId, string> = {
   "guest.chat.error": "El mensaje no se envió. Inténtelo de nuevo.",
   "guest.idontknow":
     "No quiero adivinar en esa — le pedí a recepción que le responda directamente.",
+  "guest.request_ack":
+    "Ya lo pasé a nuestro equipo. Una persona le responderá aquí y verá su respuesta en este chat.",
   "staff.inbox.title": "Bandeja",
   "staff.inbox.needs_attention": "Requieren atención",
   "staff.inbox.mine": "Mías",

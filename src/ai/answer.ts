@@ -123,9 +123,20 @@ interface PropertyRow {
   settings: unknown;
 }
 
-/** The catalogue string for every non-answer path (D14: no hardcoded copy). */
+/** The catalogue string for "no article answers this" (D14: no hardcoded copy). */
 function idontknow(language: Lang | null): string {
   return t("guest.idontknow", language ?? "es");
+}
+
+/**
+ * S07-03: the acknowledgement for every path where a **request** is the point —
+ * policy, a sensitive topic, a booking intent, a contradiction, a contract
+ * violation, a model that asked for a human. The guest is not being told "I
+ * don't know"; they are being told a person has it, which is true because
+ * `captureRequest` writes the row in this same transaction.
+ */
+function requestAcknowledged(language: Lang | null): string {
+  return t("guest.request_ack", language ?? "es");
 }
 
 /**
@@ -201,7 +212,7 @@ export async function answerMessage(
       reasonCode: gate.reasonCode ?? "policy_block",
       detail: gate.detail,
       aiRunId: null,
-      guestMessage: idontknow(input.language),
+      guestMessage: requestAcknowledged(input.language),
     };
   }
 
@@ -219,7 +230,7 @@ export async function answerMessage(
       reasonCode: sensitive.reasonCode,
       detail: `sensitive:${sensitive.ruleId}`,
       aiRunId: null,
-      guestMessage: idontknow(input.language),
+      guestMessage: requestAcknowledged(input.language),
     };
   }
 
@@ -274,7 +285,7 @@ export async function answerMessage(
       reasonCode: "contradiction",
       detail: `contradiction:${contested.topicKey}.${contested.factKey}`,
       aiRunId: null,
-      guestMessage: idontknow(input.language),
+      guestMessage: requestAcknowledged(input.language),
     };
   }
   if (hits.length === 0) {
@@ -368,7 +379,7 @@ export async function answerMessage(
       reasonCode: "policy_block",
       detail: "contract_violation",
       aiRunId,
-      guestMessage: idontknow(input.language),
+      guestMessage: requestAcknowledged(input.language),
     };
   }
 
@@ -395,7 +406,7 @@ export async function answerMessage(
       reasonCode: guarded.reasonCode,
       detail: guarded.detail,
       aiRunId,
-      guestMessage: idontknow(input.language),
+      guestMessage: requestAcknowledged(input.language),
     };
   }
 
@@ -448,7 +459,7 @@ export async function answerMessage(
       reasonCode: output.reasonCode ?? "policy_block",
       detail: "model_needs_human",
       aiRunId,
-      guestMessage: idontknow(input.language),
+      guestMessage: requestAcknowledged(input.language),
     };
   }
 

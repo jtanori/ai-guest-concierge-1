@@ -230,7 +230,8 @@ describe("guest chat (db)", () => {
     // The guest's exact words, and the catalogue string — never model text.
     expect(turn.messages[0]!.body).toBe("Quiero un reembolso de la noche del sábado");
     // S07-02 AC-1: the first thing said in a conversation discloses the AI.
-    expect(turn.messages[1]!.body).toBe(firstReply(t("guest.idontknow", "es")));
+    // S07-03: an escalation acknowledges the request it just captured.
+    expect(turn.messages[1]!.body).toBe(firstReply(t("guest.request_ack", "es")));
     expect(turn.messages[1]!.body).toContain(DISCLOSURE_ES);
     expect(turn.property.disclosure).toBe(DISCLOSURE_ES);
 
@@ -363,7 +364,7 @@ describe("guest chat (db)", () => {
       language: "es",
     });
     expect(turn.reasonCode).toBe("guest_asked_human");
-    expect(turn.messages[1]!.body).toBe(firstReply(t("guest.idontknow", "es")));
+    expect(turn.messages[1]!.body).toBe(firstReply(t("guest.request_ack", "es")));
     // A guest who TYPES "talk to a human" is still classified, escalated and
     // recorded — the type-it path and the one-tap path (S07-02) both work, and
     // they agree on the reason code.

@@ -31,6 +31,11 @@ export default async function StaffLayout({
             <Link href="/review" className="text-muted-foreground hover:text-foreground">
               {tr("staff.review.title")}
             </Link>
+            {/* S09-02: what guests asked that nobody could answer. Its own
+                surface, because its own roles may act on it. */}
+            <Link href="/gaps" className="text-muted-foreground hover:text-foreground">
+              {tr("staff.gaps.nav")}
+            </Link>
             {/* S08-04: the operating mode lives with the other staff surfaces. */}
             <Link href="/settings" className="text-muted-foreground hover:text-foreground">
               {tr("staff.mode.nav")}

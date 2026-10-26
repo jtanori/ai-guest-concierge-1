@@ -251,7 +251,7 @@ describe("staff actions (db)", () => {
       "SELECT event_type FROM events WHERE payload->>'request_id' = $1",
       [requestId],
     );
-    expect(events.rowCount).toBe(1);
+    expect(events.rows.map((r) => r.event_type).sort()).toEqual(["request_acknowledged", "request_assigned"]);
   });
 
   it("refuses an assignee who is not on this property's staff", async () => {

@@ -1,5 +1,21 @@
 export const AUDIT_ACTIONS = [
   "settings.updated",
+  "request.acknowledged",
+  "request.assigned",
+  "request.resolved",
+  "request.cancelled",
+  // S09-02: closing a knowledge gap is a claim that the content now exists.
+  "knowledge_gap.closed",
+  // S09-03: calling an answer wrong is attributable, so it is audited.
+  "answer.flagged",
+  // S09-05: an escalation email is how a request reaches a human who is not
+  // looking at the console, so both ends of it are audited. `queued` is the AC-1
+  // evidence and survives the outbox row being marked sent; `dead` is the case
+  // that must never be quiet — the provider refused, or nobody was configured to
+  // receive it, and a guest is waiting on a person who was never told.
+  "notification.queued",
+  "notification.sent",
+  "notification.dead",
   "membership.granted",
   "membership.role_changed",
   "membership.revoked",
@@ -20,6 +36,9 @@ export const AUDIT_ACTIONS = [
 
 export const ENTITY_TYPES = [
   "property",
+  "request",
+  "knowledge_gap",
+  "ai_run",
   "membership",
   "user",
   "article",

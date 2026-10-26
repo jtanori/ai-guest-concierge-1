@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { currentLang, translator, type StringId } from "@/lib/i18n";
+import { REQUEST_LABEL } from "@/lib/request-status";
 import { apiBase, readSession, type StaffCookieSession } from "@/lib/session";
 import type { ApiFailure, InboxPageWire } from "@/lib/types";
 import { signOut } from "../session/actions";
@@ -82,14 +83,6 @@ const STATE_LABEL = {
   awaiting_ai: "staff.inbox.state_awaiting_ai",
   idle: "staff.inbox.state_idle",
   resolved: "staff.inbox.state_resolved",
-} as const;
-
-const REQUEST_LABEL = {
-  new: "staff.inbox.request_status_new",
-  acknowledged: "staff.inbox.request_status_acknowledged",
-  assigned: "staff.inbox.request_status_assigned",
-  resolved: "staff.inbox.request_status_resolved",
-  cancelled: "staff.inbox.request_status_cancelled",
 } as const;
 
 export default async function InboxPage({

@@ -28,6 +28,8 @@
  * explicitly in addition to RLS.
  */
 import type pg from "pg";
+import type { InboxRequestStatus } from "./queries.ts";
+import { flagsForRuns, type AnswerFlag } from "./flags.ts";
 import { assertTenantShape, type TenantContext } from "../db/tenant.ts";
 import type { StaffSession } from "../auth/context.ts";
 import { loadCitations, type ReconstructedCitation } from "../ai/history.ts";
@@ -54,6 +56,15 @@ export interface DetailAiRun {
   latencyMs: number | null;
   /** Every citation of THIS answer, with its quote and the version body. */
   citations: ReconstructedCitation[];
+  /**
+   * S09-03 — who called this answer wrong or outdated.
+   *
+   * Rides along with the run rather than being a second endpoint, because the
+   * indicator belongs *on* the answer: a screen that shows an answer and a
+   * separate list of complaints invites reading one without the other, which is
+   * how a wrong answer keeps being trusted.
+   */
+  flags: AnswerFlag[];
 }
 
 export interface DetailMessage {
@@ -74,7 +85,16 @@ export interface DetailMessage {
 
 export interface DetailRequest {
   requestId: string;
-  status: string;
+  /**
+   * The five words of 0024's machine, not `string`.
+   *
+   * `service_requests.status` has been CHECKed to exactly these since 0001:157,
+   * so the loose type was never buying anything — and it cost something: it is
+   * why the detail screen rendered `request.status` raw instead of through the
+   * catalogue, because a `Record<union, StringId>` lookup will not compile
+   * against a `string` key. Tightening it makes the translation total.
+   */
+  status: InboxRequestStatus;
   topic: string | null;
   createdAt: string;
 }
@@ -184,6 +204,13 @@ export async function getConversationDetail(
     context,
     run.rows.map((row) => row.ai_run_id),
   );
+  // One statement for every run on the page, not one per message.
+  const flags = await flagsForRuns(
+    client,
+    context,
+    run.rows.map((row) => row.ai_run_id),
+    session.userUuid,
+  );
   const runByMessage = new Map<string, DetailAiRun>();
   for (const row of run.rows) {
     if (row.message_id === null) continue;
@@ -196,12 +223,13 @@ export async function getConversationDetail(
       confidence: row.confidence === null ? null : Number(row.confidence),
       latencyMs: row.latency_ms,
       citations: citations.get(row.ai_run_id) ?? [],
+      flags: flags.get(row.ai_run_id) ?? [],
     });
   }
 
   const requests = await client.query<{
     request_id: string;
-    status: string;
+    status: InboxRequestStatus;
     topic: string | null;
     created_at: Date;
   }>(

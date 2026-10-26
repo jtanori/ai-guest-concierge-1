@@ -29,7 +29,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type pg from "pg";
-import { answerMessage, type AnswerOutcome } from "../ai/answer.ts";
+import { aiRunIdFor, answerMessage, type AnswerOutcome } from "../ai/answer.ts";
 import { AiUnavailableError, type ResilientAi } from "../ai/provider.ts";
 import type { Channel, EventContext } from "../events/taxonomy.ts";
 import { emitEvent } from "../events/emit.ts";
@@ -42,6 +42,7 @@ import {
   transition,
 } from "../conversation/state.ts";
 import { captureRequest, type RequestTopic } from "../requests/capture.ts";
+import { enqueueReview } from "../review/queue.ts";
 import { recordOutage } from "../ai/answer.ts";
 import { checkRate, type RateVerdict } from "../security/ratelimit.ts";
 import { verifyBotCheck, type BotCheckConfig } from "../security/botcheck.ts";
@@ -694,6 +695,7 @@ export async function postGuestMessage(
         language,
         knowledgeGap: false,
         reasonCode: "staff_takeover",
+        messageId: inbound.messageId,
         at,
       });
       await scoped.query(
@@ -722,6 +724,11 @@ export async function postGuestMessage(
         language,
         knowledgeGap: reply.decision === "no_answer",
         reasonCode: reasonFor(outcome),
+        // S09-05: the pointer the escalation email follows to quote the guest. The
+        // text itself stays off `service_requests` — see `question` in
+        // CaptureRequestInput — so what travels is the id, and the body is read at
+        // send time under the tenant policy.
+        messageId: inbound.messageId,
         at,
       });
     }
@@ -734,6 +741,21 @@ export async function postGuestMessage(
       body,
       language,
     });
+
+    // S09-04 — the review work is queued HERE, in this transaction, and processed
+    // only after it commits. Same commit means no window where the reply exists and
+    // the review was lost, nor one where review work survives a rolled-back reply;
+    // after the commit means the review machinery cannot be on the guest's path,
+    // because the guest has already been answered. `enqueueReview` is one INSERT
+    // that cannot raise (ON CONFLICT DO NOTHING), so it cannot roll this back.
+    const reviewRunId = aiRunIdFor(outcome);
+    if (reviewRunId !== null) {
+      await enqueueReview(scoped, session.context, {
+        aiRunId: reviewRunId,
+        conversationId: conversation.conversationId,
+        messageId: outbound.messageId,
+      });
+    }
 
     await scoped.query(
       `UPDATE conversations SET last_activity_at = $2::timestamptz WHERE conversation_id = $1`,

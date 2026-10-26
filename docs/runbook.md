@@ -1330,3 +1330,424 @@ $ npm run web:build    # green; /settings in the manifest
 Live: `GET /api/settings/ai-mode` answers `503 {"detail":"NEON_AUTH_JWKS_URL is required"}` without auth configured — the same degraded contract as every other staff route, which is what proves the new prefix reaches the shared pipeline.
 
 **Not done, by charter:** scheduled mode changes, per-channel modes, new modes.
+
+## S09-01 - Request lifecycle (2.00d)
+
+**AC (verbatim):** request_acknowledged is set by a real staff action.
+
+- **AC-1** Legal transitions `new→acknowledged→assigned→resolved|cancelled` enforced at the DB level.
+- **AC-2** `acknowledged_at` can only be set inside `withStaffSession` by a role allowed on `queue:write`.
+- **AC-3** `request_acknowledged`, `request_assigned`, `request_resolved` events are emitted.
+
+**Status: DONE (2026-10-26).** `db/migrations/0024_request_lifecycle.sql` (new), `src/requests/lifecycle.ts` (new), `src/audit/actions.ts` (4 actions + the `request` entity), `src/inbox/actions.ts` (Assign/Resolve now walk the edges), `src/staff/http.ts` (request-scoped routes + 409/404 mapping), `src/inbox/detail.ts` (status typed as the union), `web/lib/request-status.ts` (new, shared vocabulary), `web/app/(staff)/inbox/[conversationId]/{page,actions}.tsx|ts` (Acknowledge + Cancel buttons), `web/app/(staff)/inbox/page.tsx`, `web/lib/types.ts`, `src/i18n/catalog.ts` (`staff.inbox.acknowledge*`, `cancel_request`, en+es); tests `tests/db/request-lifecycle.db.test.ts` (new, 36), `tests/requests/lifecycle.test.ts` (new, 26), `tests/staff/http.test.ts` (+3), `tests/inbox/detail-page.test.ts` (+2), `tests/audit/actions.test.ts`, `tests/db/{schema,non-superuser,inbox-actions}.db.test.ts` updated for the new file.
+
+**Before this item the status column was a suggestion.** `service_requests.status` has carried the five words since 0001, and any writer that could reach the row could set any of them. S08-03 tightened two corners (one assignment per person; `acknowledged_at` implies "not new"). Nothing stopped `new → resolved`, nothing stopped reopening a closed request, and nothing asked *who* was writing.
+
+**0024 puts the machine in the database.** One `BEFORE INSERT OR UPDATE` trigger, `request_transition_guard`, split deliberately in two:
+
+| concern | rule | errcode |
+|---|---|---|
+| **shape** (one row in isolation) | `acknowledged_by` may not sit on a row that is still `new` | `P0001` — 0018's code, 0018's family |
+| **transition** (the row's history) | only `new→acknowledged`, `acknowledged→assigned`, `assigned→resolved\|cancelled` | `23514` |
+| **actor** | `app.current_user_id` set *and* `current_membership_role(property_id) ∈ (1,2,3)` | `42501` |
+| **evidence** | acknowledged needs `acknowledged_at` + the actor as `acknowledged_by`; assigned needs an `assignments` row; resolved needs `resolved_at` | `23514` |
+| **identity** | `(org_id, property_id, request_id)` is immutable — an UPDATE cannot move a request out of the range of every tenant predicate | `23514` |
+
+AC-2's real content is the **actor** row: the trigger does not merely check that a user GUC is non-empty, it checks the same `current_membership_role()` definer function the RLS policies and `requireRole()` already trust. So the read-only observer (role 4) is refused *by the database* even though they pass RLS on the row — which is the case a TypeScript-only check cannot cover, because a background job or a raw psql session never reaches the TypeScript.
+
+**Two charter deviations, recorded rather than quietly taken.**
+
+1. **One trigger, not two.** §4 proposed a separate `request_ack_guard` for the timestamp/actor shape. 0018's `service_requests_time_guard` already owns that rule for `acknowledged_at`/`resolved_at` and raises `P0001`; a second trigger for the same family would give one mistake two errcodes depending on which fired first (trigger order is alphabetical, so `request_…` beats `service_…`). The new column's shape rule lives in the new trigger and reuses `P0001`.
+2. **`acknowledged_by` is not frozen after the edge.** §8 asked to "reject changes to an existing acknowledgement". It doesn't, and that is deliberate: the immutable record of who acknowledged what and when is the `audit_log` row written on the edge — the same reasoning as S08-04, where `properties` has no `updated_at` because the audit row *is* the change record. Freezing the column would duplicate that history in a place that keeps none, and it broke two existing contracts (0018's "the honest pair is accepted" insert, and the S08-01 inbox fixture, which stamps `resolved_at` on an already-resolved row). What *is* enforced is that the column can only be established on the acknowledged edge, by the actor who is signed in.
+
+**The route.** `POST /api/inbox/requests/:id/{acknowledge|assign|resolve|cancel}`, not §4's `/staff/requests/:id/:action` — there is no `/staff` prefix; S08 established `/api/*` behind the shared identity → tenant → role pipeline. It is request-scoped rather than conversation-scoped because acknowledgement is a fact about one request, and a thread can hold several.
+
+**Assign and Resolve had to be integrated, not bypassed.** S08-03's writers went `new → assigned` and `open → resolved` directly; a strict trigger without touching them would have broken both in production while every test stayed green. They now walk the edges through the same service:
+
+- `assignRequest` from `new` acknowledges first, then assigns — both by the authenticated caller, so the acknowledgement is a real staff action rather than a fabricated intermediate.
+- `resolveConversation` walks `new → acknowledged → assigned → resolved` for **every** open request on the thread, in the same transaction.
+
+The consequence is honest and worth stating: resolving an untouched request attributes the acknowledgement *and* the assignment to the person who resolved it, and sets `acknowledged_at = resolved_at`. That is the truth — nobody looked at it earlier — and the audit rows name them.
+
+**UI: a button per legal edge, never more.** 0024 answers 409 to a skipped edge, so an always-visible button is a button that reliably fails, and staff who learn one button lies stop trusting the rest of the bar. Acknowledge shows only at `new`; Assign to me at `new`/`acknowledged`; Cancel only at `assigned`. Both new actions are plain server-action forms (work before hydration, token stays in the HttpOnly cookie). The request list now renders status through the catalogue — the list screen translated these five words while the detail screen printed them raw, so the same request read differently on the two screens. `web/lib/request-status.ts` holds the vocabulary once; `REQUEST_LABEL` is `Record<RequestStatus, StringId>`, so a sixth status is a compile error until it is translated. `DetailRequest.status` and its wire mirror were `string`, which is what let the raw rendering compile — both are the union now, honest against the CHECK at 0001:157.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector 0.6.2 + pg_trgm 1.6):**
+```text
+$ npm run db:migrate   # 24 applied from an EMPTY database (0024 lands)
+$ npm run db:test      # 34 files / 315 passed (lifecycle: 36)
+$ npm test             # 44 files / 562 passed (lifecycle matrix: 26, http: +3, detail page: +2)
+$ npx tsc --noEmit && npx tsc --noEmit -p web/tsconfig.json && npm run lint   # clean
+$ npm run web:build    # green; /inbox/[conversationId] in the manifest
+```
+
+**The 36 DB cases are mostly raw SQL.** The service already refuses an illegal edge and `tests/requests/lifecycle.test.ts` proves that; the database suite exists because a TypeScript refusal is only a refusal for callers that go through the TypeScript. Each illegal pair is attempted with a *valid* queue-write actor and a hand-built `UPDATE` that never imports the service — the shape a background job or a psql session takes — and the assertion is both the errcode and that the row did not move. The actor cases drop `app.current_user_id` entirely, or set it to the observer, and assert `42501` with the status unchanged.
+
+**Not done, by charter:** email delivery (S09-05), knowledge-gap queue (S09-02), reassignment to a colleague from the UI, a `request_cancelled` event (the taxonomy has no such name — cancellation is audit-only).
+
+## S09-02 - Knowledge-gap queue (0.50d)
+
+**AC (verbatim):** Every no_answer lands in the queue automatically.
+
+- **AC-1** Each `no_answer` creates/updates one `knowledge_gaps` row with the verbatim question, language and property.
+- **AC-2** Close produces `knowledge_gap_closed`; median age is computable.
+
+**Status: DONE (2026-10-26).** `db/migrations/0025_knowledge_gap_queue.sql` (new), `src/gaps/queue.ts` (new), `src/ai/answer.ts` + `src/requests/capture.ts` (both now call the one writer), `src/audit/actions.ts` (`knowledge_gap.closed` + the `knowledge_gap` entity), `src/staff/http.ts` (`/api/gaps` routes) + `src/server.ts` (wiring), `web/app/(staff)/gaps/{page.tsx,actions.ts}` (new), `web/app/(staff)/layout.tsx` (nav), `web/lib/types.ts`, `src/i18n/catalog.ts` (`staff.gaps.*`, en+es); tests `tests/db/gaps.db.test.ts` (new, 21), `tests/gaps/page.test.ts` (new, 5), `tests/audit/actions.test.ts`, `tests/db/{schema,non-superuser}.db.test.ts` updated for the new file.
+
+**The gap table already existed and already had two writers — that was the bug, not the missing feature.** `knowledge_gaps` is in 0001, and since S05-02/S07-03 both `src/ai/answer.ts` (empty retrieval, and the model's own `no_answer`) and `src/requests/capture.ts` (riding along with a `no_answer` request) inserted into it. Capture guarded against double-writing with a lookup scoped to the **conversation**, so the same question asked by a second guest was a second row. The result was a queue that showed one entry per guest instead of one per question, and threw away the only number that tells a content owner what to write first.
+
+**0025 makes the row a queue entry.** One open row per distinct unanswered question per property, plus:
+
+| column / index | why |
+|---|---|
+| `hits integer NOT NULL DEFAULT 1` | how many guests hit the miss |
+| `topic text` | carried from the request, filled in on a later ask if the first did not know it |
+| `question_key` generated | the dedupe key (see the two traps below) |
+| `UNIQUE (property_id, question_key) WHERE status='open'` | one open entry per question; *partial*, so closing a gap lets the same question be recorded again |
+| `(property_id, status, created_at DESC)` | the queue query |
+| `CHECK (resolved_at IS NULL OR status='resolved')` | the same rule 0023 added for requests: the median reads `status`, so `resolved_at` may not contradict it |
+
+`recordGap` is the single upsert. `capture.ts` calls it instead of inserting, and no longer emits `knowledge_gap_created` — `recordGap` emits it only for a row it actually created, so a repeat ask is a count and not an event.
+
+**Trap 1 — a btree key cannot hold a guest message.** The obvious index is `lower(question)`. A btree key is capped at ~2704 bytes and `MAX_MESSAGE_CHARS` is 2000 *characters*, so a guest typing 2000 accented or CJK characters is ~4000 bytes: the INSERT would fail, meaning **a guest who writes a long question breaks their own reply**. `question_key` is therefore `left(…, 400)` — capped at 1600 bytes worst case. The question column keeps the guest's exact text; only the matching key is truncated. `tests/db/gaps.db.test.ts` drives a 1600-character question through the real guest route to hold that line.
+
+**Trap 2 — `lower()` is not case folding.** Found by testing the migration's merge branch on a real database: `lower('¿A QUÉ HORA')` returns `'¿a quÉ hora'` under a C/POSIX collation. ASCII folds, accented capitals do not. So a shouted Spanish question would open a *second* queue entry next to the same question asked normally — on one deployment and not another, depending on a locale flag nobody sets deliberately. For a product whose working language is Spanish that is the common case, not the corner. `question_key` now runs `translate(question, 'ÁÉÍÓÚÜÑÇ', 'áéíóúüñç')` before `lower()`, which is locale-independent. There is a test for it, because "simplify the generated column to plain `lower()`" looks like a tidy-up and is a behaviour change.
+
+**One ask per turn, not per writer.** A no-answer turn reaches `recordGap` twice by design — the pipeline records the miss, then capture links the escalation to it — both inside the one guest transaction. Counting both would make `hits` exactly double the guests who asked, which is the kind of wrong that looks plausible on a dashboard for months. The upsert increments only when the existing row's `xmin` is not the current transaction:
+
+```sql
+hits = knowledge_gaps.hits + CASE
+         WHEN knowledge_gaps.xmin = pg_current_xact_id()::xid THEN 0 ELSE 1 END
+```
+
+`xmin` is the transaction that wrote the row, so "written by the transaction I am in" is the precise test for "already counted this turn". A later turn — same guest tomorrow, or a different guest — has a different `xmin` and increments. `(xmax = 0)` in the `RETURNING` distinguishes a real insert from a conflict-update, which is what decides whether `knowledge_gap_created` may fire. Both primitives were probed against PostgreSQL 16.2 before being relied on.
+
+**The migration deletes rows, on purpose.** The unique index cannot be created while two open rows share a key, and on a database running since S05-02 they do. So duplicates are merged first: the **oldest** row survives (its `created_at` is the honest "how long has this gone unanswered"), the others are folded into `hits`. The duplicates are not distinct history — they are one event recorded twice by two writers — and keeping them would keep the double-count this item exists to remove. `knowledge_gap_created` events already emitted for a deleted row stay in `events`; their payload names a `gap_id` that no longer resolves, which is the normal fate of a log entry outliving its subject.
+
+**Verified against a real pre-0025 database, because the test suite never reaches that branch.** Every scratch database is built from empty, so the merge's `HAVING count(*) > 1` never fires in CI. Applied 0001–0024 to a fresh database, seeded the shape the two writers actually leave behind, then applied 0025:
+
+```text
+before: 7 rows  (3× "¿A qué hora es el desayuno?" open at 9/5/1 days,
+                 1× the same SHOUTED, 1× the same resolved at 30 days,
+                 1× "¿Hay gimnasio?" open, 1× "  ¿Hay gimnasio?  " open)
+after:  3 rows  desayuno open  hits=4 age=9d  (all four folded, oldest kept)
+                desayuno resolved hits=1 age=30d (untouched — partial merge)
+                gimnasio open  hits=2 age=7d  (whitespace variants folded)
+```
+
+**That check found a second bug the runner was hiding.** The merge used `CREATE TEMPORARY TABLE gap_merge ON COMMIT DROP`. Under `src/db/migrate.ts` each file is one transaction, so it works — but run the same file statement-by-statement (`psql -f` in autocommit, a restore, a manual hotfix, any tool that does not know this repo's convention) and each statement commits, the table is dropped immediately, and the migration dies at the UPDATE **after the ALTERs have already landed**: a half-migrated database, which is worse than a clean failure. `ON COMMIT DROP` is gone; a temporary table is dropped at session end anyway, so nothing was given up.
+
+**Median, not mean.** `percentile_cont(0.5)` over `now() - created_at` for open rows, in SQL. A mean is dragged by the one gap nobody has touched since launch; a page is not the population. Appendix D's target is ≤7 days, so the screen colours the median against it and says the target out loud — a number with no target is a number nobody acts on. An empty queue reports `null`, not `0`: zero would read as a measurement of nothing.
+
+**Surface.** `GET /api/gaps` (`knowledge: read`) and `POST /api/gaps/:id/close` (`knowledge: write`), its own prefix rather than a branch of `/api/inbox` because the two have different role matrices — a front desk works the inbox and may only *read* the gaps, since closing is a claim that the content now exists. The screen is a server component with links and forms like the inbox: oldest-first (because `hits` is mutable and keyset pagination over a moving key repeats and skips rows), `hits` and age on every row, the question verbatim as a JSX child, and a link through to the conversation that first asked it.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector 0.6.2 + pg_trgm 1.6):**
+```text
+$ npm run db:migrate   # 25 applied from an EMPTY database (0025 lands)
+$ npm run db:test      # 35 files / 336 passed (gaps: 21)
+$ npm test             # 45 files / 567 passed (gap screen: 5)
+$ npx tsc --noEmit && npx tsc --noEmit -p web/tsconfig.json && npm run lint   # clean
+$ npm run web:build    # green; /gaps in the manifest
+```
+
+AC-1's primary assertions drive **real guest turns** through `postGuestMessage` against a property seeded with no articles, so an empty retrieval is the no-answer and the stub provider is never consulted. A test that called `recordGap` directly would prove the function works and not that the pipeline calls it — and "automatically" is the whole AC.
+
+**Not done, by charter:** the gap analytics tile (S10-03), a "write the article from here" flow into the review queue, gap re-opening by hand (a repeat ask reopens it), per-topic grouping.
+
+## S09-03 - One-click 'wrong or outdated' (0.50d)
+
+**AC (verbatim):** A flag is attributable to an ai_run.
+
+- **AC-1** One click creates a flag row with `ai_run_id`, staff user id, timestamp and optional note.
+- **AC-2** The flag is visible on the conversation detail view and emits `answer_flagged_wrong`.
+
+**Status: DONE (2026-10-26).** `db/migrations/0026_answer_flags.sql` (new), `db/erd.mmd`, `src/inbox/flags.ts` (new), `src/inbox/detail.ts` (flags ride with each run), `src/audit/actions.ts` (`answer.flagged` + the `ai_run` entity), `src/staff/http.ts` (`POST /api/inbox/answers/:aiRunId/flag`), `web/app/(staff)/inbox/[conversationId]/{page.tsx,actions.ts}`, `web/lib/types.ts`, `src/i18n/catalog.ts` (`staff.flag.*`, en+es); tests `tests/db/flags.db.test.ts` (new, 16), `tests/inbox/detail-page.test.ts` (+3), `tests/db/{isolation,schema,non-superuser}.db.test.ts`, `tests/audit/actions.test.ts`.
+
+**Attribution is the whole AC, and it is what makes the flag useful later.** A flag pointing at a run supports per-model accuracy, per-prompt-version regressions, and "the answer that cited this article version was called wrong nine times". A flag attached to a message, a conversation, or a run id inside a JSONB payload supports none of them. So `ai_run_id` is `NOT NULL` and the run is read back inside the caller's transaction before the insert.
+
+**The composite FK is the security property.** `FOREIGN KEY (org_id, property_id, ai_run_id) REFERENCES ai_runs (org_id, property_id, ai_run_id)`. A bare `ai_run_id → ai_runs(ai_run_id)` would let a row name a run that exists — in somebody else's property. RLS would then *hide* it, but hidden is not refused: the insert would succeed, the flag would be orphaned from every query that reads it, and the failure would stay invisible until somebody noticed a count that never moved. `tests/db/flags.db.test.ts` bypasses the application entirely — raw `INSERT` as `concierge_app` with tenant A's GUCs naming tenant B's run — and asserts the row is refused.
+
+**One flag per person per answer.** `UNIQUE (org_id, property_id, ai_run_id, flagged_by)`. A second click is a phone on a bad connection, not a second opinion, so the service reports `created: false` and writes no second event or audit row. Nine flags from one person would read as nine people — the same inflation the gap queue's `hits` exists to avoid. Two *colleagues* flagging is two flags, because it is two people.
+
+**Append-only, and the grant that did not do what it looked like it did.**
+
+0026 was written `GRANT SELECT, INSERT ON answer_flags TO concierge_app` — the same shape as an audit trail, no UPDATE, no DELETE, so a disputed flag could not be quietly withdrawn. The test asserted that instead of assuming it, and **the UPDATE succeeded**. The reason is in 0002:
+
+```sql
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO concierge_app;
+```
+
+Every table created since 0002 already has all four before its own migration says anything, and a `GRANT` is *additive* — listing two privileges does not withdraw the other two. `\dp answer_flags` after only the grant reads `concierge_app=arwd`. The append-only design would have been a comment, not a constraint, and the test that would have caught it is the one I nearly did not write.
+
+The fix follows the repo's own precedent: `0007_audit_privileges.sql` is a whole migration consisting of `REVOKE UPDATE, DELETE ON audit_log FROM concierge_app`, which is why `audit_log` reads `concierge_app=ar`. 0026 now revokes, and also adds 0003's `raise_immutable()` trigger — the REVOKE binds `concierge_app`, but the migration role and any future grantee can still write, and `events`/`audit_log` are trigger-protected for exactly that reason. Both tables now read `ar`:
+
+```text
+   relname    |                        relacl
+--------------+-------------------------------------------------------
+ audit_log    | {postgres=arwdDxt/postgres,concierge_app=ar/postgres}
+ answer_flags | {postgres=arwdDxt/postgres,concierge_app=ar/postgres}
+```
+
+**The consequence for the UI: the note cannot be added later.** AC-1 says "optional note" without saying when, and append-only answers it — there is no "attach a note to the flag I filed a minute ago". So the optional note input sits in the *same form* as the button, and one click still means one click: the field may be left blank, and a blank field is omitted rather than sent as an empty string (the service 400s on whitespace-only, because an empty note says nothing and costs a column).
+
+**Whose name is on it.** `flagged_by` is stored and is the attribution the AC asks for. It cannot be *displayed* as a name for anybody but the caller: 0004's `users.staff_select` policy authorises your own row only, so a join for a colleague's `display_name` returns NULL for everyone else. Widening that policy would expose staff names and emails across a property — an S02 security decision, not something to slip into a 0.5d item. So the wire carries `flaggedBy` (UUID) and `mine`, and the screen shows how many people flagged an answer, the notes they left, and whether you are one of them. A test asserts the flag object's exact key set, so widening it later is a deliberate act rather than an accident.
+
+**The indicator is on the answer, not beside it.** A screen that shows an answer and a separate roster of complaints invites reading one without the other, which is how a wrong answer keeps being trusted by the next person who opens the thread. The button disappears once you have filed one, because the schema refuses a second and a button that reliably fails teaches staff that the screen lies (the same rule as S09-01's action bar).
+
+**Three drift guards caught the new table, and each earned its keep.** `tests/db/isolation.db.test.ts` derives the tenant-table list *from the database's own policies* and compares it to the declared one; `tests/db/schema.db.test.ts` checks the migration list, the table count, and that the committed ERD in `db/erd.mmd` matches reality; `tests/db/non-superuser.db.test.ts` counts applied migrations. All three failed until `answer_flags` was declared, seeded in both tenants, and drawn. Adding it to the isolation list made the cross-tenant sweep cover it for free — zero rows without context, and no leak in either direction.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector 0.6.2 + pg_trgm 1.6):**
+```text
+$ npm run db:migrate   # 26 applied from an EMPTY database (0026 lands)
+$ npm run db:test      # 36 files / 352 passed (flags: 16)
+$ npm test             # 45 files / 570 passed (detail page: +3)
+$ npx tsc --noEmit && npx tsc --noEmit -p web/tsconfig.json && npm run lint   # clean
+$ npm run web:build    # green; /inbox/[conversationId] in the manifest
+```
+
+**Not done, by charter:** the review queue that consumes flags (S09-04); retraining or automated fixes; retracting a flag (would need its own column or a new row, not the ability to delete this one); flag counts surfaced on the review screen or in analytics (S10-03).
+
+## S09-04 - Non-blocking review queue (0.50d)
+
+**AC (verbatim):** Flagging an answer does not delay the guest reply.
+
+- **AC-1** The outbound guest message is committed before any review/flag work starts.
+- **AC-2** Review work is retried from the outbox on failure; a failure never re-sends the guest message.
+
+**Status: DONE (2026-10-26).** `db/migrations/0027_answer_review_outbox.sql` (new), `db/erd.mmd`, `src/review/queue.ts` (new), `src/ai/answer.ts` (`aiRunIdFor`), `src/guest/service.ts` (enqueue in the turn), `tests/db/review-queue.db.test.ts` (new, 16), `tests/review/queue.test.ts` (new, 6), `tests/db/{schema,isolation,non-superuser}.db.test.ts`.
+
+**`outbox` has existed since 0001 with `status`, `attempts`, `next_attempt_at`, `last_error` and `processed_at`, and nothing had ever read it.** This is its first consumer, so it sets the conventions the later ones inherit — S09-05's email and S11-01's worker — rather than each inventing its own idea of a retry.
+
+**The guarantee is not "review is fast", it is that review is not on the guest's path at all.** The turn writes the reply and an outbox row in ONE transaction and commits; only then can anything read the row. So slow, broken or absent review machinery cannot delay a reply (the guest is already answered), there is no window where the reply exists and the review work was lost, and none where review work survives a rolled-back reply. AC-2's "never re-sends" is **structural**: `src/review/queue.ts` touches `outbox` and `answer_reviews` and nothing else — it holds no provider, no channel adapter and no reference to `insertMessage`, so there is no path by which a retry could produce a second guest message. The test counts outbound messages across a failure, a retry and a replay anyway, because "cannot" is a claim worth checking.
+
+**Enqueueing cannot break the reply either.** `enqueueReview` runs inside the guest's transaction, so any error it raised would roll the reply back — the opposite of AC-1. It uses `ON CONFLICT … DO NOTHING` against a partial unique index rather than a read-then-insert, so the statement cannot raise on a duplicate and there is nothing to catch inside somebody else's transaction (no savepoint needed). The index is partial on `status IN ('pending','sending','failed')`, so a finished row does not block a future one and a `dead` row can be re-queued by hand.
+
+**Three bugs this item found, none of them visible from reading the code.**
+
+1. **`SECURITY DEFINER` does not bypass RLS.** The cross-tenant claim was a definer function owned by a new NOLOGIN `concierge_worker` role, with the right table privileges. It ran, and returned **zero rows**: `outbox` is FORCE RLS whose policy reads `current_org_id()`, and at claim time no tenant GUC is set — setting them per row *after* claiming is the whole point. An empty queue looks exactly like a healthy one, so this would have shipped as a review queue that silently never reviewed anything. BYPASSRLS is not available (it needs a superuser, which is why 0015 went the narrow-role route for the guest slug lookup), so `concierge_worker` gets its own permissive policy on `outbox`, split `FOR SELECT` and `FOR UPDATE` rather than one `FOR ALL` because `SELECT … FOR UPDATE` is checked against both and a blanket policy would advertise INSERT and DELETE the table privileges already refuse. Contained the way 0015 contains `concierge_public`: NOLOGIN, not a member of anything the app can `SET ROLE` into, no grants on any other tenant table, reachable only through the one function.
+2. **`SELECT … FOR UPDATE SKIP LOCKED` needs the UPDATE privilege.** `concierge_worker` had `GRANT SELECT ON outbox` and the claim failed `permission denied for table outbox`. Locking a row for writing requires UPDATE even when the statement writes nothing — and "SELECT needs SELECT" is exactly the assumption that looks right.
+3. **`ALTER FUNCTION … OWNER TO` needs `SET ROLE` membership under a non-superuser.** On Neon the migration role is the deployed login role, not a superuser, so transferring the claim function to `concierge_worker` failed with `must be able to SET ROLE "concierge_worker"`. `tests/db/non-superuser.db.test.ts` — which exists precisely to run the chain as a non-superuser owner — caught it. Fixed with 0015's idiom (`GRANT concierge_worker TO current_user` via `format`, for the duration) plus 0005's reason for revoking it immediately after: a login role that stays a member of a definer role can `SET ROLE` into it and reach whatever permissive policy that role has, which here is *every tenant's outbox*. `EXECUTE` goes to `concierge_app` only and deliberately not to `CURRENT_USER` the way 0009 does, because the worker always switches roles first and granting it would let a session that forgot claim across every tenant.
+
+**The disposition rule §4 implied cannot exist, and finding that out is the item's most useful negative result.** The obvious reading of S08-04 is "in `draft` mode every answer needs a human", so `needs_review` should be true in draft mode. It can never be true: draft mode escalates with **zero provider calls** (S08-04's own evidence table), so there is no `ai_runs` row to dispose of. Draft mode's queue is the inbox, where a human writes the reply. A rule that cannot fire is not a rule, and shipping it would have produced a table that is always `false` and looks like it is working.
+
+What shipped instead reads one column the pipeline already writes, `ai_runs.decision`, so it invents no policy and no threshold (`settings` has no confidence floor, and adding one here would be a second undocumented policy hiding inside a plumbing item):
+
+| `ai_runs.decision` | `needs_review` | reason |
+|---|---|---|
+| `answer` | no | `answered` — it went out, guardrails passed, citations reconstructed |
+| `escalate` | **yes** | `escalated:<reason_code>` — a human was asked for *after* the model was consulted |
+| `no_answer` | no | `no_answer_owned_by_gap_queue` — S09-02 already holds the verbatim question and the hit count |
+
+`aiRunIdFor` is exhaustive over `AnswerOutcome` with no `default`, for the same reason `requestTopicFor` is: a new outcome kind that forgets to declare itself is a compile error rather than an answer that silently never reaches the queue. Its two `null` branches are not oversights — a `fact` called no model, and a no-answer on the empty-retrieval path records no run at all.
+
+**Failure handling.** Exponential backoff 1s→2s→4s→8s→16s capped at a minute, `dead` after `REVIEW_MAX_ATTEMPTS` (5). A claim a worker ignores because `next_attempt_at` is in the future is asserted behaviourally — the worker declines the row — rather than as a clock window, which would flake on slow hardware. `dead` rows keep their `next_attempt_at` so "when did we give up" is answerable from the row and not from a log nobody has. No jitter, and that is a recorded gap rather than an oversight: with one worker there is nothing to thundering-herd, and S11-01 runs more than one.
+
+**One row per transaction, and that is load-bearing.** `FOR UPDATE SKIP LOCKED` holds its lock only for the duration of the transaction that took it, so a batch claimed up front would be unlocked again before any of it was processed and a second worker would claim the same rows. Claiming inside the work transaction also means this loop never writes `status = 'sending'`, so it cannot strand a row a dead worker was holding — the failure mode S11-01's reaper exists for. A review whose run has been deleted (its conversation cascaded) is marked `sent` rather than retried, because burning five attempts toward `dead` over a row that will never come back is an alert about nothing.
+
+**§4's timing test was replaced.** It asked for "delta <10ms with and without a failing review worker". A wall-clock delta under 10ms is not a property this can guarantee on shared CI hardware and would flake; what it was a proxy for is *ordering*, and that is what is asserted: from a session that was not part of the turn, the reply is visible while the review row is still `pending` with `processed_at IS NULL` and no disposition written — the review work provably has not started.
+
+**Failure is injected by revoking a privilege**, not by telling a stub to throw: `REVOKE INSERT ON answer_reviews FROM concierge_app`, run the worker, get a real `42501`, then grant it back. The retry is the same code path a deploy would take.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector 0.6.2 + pg_trgm 1.6):**
+```text
+$ npm run db:migrate   # 27 applied from an EMPTY database (0027 lands)
+$ npm run db:test      # 37 files / 368 passed (review queue: 16)
+$ npm test             # 46 files / 576 passed (pure queue: 6)
+$ npx tsc --noEmit && npx tsc --noEmit -p web/tsconfig.json && npm run lint   # clean
+$ npm run web:build    # green
+```
+
+**Not done, by charter:** the worker is not scheduled — `processReviewOutbox` is implemented and tested but nothing calls it in production; S11-01 owns its lifecycle (interval, shutdown, concurrency, the `sending` reaper). Also out: a review screen for `answer_reviews` (the flags from S09-03 are already on the conversation detail, and the gap queue from S09-02 has one); email (S09-05); jitter and worker metrics.
+
+## S09-05 - Email notifications (0.50d)
+
+**AC (verbatim):** A request reaches a human even when nobody has the staff view open.
+
+- **AC-1** Every new/acknowledged request enqueues an email to the property's escalation contacts.
+- **AC-2** Recipients come from `settings.escalation.contacts`; a property with no email contacts falls back to a configured address; provider failure retries via the outbox and never loses the notification.
+
+**Status: DONE (2026-10-26), except delivery evidence — see the last section.** `db/migrations/0028_email_outbox.sql` (new), `src/notifications/email.ts` (new), `src/providers/email.ts` (new), `src/requests/capture.ts` + `src/requests/lifecycle.ts` (enqueue), `src/guest/service.ts` (message pointer), `src/i18n/catalog.ts`, `src/audit/actions.ts`, `.env.example`, `tests/notifications/email.test.ts` (new, 34), `tests/db/email-outbox.db.test.ts` (new, 27), `tests/db/{schema,non-superuser}.db.test.ts`, `tests/db/request-lifecycle.db.test.ts`, `tests/audit/actions.test.ts`.
+
+**DEC-4 (operator, 2026-10-26):** provider is **Resend**, reached over plain `fetch` with no SDK — a transactional-email API is one POST with a bearer token, and an SDK here would be a supply-chain surface for forty lines. That keeps the standing "no new runtime dependency" rule intact; `qrcode` remains the only sanctioned addition.
+
+**The queue row is written inside the request's own transaction, and that is the whole guarantee.** The alternative — a service that polls for recent requests — has a window where the request exists and nothing has decided to send mail yet. A crash in that window is a guest who asked for a person and got silence, and it is *invisible*: nothing records the absence. Queueing in the same commit makes "the request exists" and "somebody will be told" one atomic fact, so a rollback takes the notification with it and a commit makes it visible to a session that was not part of the turn. Both halves are asserted.
+
+**Two notifications, not one per status change.** `new` (a guest asked for a human) and `acknowledged` (a human said "I have this") are queued; `assigned`, `resolved` and `cancelled` are not. Those are already visible in the inbox to anyone looking, and emailing every edge turns the escalation channel into noise — which is how the one notification that mattered gets filtered along with the rest. The dedupe key is therefore `request_id:stage`, not `request_id`: keying on the request alone would silently swallow the acknowledgement, the more actionable of the two.
+
+**The payload carries pointers, never the email.** `claim_outbox` is `SECURITY DEFINER` and returns `payload` *before any tenant context exists*, because that is the one read a worker cannot do under RLS. So anything placed in the payload is on the only cross-tenant surface in this flow. The guest's words stay in `messages.body`, behind the tenant policy, and are read after the GUCs are set — asserted by pinning the payload's exact key set and checking that a distinctive guest phrase appears nowhere in it. That has a second, better consequence: recipients are resolved at **send** time, not enqueue time, so a property that adds a contact between the request and a retry reaches that person instead of the fallback, and a settings change needs no re-queueing.
+
+**The subject carries the property and the request id and nothing else (§7).** A subject is stored on the outbox row, indexed by a third party's mail infrastructure, legible on a locked phone's notification banner, and retained in the provider's logs. The guest's own words belong in the body, which goes only to people who could already open that conversation in the console. `captureRequest`'s existing comment on `question` says the same thing from the other direction — guest text does not ride on a queue row because it "ends up in a digest, an email subject and a support ticket".
+
+**The fallback address is redacted, and that is a security decision rather than a nicety.** `EMAIL_ESCALATION_FALLBACK` is deployment-wide, not tenant-scoped, so a property that configured no contacts still gets its escalation delivered — but the body carries the request id and the console link and *not* the guest's message. Forwarding one property's guest conversation to an address outside that property's access boundary would be a disclosure. The composer picks a `redacted_notice` block instead of the quote block, and the audit row records `recipientSource: "fallback"` with `redacted: true`, so "the fallback was used" is evidence rather than a guess.
+
+**No hardcoded fallback, anywhere.** DEC-4 was explicit that the operator names the address. `EMAIL_ESCALATION_FALLBACK` is required outside `APP_ENV=local` and refuses boot when absent, on the same rule `loadBotCheckConfig` and `loadGuestConfig` already apply: a control that is "on in production if someone remembered" is off. A default address in the repository would collect every tenant's escalations forever, whether or not anyone still reads it. `EMAIL_FROM` is required in *every* environment for the same reason — a default sender is a published one, and every deployment that forgot would send from the same domain.
+
+**Nobody to send to is loud, never quiet.** `resolveRecipients` returns `source: "none"` when a property has no `email` contacts and no fallback is configured; the worker marks the row `dead` with `last_error` naming `no_recipient` and writes `notification.dead`. It does *not* retry, because nothing about the property's settings changes between attempt one and attempt two. Silently succeeding here would be the worst outcome in the file: the guest asked for a person and the system would record that it handled it. `in_app` contacts do not count as addresses — the inbox is a different delivery path, and emailing an in-app handle means sending to a string that is not an address, which the provider would reject five times before going dead.
+
+**Failure handling distinguishes "worth another try" from "will refuse identically forever".** A 5xx, a 429 or an unreachable provider is retryable; a 4xx is permanent and goes straight to `dead` on the *first* attempt. Burning five retries on a rejected sender domain or an invalid key produces a `dead` row that looks exactly like an outage and sends the operator looking in the wrong place. 429 is special-cased as retryable despite being a 4xx: dropping notifications precisely when the property is busiest would be the worst possible moment to treat a rate limit as permanent. Backoff is the review worker's ladder (1s→2s→4s→8s→16s, capped at a minute, `EMAIL_MAX_ATTEMPTS` 5) so there is one retry shape to reason about.
+
+**A dead row carries no `next_attempt_at`, deliberately differing from the review worker.** `next_attempt_at` means "next eligible for claiming", so leaving a timestamp on a row that will never be claimed again reads as a *missed retry*. Both email paths set `processed_at`, which is the column that actually answers "when did we give up". S09-04's `recordFailure` stamps a due-time on dead rows only because it writes no `processed_at` and needs some give-up timestamp; rewriting that in an S09-05 commit would be out of scope, so the difference is documented in both places instead of being left to be discovered.
+
+**`BEGIN` is load-bearing, and omitting it fails invisibly.** `claim_outbox` ends in `FOR UPDATE SKIP LOCKED`, and that lock lives exactly as long as the transaction that took it. Without an explicit `BEGIN` every statement is its own transaction, the lock is released the instant the claim returns, and two workers can claim the same row and both send it. `COMMIT` with no open transaction *succeeds with a warning*, so a single-worker test passes and the bug surfaces in production as duplicate escalation emails. The worker now mirrors S09-04 exactly: `BEGIN`, `SET LOCAL ROLE concierge_app`, claim, set tenant GUCs transaction-locally, work, commit — with failure bookkeeping in its own transaction, because the one that failed was rolled back and recording an attempt inside it would record nothing.
+
+**0028 generalised the claim instead of adding a second one.** 0027 shipped `claim_review_outbox(integer)` hardcoded to `kind='review'`. A definer function per kind is a cross-tenant *window* per kind — each one another place to get the policy wrong — so 0028 adds `claim_outbox(p_kind text, batch_limit integer)` and drops the old one. Same NOLOGIN owner, same two narrow policies, same grant-then-revoke membership around `ALTER FUNCTION … OWNER TO`, same `REVOKE ALL … FROM PUBLIC` afterwards (owner transfer discards the ACL and restores `EXECUTE` for PUBLIC). `EXECUTE` goes to `concierge_app` only. S11-01's workers inherit one primitive rather than N.
+
+**Two Postgres traps this item hit.**
+
+1. **`jsonb_build_object` is variadic `"any"`, so Postgres cannot infer a parameter's type from it.** The insert failed to plan with `could not determine data type of parameter $3` — the dedupe key, used only inside the builder. Every value is now explicitly cast, which also pins `message_id` as a real uuid-or-null rather than a string that happens to look like one.
+2. **A backtick inside a SQL comment terminates the surrounding JS template literal.** esbuild reported `Expected ")" but found "next_attempt_at"` at a line that was pure comment. The same trap S09-02 hit; the file now has no backticks in any SQL comment.
+
+**Two test-isolation bugs the first run exposed, both worth recording because they look like product bugs.** `captureRequest` *reuses* an open request per conversation — one problem, one request — so every test after the first got `created: false` and queued nothing at all, and `processed: 1` came back `0`. And `messages.conversation_id` is an FK, so a message seeded on a property's original conversation cannot be attached to a request on a different one. Each capture now opens its own conversation, and a `beforeEach` empties the email queue: the worker claims across every tenant, so a row an earlier test left pending would be processed by a later one and every tally assertion would be a lie about a different test's data.
+
+**The acknowledging colleague is named by role, never by name.** 0004's `users.staff_select` policy authorises your own row only, so a worker cannot read a colleague's `display_name` — and an email composer is no place to quietly widen that (it is an S02 security decision). The catalogue string is "A member of our team" / "Un miembro de nuestro equipo"; the console shows who.
+
+**Audit.** Three actions added to the closed list: `notification.queued` (AC-1's evidence, and it outlives the outbox row being marked sent), `notification.sent` (carries the provider's own id — delivery evidence that is not ours to invent — plus `recipientSource`, a recipient *count* and `redacted`; never an address, because an address is PII and `assertSafeDetail` is not the only reason to keep it out), and `notification.dead` (the escalation failed, with the reason). Actor is the staff member on the acknowledged edge and `null` on the guest edge and on every worker write: attributing a system action to a person is a false record.
+
+**Review round 1 (PR #145) — four findings, all fixed, all previously untested.**
+
+The reviewer's framing was the useful part: these were not bugs the tests caught and
+then failed to fix, they were bugs the tests could not see. Each one now has a case.
+
+1. **`CONSOLE_BASE_URL` was optional outside local, so production could silently link
+   to `http://localhost:3000`.** The default *resolves* — on the recipient's own
+   machine, to whatever they happen to be running there. That is worse than no link:
+   it looks like a working console link in a test send and fails for every real
+   recipient, at 3am, on the one email whose whole purpose is to be actionable. Now
+   required outside `APP_ENV=local` on the same rule as `EMAIL_API_KEY`, and the local
+   default is kept because in local the link genuinely points at the developer's own
+   machine.
+2. **The provider timeout stopped before the body was read.** `fetch` resolves as soon
+   as the response *headers* arrive; the body is a separate stream. The `finally`
+   cleared the timer at that point, leaving `response.text()` with no deadline at all,
+   so a provider that sends headers and then stalls the body hangs the worker forever
+   — and it hangs *while holding a database transaction and a `FOR UPDATE` row lock*,
+   so one stalled body pins an outbox row no other worker can claim. The timeout now
+   covers the body read, and an abort mid-body is reported as `timeout` rather than as
+   a success. Tested with a `ReadableStream` that delivers headers and never enqueues.
+3. **The retry path could deliver twice, and the comment claimed otherwise.** The code
+   said the 0028 dedupe key "stops a retry that DID land from becoming a second
+   email". That was false, and the falseness is the interesting part: the index
+   prevents a second *outbox row* for one request+stage. It does nothing about a second
+   *delivery* of the row that already exists. If Resend accepts the email and the
+   response is lost — a stalled body, a reset connection, a process killed before the
+   `sent` commit — the row is still claimable and the next attempt sends it again.
+   Fixed with Resend's `Idempotency-Key` header (supported on `POST /emails`, 24-hour
+   window, same key + same payload replays the original response instead of
+   delivering). The key is `emailIdempotencyKey(outboxId)`: **stable across every retry
+   of one row, distinct between rows.** Both halves matter — a key regenerated per
+   attempt builds idempotency that is idempotent against nothing, and a key derived
+   from the *dedupe* key would silently suppress an operator's deliberate re-queue of a
+   dead row for Resend's whole 24 hours. The retry ladder totals about fifteen seconds,
+   so the key cannot expire mid-retry.
+   Resend's two 409s are handled distinctly, because they mean opposite things:
+   `concurrent_idempotent_requests` (the first attempt is still in flight) is
+   retryable — backing off is exactly what it asks for; `invalid_idempotent_request`
+   (same key, different payload) is **not** retryable and is **not** reported as sent.
+   It means an earlier attempt was accepted with content that is not what we would send
+   now, so claiming `sent` would assert a delivery whose content we cannot prove, and
+   retrying 409s forever. It becomes a dead row with reason `conflict_payload` for a
+   human to look at. That needs the property name, contacts or message to change
+   between attempts, so it is rare — but rare and unexplained is exactly the
+   combination that costs an afternoon.
+   Making this testable required one addition to the log-only provider: an `attempts`
+   list recording every message handed to `send`, failures included. `sent` alone
+   cannot prove the property that matters, because a failed attempt records nothing
+   there and the first key would be unobservable.
+4. **A detached conversation got a broken console link.** 0001 sets
+   `service_requests.conversation_id` to NULL when the conversation is deleted and the
+   request row survives. The worker comment claimed the link was omitted in that case;
+   the composer unconditionally appended the "Open it in the console" block, so the
+   email went out with a link ending in `/inbox/`. The conversation line is now its own
+   catalogue block with a `no_conversation` variant, and the link block is dropped
+   entirely — the email still names the request, the property and the guest's words,
+   and says the conversation is no longer available.
+
+**A test flake CI caught that local did not, and the arithmetic is the lesson.**
+`db-test` failed on the first CI run of the review fixes:
+
+```text
+AssertionError: expected '{"stage":"new","dedupe_key":"b3c1a9b2…' not to contain '402'
+Received: {"stage":"new", …, "conversation_id":"5b402b98-b6a3-47c9-9290-4da409d95dce"}
+```
+
+The assertion proving the guest's words never enter the cross-tenant payload used the
+bare room number `"402"` as the thing that must be absent. But the payload is mostly
+random UUIDs, and **hex contains digits** — `conversation_id` began `5b402b98`, so the
+substring was there legitimately. The test was asserting that four random UUIDs happen
+not to contain a particular three-character hex sequence.
+
+Probability per run: 4 UUIDs x roughly 30 start positions x (1/16)^3 ≈ **3%**. That is
+why it passed every local run — including fifteen in a row while developing it — and
+failed on the first CI run. A 3% flake is worse than a reliable failure, because it
+survives review and then fails on someone else's commit.
+
+Fixed by asserting a *phrase* — `"habitación 402"` — which contains a space and an
+accented letter and therefore cannot occur in a UUID. Every other absence assertion in
+the file was audited for the same collision and is safe (all contain spaces, accents,
+`/`, or non-hex letters). Confirmed with 15 consecutive clean runs, each generating
+fresh random UUIDs.
+
+**The general rule:** never assert the absence of a short alphanumeric token from a
+string that contains generated ids. Assert the absence of something that could only
+come from the data you are worried about.
+
+**Review round 2 (PR #145) — one consistency nit, and the interesting part is that the
+documentation was right and the code was wrong.**
+
+The reviewer noticed `emailBackoffMs(1)` returned 2 seconds while the review worker's
+first delay was 1 second, and that both the function's own comment and this runbook
+described a 1, 2, 4, 8, 16-second ladder. Three separate places already said "one
+second first": the comment, this runbook's "totals about fifteen seconds", and
+`src/providers/email.ts`'s argument that the ladder is short enough for a Resend
+idempotency key not to expire mid-retry. Even the test's own name said *"doubles from a
+second"* while its assertions started at 2000.
+
+So the fix was to align the calculation, not the prose: `2 ** attempt` became
+`2 ** (attempt - 1)`, making the two functions' expressions character-identical. That
+also makes the fifteen-second claim arithmetically true — 1+2+4+8 = 15s, where
+2+4+8+16 = 30s.
+
+**Why no test caught it, and the guard that now does.** Every wrong value was plausible
+in isolation: 2000 ms is a perfectly reasonable first backoff, and the old test asserted
+`emailBackoffMs(1)).toBe(2000)` and passed. Single-value assertions pin whatever the
+code currently does; they cannot express "these two channels agree". The new test
+compares the functions to each other across the whole ladder, which turns the comment's
+claim into an executable one:
+
+```ts
+for (let attempt = 0; attempt <= 12; attempt += 1) {
+  expect(emailBackoffMs(attempt), `ladder diverged at attempt ${attempt}`)
+    .toBe(reviewBackoffMs(attempt));
+}
+```
+
+Confirmed to fail on demand — reintroducing `2 ** attempt` produces "ladder diverged at
+attempt 1: expected 2000 to be 1000" in both the new test and the value test.
+
+**The general rule:** when a comment says one module behaves "the same as" another, the
+test should assert the equality between the two functions, not a list of literals copied
+from whichever one was read first. A duplicated constant is a duplicated opportunity to
+drift; a cross-module equality assertion fails the moment they part company.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector 0.6.2 + pg_trgm 1.6), after review round 2:**
+```text
+$ npm run db:migrate   # 28 applied from an EMPTY database (0028 lands)
+$ npm run db:test      # 38 files / 400 passed (email outbox: 32)
+$ npm test             # 47 files / 622 passed (email pure: 46)
+$ npx tsc --noEmit && npx tsc --noEmit -p web/tsconfig.json && npm run lint   # clean
+$ npm run web:build    # green; /gaps and /inbox/[conversationId] in the manifest
+```
+0028 verified by catalog inspection after a from-empty apply: `claim_outbox` owned by `concierge_worker`, `prosecdef = true`, ACL exactly `concierge_worker=X|concierge_app=X` (no PUBLIC entry — an entry with an *empty* grantee, which is what `=X/` inside a named entry is not), `claim_review_outbox` gone, `concierge_worker` NOLOGIN, and `pg_has_role('concierge_app','concierge_worker','MEMBER')` false.
+
+**OUTSTANDING — real delivery evidence (§7).** DEC-4 closed on the provider and explicitly deferred credentials: the operator supplies `EMAIL_API_KEY` later, so **no real email has been sent and none was attempted**. Everything up to the send is tested; the one HTTP call is exercised against an injected `fetch` (endpoint, bearer header, body shape, 2xx/4xx/5xx/429/timeout/unreachable, non-JSON success) rather than against a live account. To close §7: set `EMAIL_FROM`, `EMAIL_API_KEY`, `EMAIL_ESCALATION_FALLBACK` and `CONSOLE_BASE_URL` in a staging `.env`, verify the sender domain in Resend, open a request as a guest, and keep the received email plus the `notification.sent` audit row with its `providerId`. This joins the other outstanding physical-evidence items (S07-01 QR scan, S08-01 stopwatch, S08-02 sources screenshot, S06-01 staging).
+
+**Not done, by charter — and this bounds what the AC can claim.** Nothing schedules
+`processEmailOutbox`, so as merged this item *queues* notifications and does not
+*deliver* them: the end-to-end reading of "a request reaches a human by email" is not
+operational until S11-01 deploys and schedules the worker. The AC is met at the level
+this item owns — the row is written atomically with the request, survives provider
+failure, resolves recipients correctly, and is composed and handed to a provider
+correctly — and the delivery half is owed along with the credentials. Recorded here so
+the gap is not discovered by someone waiting for an email that was queued and never
+sent.
+
+**Not done, by charter:** nothing schedules `processEmailOutbox` — S11-01 owns worker lifecycle for both outboxes (interval, shutdown, concurrency, the `sending` reaper), and this loop never writes `sending` so it cannot strand a row. Also out: a Resend webhook to reconcile provider-side bounces and complaints against rows we marked `sent` (we record that the provider *accepted* the message, not that a human read it); per-property fallback addresses (the current one is deployment-wide, which is why it is redacted); any non-email channel — `ESCALATION_CHANNELS` includes `in_app`, and `outbox.kind` has allowed `sms` since 0001, but neither has a sender; jitter and worker metrics.

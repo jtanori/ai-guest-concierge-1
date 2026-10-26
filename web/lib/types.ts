@@ -89,6 +89,24 @@ export interface DetailAiRunWire {
   confidence: number | null;
   latencyMs: number | null;
   citations: DetailCitationWire[];
+  /** S09-03 — who called this answer wrong or outdated, newest last. */
+  flags: AnswerFlagWire[];
+}
+
+/**
+ * S09-03 — one "wrong or outdated" flag.
+ *
+ * `flaggedBy` is a UUID and there is deliberately no name next to it: 0004's
+ * `users.staff_select` authorises your own row only, so a colleague's display_name
+ * is not readable from this surface. `mine` is what the screen needs in order to
+ * stop offering the button to the person who already pressed it.
+ */
+export interface AnswerFlagWire {
+  flagId: string;
+  flaggedBy: string;
+  mine: boolean;
+  note: string | null;
+  createdAt: string;
 }
 
 export interface DetailMessageWire {
@@ -111,7 +129,8 @@ export interface ConversationDetailWire {
   messages: DetailMessageWire[];
   requests: Array<{
     requestId: string;
-    status: string;
+    /** S09-01 — the lifecycle's five words, mirroring `DetailRequest`. */
+    status: "new" | "acknowledged" | "assigned" | "resolved" | "cancelled";
     topic: string | null;
     createdAt: string;
   }>;
@@ -121,4 +140,26 @@ export interface ConversationDetailWire {
 export interface AiModeStateWire {
   aiMode: "auto" | "draft" | "human_only" | "after_hours";
   timeZone: string;
+}
+
+/** S09-02 — the knowledge-gap queue, as `GET /api/gaps` serialises it. */
+export interface GapItemWire {
+  gapId: string;
+  /** Verbatim guest text. Rendered as a JSX child, never as HTML. */
+  question: string;
+  language: string | null;
+  topic: string | null;
+  hits: number;
+  createdAt: string;
+  openSeconds: number;
+  conversationId: string | null;
+}
+
+export interface GapPageWire {
+  items: GapItemWire[];
+  nextCursor: string | null;
+  /** `null` when nothing is open: an empty queue has no median, and 0 would read
+   * as a measurement of nothing. */
+  medianOpenAgeDays: number | null;
+  openCount: number;
 }

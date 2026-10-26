@@ -23,6 +23,10 @@ const CLUSTER_ROLES = [
   // the owner needs ADMIN OPTION on it to be able to grant it on a Neon-shaped
   // cluster (where it may already exist from another database).
   "concierge_public",
+  // 0027 adds the review worker's claim role, which is cluster-scoped for the same
+  // reason: on a Neon-shaped cluster it may already exist from another database,
+  // and the owner needs ADMIN OPTION to transfer a function to it.
+  "concierge_worker",
   "concierge_membership",
   "concierge_promoter",
   "concierge_fact_verifier",
@@ -74,7 +78,7 @@ describe("non-superuser owner (db)", () => {
     }
 
     const applied = await migrateDatabase(urlFor(DB, ROLE, PASSWORD));
-    expect(applied).toBe(23);
+    expect(applied).toBe(28);
 
     // What the migrations granted, the migrations revoked: no membership in
     // any definer role was granted BY the owner itself.
@@ -85,7 +89,7 @@ describe("non-superuser owner (db)", () => {
           AND grantor = (SELECT oid FROM pg_roles WHERE rolname = $1)
           AND roleid IN (SELECT oid FROM pg_roles
                           WHERE rolname IN ('concierge_membership', 'concierge_promoter',
-                                            'concierge_fact_verifier'))`,
+                                            'concierge_fact_verifier', 'concierge_worker'))`,
       [ROLE],
     );
     expect(selfGrants.rows).toHaveLength(0);
@@ -94,7 +98,12 @@ describe("non-superuser owner (db)", () => {
     // inherit/set enabled) has no production analogue — on a virgin cluster
     // the owner's auto-grant is inert (inherit=false, set=false). Remove it
     // so the assertions below see the production end state.
-    for (const role of ["concierge_membership", "concierge_promoter", "concierge_fact_verifier"]) {
+    for (const role of [
+      "concierge_membership",
+      "concierge_promoter",
+      "concierge_fact_verifier",
+      "concierge_worker",
+    ]) {
       await admin.query(`REVOKE ${role} FROM ${ROLE}`);
     }
 

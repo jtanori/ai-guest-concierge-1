@@ -102,7 +102,26 @@ export const en = {
   "staff.inbox.resolve": "Resolve",
   "staff.inbox.resolve_hint": "Closes the conversation and any request it opened.",
   "staff.inbox.assign_me": "Assign to me",
+  // S09-01 — acknowledgement is its own edge, so it gets its own button: it is
+  // the moment a person takes responsibility for having *seen* this, which is a
+  // different fact from being handed the work (assign) or finishing it (resolve).
+  // Without the button the only way to acknowledge was to assign, and then the
+  // time-to-acknowledge metric would have measured time-to-assignment instead.
+  "staff.inbox.acknowledge": "Acknowledge",
+  "staff.inbox.acknowledge_hint":
+    "Records that a person has seen this request. Assigning and resolving come after.",
+  "staff.inbox.cancel_request": "Cancel request",
   "staff.inbox.actions": "Actions",
+  // S09-03 — "wrong or outdated". The label names both failure modes because they
+  // have different fixes (a bad article vs a stale one) and the person clicking
+  // often cannot tell which it is yet; the note is where they say more.
+  "staff.flag.button": "Wrong or outdated",
+  "staff.flag.hint": "One click. Add a note only if you have one.",
+  "staff.flag.flagged": "Flagged by {count}",
+  "staff.flag.flagged_one": "Flagged by 1 person",
+  "staff.flag.flagged_by_you": "You flagged this",
+  "staff.flag.note_placeholder": "What is wrong with it? (optional)",
+  "staff.flag.your_note": "Your note",
   "staff.mode.nav": "Settings",
   // S08-04 — the operating mode. The hints are the whole product decision: an
   // admin who does not know that "draft" still answers the guest (into the queue)
@@ -125,6 +144,37 @@ export const en = {
   "staff.mode.error_invalid": "That is not a mode this property can run.",
   "staff.mode.error_forbidden": "Your role cannot change the mode.",
   "staff.mode.error_other": "That didn't save. Try again.",
+  // S09-02 — the knowledge-gap queue. This is the screen a content owner reads to
+  // decide what to write next, so the copy carries the two numbers that make it a
+  // queue rather than a list: how many guests hit the miss, and how long it has
+  // been sitting. The median is labelled with its target because a number with no
+  // target is a number nobody acts on.
+  "staff.gaps.nav": "Gaps",
+  "staff.gaps.title": "Knowledge gaps",
+  "staff.gaps.intro":
+    "What guests asked that the assistant could not answer. Close one once the content exists.",
+  "staff.gaps.median": "Median time open",
+  "staff.gaps.median_days": "{days} days",
+  "staff.gaps.median_none": "Nothing open",
+  "staff.gaps.target": "Target: 7 days or less",
+  "staff.gaps.open_count": "{count} open",
+  "staff.gaps.hits": "Asked {count} times",
+  "staff.gaps.hits_one": "Asked once",
+  "staff.gaps.age_minutes": "open {count} min",
+  "staff.gaps.age_hours": "open {count} h",
+  "staff.gaps.age_days": "open {count} d",
+  "staff.gaps.close": "Close",
+  "staff.gaps.close_hint": "Say the content now answers this. Guests asking again reopen it.",
+  "staff.gaps.conversation": "See the conversation",
+  "staff.gaps.empty": "Nothing unanswered.",
+  "staff.gaps.load_more": "Load more",
+  "staff.gaps.error": "That didn't load. Try again.",
+  "staff.gaps.forbidden": "Your role can't read the gaps.",
+  "staff.gaps.problem_invalid": "That request was not valid.",
+  "staff.gaps.problem_forbidden": "Your role cannot close a gap.",
+  "staff.gaps.problem_missing": "That gap changed or no longer exists.",
+  "staff.gaps.problem_conflict": "Someone else got there first. Reload and try again.",
+  "staff.gaps.problem_error": "That didn't work. Try again.",
   "staff.review.title": "Review queue",
   "staff.review.pending": "Waiting for approval",
   "staff.review.approve": "Approve",
@@ -151,6 +201,45 @@ export const en = {
   "staff.session.language": "Language",
   "staff.session.help":
     "Paste the token your identity provider issued for you. It is stored in an HttpOnly cookie and never in the browser's storage.",
+  // S09-05 — the escalation email, composed from blocks rather than one template
+  // per case. Stage x fallback x "did the guest leave a message" is eight
+  // permutations; blocks keep one copy of each fact and let the composer decide
+  // which blocks apply. The button-tap path ("Talk to a person") has no guest
+  // message at all, so a body that assumed one would print an empty quote.
+  //
+  // §7 of the charter fixes the subject to the request id plus the property and
+  // "no PII beyond that": a subject is stored on the outbox row, is indexed by a
+  // third party's mail infrastructure, is legible on a locked phone's banner, and
+  // outlives the request. The guest's own words belong in the body, which goes only
+  // to people who could already open this conversation in the console.
+  "email.request.new.subject": "New guest request at {property} ({requestId})",
+  "email.request.acknowledged.subject": "Request acknowledged at {property} ({requestId})",
+  "email.request.new.intro": "A guest asked for a person at {property}.",
+  "email.request.acknowledged.intro":
+    "{actorName} acknowledged request {requestId} at {property}.",
+  "email.request.facts": "Request: {requestId}\nType: {topic}",
+  "email.request.conversation": "Conversation: {conversationId}",
+  // 0001 sets service_requests.conversation_id to NULL when the conversation is
+  // deleted, and the request row survives. There is then no console link to give
+  // (the detail page is keyed by conversation id), so the email says so instead of
+  // printing a link that ends in /inbox/ and resolves to nothing.
+  "email.request.no_conversation":
+    "This request's conversation is no longer available, so there is no link to open.",
+  "email.request.quote": "What the guest wrote:\n{message}",
+  // Printed instead of the quote when the mail goes to the deployment-wide
+  // fallback because the property configured no contacts of its own. That address
+  // is operator level, not scoped to this property, so it gets the pointer and not
+  // the content: forwarding one property's guest conversation to an address outside
+  // that property's access boundary would be a disclosure, and "nobody was
+  // configured, go look" is still the entire point of the notification.
+  "email.request.redacted_notice":
+    "This property has no escalation email configured, so this went to the deployment fallback. The guest's message is not included here, because this address is not scoped to that property.",
+  "email.request.open": "Open it in the console:\n{url}",
+  // The acknowledging colleague's display name is not readable from a worker:
+  // 0004's `users.staff_select` authorises your own row only, and widening that is
+  // an S02 security decision, not something an email composer should do quietly.
+  // So the sentence names the role; the console names the person.
+  "email.request.actor_team": "A member of our team",
 } as const;
 
 export type StringId = keyof typeof en;
@@ -240,7 +329,18 @@ export const es: Record<StringId, string> = {
   "staff.inbox.resolve": "Resolver",
   "staff.inbox.resolve_hint": "Cierra la conversación y cualquier solicitud que haya abierto.",
   "staff.inbox.assign_me": "Asignármela",
+  "staff.inbox.acknowledge": "Acusar recibo",
+  "staff.inbox.acknowledge_hint":
+    "Registra que una persona ya vio esta solicitud. Asignar y resolver vienen después.",
+  "staff.inbox.cancel_request": "Cancelar solicitud",
   "staff.inbox.actions": "Acciones",
+  "staff.flag.button": "Incorrecto o desactualizado",
+  "staff.flag.hint": "Un clic. Agregue una nota solo si la tiene.",
+  "staff.flag.flagged": "Marcado por {count} personas",
+  "staff.flag.flagged_one": "Marcado por 1 persona",
+  "staff.flag.flagged_by_you": "Usted lo marcó",
+  "staff.flag.note_placeholder": "¿Qué está mal? (opcional)",
+  "staff.flag.your_note": "Su nota",
   "staff.mode.nav": "Configuración",
   "staff.mode.title": "Modo del asistente",
   "staff.mode.intro": "Se aplica desde el siguiente mensaje del huésped. Sin despliegue ni reinicio.",
@@ -260,6 +360,32 @@ export const es: Record<StringId, string> = {
   "staff.mode.error_invalid": "Ese no es un modo que esta propiedad pueda usar.",
   "staff.mode.error_forbidden": "Su rol no puede cambiar el modo.",
   "staff.mode.error_other": "No se guardó. Inténtelo de nuevo.",
+  "staff.gaps.nav": "Vacíos",
+  "staff.gaps.title": "Vacíos de conocimiento",
+  "staff.gaps.intro":
+    "Lo que los huéspedes preguntaron y el asistente no pudo responder. Cierre uno cuando el contenido ya exista.",
+  "staff.gaps.median": "Tiempo mediano abierto",
+  "staff.gaps.median_days": "{days} días",
+  "staff.gaps.median_none": "Nada abierto",
+  "staff.gaps.target": "Objetivo: 7 días o menos",
+  "staff.gaps.open_count": "{count} abiertos",
+  "staff.gaps.hits": "Preguntado {count} veces",
+  "staff.gaps.hits_one": "Preguntado una vez",
+  "staff.gaps.age_minutes": "abierto hace {count} min",
+  "staff.gaps.age_hours": "abierto hace {count} h",
+  "staff.gaps.age_days": "abierto hace {count} d",
+  "staff.gaps.close": "Cerrar",
+  "staff.gaps.close_hint": "Indica que el contenido ya responde esto. Si vuelve a preguntarse, se reabre.",
+  "staff.gaps.conversation": "Ver la conversación",
+  "staff.gaps.empty": "Nada sin responder.",
+  "staff.gaps.load_more": "Cargar más",
+  "staff.gaps.error": "No se pudo cargar. Inténtelo de nuevo.",
+  "staff.gaps.forbidden": "Su rol no puede leer los vacíos.",
+  "staff.gaps.problem_invalid": "Esa solicitud no era válida.",
+  "staff.gaps.problem_forbidden": "Su rol no puede cerrar un vacío.",
+  "staff.gaps.problem_missing": "Ese vacío cambió o ya no existe.",
+  "staff.gaps.problem_conflict": "Alguien más llegó primero. Recargue e intente de nuevo.",
+  "staff.gaps.problem_error": "Eso no funcionó. Inténtelo de nuevo.",
   "staff.review.title": "Cola de revisión",
   "staff.review.pending": "Pendiente de aprobación",
   "staff.review.approve": "Aprobar",
@@ -286,6 +412,20 @@ export const es: Record<StringId, string> = {
   "staff.session.language": "Idioma",
   "staff.session.help":
     "Pega el token que tu proveedor de identidad emitió para ti. Se guarda en una cookie HttpOnly, nunca en el almacenamiento del navegador.",
+  "email.request.new.subject": "Nueva solicitud de huésped en {property} ({requestId})",
+  "email.request.acknowledged.subject": "Solicitud confirmada en {property} ({requestId})",
+  "email.request.new.intro": "Un huésped pidió hablar con una persona en {property}.",
+  "email.request.acknowledged.intro":
+    "{actorName} confirmó la solicitud {requestId} en {property}.",
+  "email.request.facts": "Solicitud: {requestId}\nTipo: {topic}",
+  "email.request.conversation": "Conversación: {conversationId}",
+  "email.request.no_conversation":
+    "La conversación de esta solicitud ya no está disponible, así que no hay un enlace para abrir.",
+  "email.request.quote": "Lo que escribió el huésped:\n{message}",
+  "email.request.redacted_notice":
+    "Esta propiedad no tiene configurado un correo de escalamiento, así que esto llegó al destinatario de respaldo del despliegue. El mensaje del huésped no se incluye aquí, porque esta dirección no pertenece a esa propiedad.",
+  "email.request.open": "Ábrela en la consola:\n{url}",
+  "email.request.actor_team": "Un miembro de nuestro equipo",
 };
 
 // Index with a readonly lookup; unknown ids are a type error, not an

@@ -1,0 +1,121 @@
+name: eval
+
+# S06-03 — G2 on every change that can move it.
+#
+# Two jobs, deliberately not the same job:
+#
+#  - `eval` runs on PRs that touch the model path, the retrieval path, the
+#    harness itself, or the golden set. It uses the deterministic grounded
+#    provider: no key, no network, no cost, and a red check always means
+#    something the author can fix in this PR.
+#  - `canary` runs nightly (and on demand) against the real Gemini pair. It is
+#    the only place a live model is measured, and it is the only place a key
+#    exists. A vendor outage can make the canary red; that must never be able to
+#    block a pull request, which is why it is a separate workflow trigger rather
+#    than a `continue-on-error` step inside the PR job.
+on:
+  pull_request:
+    paths:
+      - "src/ai/**"
+      - "src/knowledge/**"
+      - "src/eval/**"
+      - "src/golden/**"
+      - "data/golden/**"
+      - "scripts/eval.ts"
+      - ".github/workflows/eval.yml"
+  schedule:
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: eval-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  eval:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: concierge
+          POSTGRES_PASSWORD: concierge
+          POSTGRES_DB: concierge_local
+        ports:
+          - 54329:5432
+        options: >-
+          --health-cmd "pg_isready -U concierge"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://concierge:concierge@localhost:54329/concierge_local
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # The demo tenant is the fixture property: the golden set is scored
+      # against the articles and facts it actually has, which is the whole point
+      # of the retrieval diagnostic in the report.
+      - run: npm run db:migrate
+      - run: npm run db:seed
+      - name: G2 evaluation (deterministic provider)
+        # pipefail: without it `tee` would swallow the gate's non-zero exit and
+        # the job would be green on a failing evaluation.
+        run: |
+          set -o pipefail
+          npm run eval | tee eval-report.md
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: eval-report.md
+          if-no-files-found: ignore
+
+  canary:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: concierge
+          POSTGRES_PASSWORD: concierge
+          POSTGRES_DB: concierge_local
+        ports:
+          - 54329:5432
+        options: >-
+          --health-cmd "pg_isready -U concierge"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://concierge:concierge@localhost:54329/concierge_local
+      # The only place a model key exists. Never echoed: the script reports
+      # scores, and the provider adapter's errors are already redacted.
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run db:migrate
+      - run: npm run db:seed
+      - name: G2 evaluation (live model)
+        run: |
+          set -o pipefail
+          npm run eval -- --live | tee canary-report.md
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canary-report
+          path: canary-report.md
+          if-no-files-found: ignore

@@ -1,0 +1,17 @@
+{
+  "goldenFile": "data/golden/golden-questions-v1.csv",
+  "total": 20,
+  "counts": {
+    "correct_answer": 1,
+    "correct_escalation": 7,
+    "false_answer": 5,
+    "needless_escalation": 7,
+    "outage": 0
+  },
+  "scores": {
+    "falseAnswer": 0.25,
+    "correctOrEscalation": 0.4,
+    "correctEscalation": 1,
+    "needlessEscalation": 0.5384615384615384
+  }
+}

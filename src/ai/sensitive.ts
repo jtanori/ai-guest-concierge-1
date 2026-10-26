@@ -29,6 +29,14 @@ export interface SensitiveRule {
   description: string;
   /** Lowercase, accent-stripped fragments. Matching is substring-on-words. */
   terms: readonly string[];
+  /**
+   * Spanish inflects by suffix: `reservar` and `reservarme` are one word to a
+   * guest and two strings to a whole-word match, which is how the eval harness
+   * caught "¿Pueden reservarme una mesa?" slipping past booking intent. A stem
+   * is matched against the inside of a word, so it must stay short and specific
+   * enough that an over-match is a deliberate choice rather than an accident.
+   */
+  stems?: readonly string[];
 }
 
 /** Accent- and case-insensitive form used for matching. */
@@ -56,11 +64,17 @@ export const SENSITIVE_RULES: readonly SensitiveRule[] = [
     reasonCode: "sensitive_topic",
     description: "a refund, charge or invoice question",
     terms: [
-      "reembolso", "refund", "devolucion", "devolver el dinero", "cobro",
-      "cobraron", "me cobraron", "cargo", "charge", "factura", "invoice",
-      "recibo", "receipt", "contracargo", "chargeback", "descuento", "discount",
-      "compensacion", "compensation",
+      "reembolso", "refund", "devolucion", "devoluciones", "devolver",
+      "devolverme", "devuelvan", "devuelveme", "reembolsar", "reembolsen",
+      "reembolsame", "cobro", "cobraron", "cobrado", "cobrada", "cobran",
+      "cobrando", "me cobraron", "doble cobro", "cobro doble",
+      "cargo duplicado", "cobro duplicado", "me cobraron dos veces",
+      "cargo", "charge", "charged", "charged twice", "double charge",
+      "overcharged", "factura", "invoice", "recibo", "receipt", "contracargo",
+      "chargeback", "descuento", "discount", "compensacion", "compensation",
+      "reimburse", "money back", "get my money back",
     ],
+    stems: ["reembols", "devolv", "devuelv", "cobr", "factur", "charg"],
   },
   {
     id: "medical",
@@ -116,6 +130,9 @@ export const SENSITIVE_RULES: readonly SensitiveRule[] = [
       "how much", "habitacion para", "room for", "noches para", "stay tonight",
       "cambiar mi vuelo", "late checkout free", "upgrade gratis",
     ],
+    // `reserv` covers reservar/reservarme/reservación/reservas; `cancel` covers
+    // cancelar/cancelación; `disponib`/`disponibl` cover disponibilidad.
+    stems: ["reserv", "cancel", "book", "disponib", "disponibl", "reserva"],
   },
 ];
 
@@ -142,6 +159,7 @@ export function classifySensitive(text: string, language: Lang | null): Sensitiv
   // must be the same question, and a trailing "?" would otherwise defeat the
   // space-delimited match.
   const haystack = ` ${normalise(text).replace(/[^a-z0-9]+/g, " ").trim()} `;
+  const words = haystack.split(" ").filter((word) => word !== "");
   for (const rule of SENSITIVE_RULES) {
     for (const term of rule.terms) {
       if (haystack.includes(` ${term} `)) {
@@ -150,6 +168,17 @@ export function classifySensitive(text: string, language: Lang | null): Sensitiv
           reasonCode: rule.reasonCode,
           description: rule.description,
           term,
+        };
+      }
+    }
+    for (const stem of rule.stems ?? []) {
+      const word = words.find((candidate) => candidate.includes(stem));
+      if (word !== undefined) {
+        return {
+          ruleId: rule.id,
+          reasonCode: rule.reasonCode,
+          description: rule.description,
+          term: `${word} (stem ${stem})`,
         };
       }
     }

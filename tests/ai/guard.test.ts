@@ -188,6 +188,12 @@ describe("sensitive topics (S05-02 AC-2)", () => {
     ["Do you have availability for tonight?", "booking_intent"],
     ["Quiero hablar con una persona", "guest_asked_human"],
     ["Can I speak to the manager?", "guest_asked_human"],
+    // Found by the S06-03 harness: every one of these reached the model and was
+    // answered before the rules covered the inflected form.
+    ["Quiero cancelar y que me devuelvan el dinero", "sensitive_topic"],
+    ["Creo que mi tarjeta se quedó cobrada dos veces", "sensitive_topic"],
+    ["¿Pueden reservarme una mesa para cenar mañana a las ocho?", "booking_intent"],
+    ["Can I get my money back for the last night?", "sensitive_topic"],
   ];
 
   it("classifies each sensitive family with a reason code", () => {

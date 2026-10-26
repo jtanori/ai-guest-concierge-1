@@ -9,21 +9,21 @@ priority: P0
 depends_on: [S05-02]
 labels: [sprint:S06, track:foundation, prio:P0]
 milestone: S06 - Guest chat and evaluation
-status: draft
+status: done
 issue: https://github.com/jtanori/ai-guest-concierge-1/issues/78
-pickup: decision
+pickup: ready
+approved: 2026-10-25
+done: 2026-10-25
 ---
 
 # S06-03 — Evaluation harness + CI job
-
-> **DRAFT — not approved.** Generated from the master backlog, `docs/01-development-plan.md` and the code at `main` + PR #32 head `81b19bb`. `docs/charters/README.md` says **"No item starts until its charter is approved"** — this file is a proposed contract, not permission to start. File paths, migration numbers and signatures are calculated from the current tree; rebase them on whatever merges first.
 
 | | |
 |---|---|
 | Sprint | S06 |
 | Track / days / priority | Eng · 1.5d · P0 |
 | Depends on | S05-02 |
-| Pickup | `decision` |
+| Pickup | `ready` |
 
 ## 1. Why / goal
 
@@ -68,17 +68,35 @@ Eval runs as the demo tenant; the canary must use a dedicated read-only property
 
 ## 8. Pickup status, blockers and decisions
 
-**NEEDS DECISION — see §8. Calculations are complete where possible; the named decision must close first.**
+**Started 2026-10-25** after S06-02 merged (`8d4b31b`). The charter's paths were followed with two additions and one split:
 
-Open decisions / blockers:
+- `src/eval/fake-provider.ts` — the deterministic provider, its own module so `tests/eval/fake-provider.test.ts` can hold it to the real contract and the real guardrail.
+- `.github/workflows/eval.yml` gained a **second job** (`canary`) rather than a second workflow. The charter said "plus `schedule: nightly` canary"; one file with `if:` per job keeps the thresholds, the migration steps and the seed step in one reviewed place, and the two jobs can never drift into measuring different fixtures.
 
-- **Needs golden set v2 (G1) and DEC-2's provider.** Harness, thresholds and CI wiring are fully calculated; the pass number waits on hotel content.
-- The fake provider in CI is a deliberate choice — record it as an open question in charter §9 so reviewers know live G2 proof needs the canary.
+Recorded open questions:
 
+- **The absolute gate is implemented but not enforced in CI.** With golden v1 on the demo fixture it fails on any reading (25% false answers), and not because the guardrail is broken: 12 of the 13 answerable questions ask about topics the seven fixture articles do not cover. `--enforce` is one flag away and is the thing G1 unlocks.
+- **The canary has never run.** It needs `GEMINI_API_KEY` as a repository secret; that is operator work, the same shape as S06-01's staging deploy.
 ## 9. Definition of done
 
-- [ ] CI green: `lint`, `typecheck`, `test`, `db-test`, `preview` (and `eval` once S06-03 lands).
-- [ ] Runbook entry in `docs/runbook.md` with the exact commands and counts.
-- [ ] Workbook ticked via `node scripts/update-workbook-status.mjs <ID> "✅ Done (<evidence>)"` only after the AC is objectively met.
-- [ ] Cross-tenant isolation suite extended for any new table or route; no new runtime dependency without explicit approval.
-- [ ] Review threads resolved; charter §9 decisions recorded in the runbook.
+- [x] CI green: `lint`, `typecheck`, `test`, `db-test`, `preview`, `web-build`, and the new `eval` job.
+- [x] Runbook entry in `docs/runbook.md` with the exact commands and counts, including the four scores.
+- [x] Workbook ticked via `node scripts/update-workbook-status.mjs S06-03 "…"` — **`🚧`, not `✅`**: the harness and the gate are done, G2 itself is red (see §10).
+- [x] Cross-tenant isolation suite extended for any new table or route (none added); no new runtime dependency.
+- [x] Review threads resolved; charter §9 decisions recorded in the runbook.
+
+## 10. Outcome (2026-10-25)
+
+**AC-1 met.** `npm run eval` loads `data/golden/golden-questions-v1.csv` through the existing validator, runs every row through `answerMessage` — policy, sensitive, facts, retrieval, generate, contract, guardrail, persist — on a migrated and seeded database as `concierge_app` under RLS, and scores four ways (`src/eval/harness.ts`). The provider is injectable; `--live` swaps in the production Gemini pair.
+
+**AC-2 met.** `evaluateGate` enforces the Appendix D thresholds and is boundary-tested (4/200 passes a 2% cap, 4/199 fails it). The PR job runs the evaluation and `compareToBaseline` against `data/golden/eval-baseline.json`, so a change that makes any score worse fails, and a shrunken golden set fails too. `set -o pipefail` is in the workflow because `npm run eval | tee` would otherwise hide the exit code.
+
+**AC-3 delivered, unproven.** The `canary` job exists and only runs on `schedule`/`workflow_dispatch` with `GEMINI_API_KEY`; no key is present in the PR job. It has not run yet.
+
+**G2 is measured, and it is red: 25% false answers, 40% correct-or-escalated, 100% correct escalation, 53.8% needless escalation on 20 questions.** The number is honest and the causes are separable:
+
+- **Corpus (G1):** the target topic reached the answer for 1 of 13 answerable questions. Golden v1 asks about pets, breakfast, wifi, check-in, transfers and extra beds; the demo fixture has seven adversarial articles on other topics. Most of the red is content that does not exist yet.
+- **A real guardrail bug, found and fixed here:** three sensitive-topic questions ("devolver el dinero", "cobrada dos veces", "reservarme una mesa") were answered because the keyword list only held other inflections. `src/ai/sensitive.ts` now matches morphological `stems`, and the four failed phrasings are regression cases in `tests/ai/guard.test.ts`.
+- **A class of failure no existing control could see:** five answers came from an article about a different topic, each with a real citation and a verbatim quote, so `verifyAnswer` passed all five. Scoring the answer's `topic_keys_used` against the golden `target_topic` is what makes them `false_answer`, and `offTopic` records which topic answered which question.
+
+**Deliberately not done:** `--enforce` in CI (would be red for a reason no PR author can fix until G1), the 40-question golden v2 and the 25 articles (G1 content), and the live nightly number.

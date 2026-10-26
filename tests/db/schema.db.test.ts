@@ -86,6 +86,7 @@ describe("schema (db)", () => {
       "0015_guest_chat.sql",
       "0016_conversation_state.sql",
       "0017_handoff_from_resolved.sql",
+      "0018_request_capture.sql",
     ]);
   });
 

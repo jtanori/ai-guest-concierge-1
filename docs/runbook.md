@@ -920,3 +920,35 @@ $ npm run typecheck && npm run lint && npm run web:build   # clean
 ```
 
 **Not done, by charter:** staff inbox rendering (S08-01) — the request row exists and `human_takeover` fires, but nothing displays it yet; notification delivery (S09-05) — `service_requests` is written, email is not sent. `takeover()` still records *why* but not *who* (no staff identity on this path until S08-01).
+
+## S07-03 - Request capture + honest acknowledgement (1.00d)
+
+**AC (verbatim):** No code path can claim a request is fulfilled.
+
+- **AC-1** A request creates `service_requests` + `knowledge_gaps` (for no-answer) in the same transaction as the acknowledgement message.
+- **AC-2** A banned-phrase test scans every outbound template for fulfilment claims.
+
+**Status: DONE (2026-10-25).** `src/requests/capture.ts`, `src/requests/honesty.ts`, `db/migrations/0018_request_capture.sql`, `tests/requests/honesty.test.ts`, `tests/db/request-capture.db.test.ts`.
+
+**The bug this item actually closed.** `guest.idontknow` said *"I've asked the front desk to reply directly"* and `guest.unavailable` said *"I've passed this to the team"* — and neither created a request. The guest was told a human had it, and no queue would ever show it: the no-answer path wrote a `knowledge_gaps` row and stopped, and an escalation wrote nothing at all. S07-02 had already made the one-tap handoff create a real `service_requests` row; this item makes **every** path that promises a human do the same, through one function.
+
+**The decisions that shaped the code:**
+
+- *Capture precedes the message, in the same transaction.* `captureRequest` is called **before** the acknowledgement is inserted, inside the guest turn's transaction (`withGuestSession`). If the request cannot be written, the acknowledgement rolls back with it and the guest gets an error rather than a promise no queue backs. `tests/db/request-capture.db.test.ts` proves the rollback: a failure after capture leaves **no** request, no gap and no event.
+- *One open request per conversation.* A guest with three unanswered questions has one conversation a human should read, not three tasks. Later captures reuse the open row and emit no second `request_created`, so S08-01's queue counts conversations — the number an agent can act on — and retry logic cannot inflate it.
+- *The knowledge gap is reused, not duplicated.* The pipeline (S05-02) already writes a gap for an empty retrieval and for the model's own `no_answer`. `captureRequest` looks for an open gap with the same question in the same conversation first; the end-to-end test asserts exactly one gap row for one missed question. A different question in the same conversation adds a second gap while keeping one request — that is the correct shape for "what content should we write?".
+- *`requestTopicFor` is exhaustive over the decision type.* A new `GuestTurn["decision"]` that forgets to declare its queue topic is a **compile error** rather than a silently uncaptured request. `handoff` returns `null` there because S07-02's path already captured its request before the state change.
+- *Copy changed on the escalate path, and only there.* `guest.request_ack` ("I've passed this to our team. A person will reply here…") now replaces `guest.idontknow` for escalations — a refund or an allergen question is not "I don't want to guess", it is "a person has this". `guest.idontknow` stays for the no-answer path, where "I don't want to guess" is precisely what happened. `guest.request_failed` from the charter §4 was **not** added: a failed capture rolls the turn back, so a "we couldn't log it" string would describe a state the guest can never reach. Inventing copy for an unreachable branch is worse than not having it.
+- *`honesty.ts` is separate from `banned.ts`, deliberately.* `banned.ts` guards **model output** at generation time and its response is to escalate; `honesty.ts` guards **our own copy** at build time and its response is a red test. One list for both jobs would be tuned for neither.
+- *The sweep covers every `guest.*` string, not a curated "outbound" list.* A list is the failure mode: the string somebody adds on a Friday is the one missing from it. The exemption is `staff.*` labels — `staff.review.resolved` is "Resuelto", the name of a state shown to staff about a row whose `status` literally is `resolved`; nothing under `staff.*` can reach a guest (`replyFor`, the disclosure, the handoff acknowledgement and the guest page all read `guest.*` only). The test also asserts it scanned at least 20 strings, because a sweep that scanned nothing would pass for the wrong reason.
+- *`0018`'s trigger forbids only the impossible pairings* — `acknowledged_at` on a `new` row, `resolved_at` on anything but `resolved`. It does not require `acknowledged_at` when the status moves: that rule belongs to S09-01's transition table, which also knows *who* acknowledged. The migration stops the table from carrying a lie without getting in front of the item that owns the lifecycle.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector + pg_trgm):**
+```text
+$ npm test        # 31 files / 408 passed (5 honesty cases, incl. the vacuity check)
+$ npm run db:test # 25 files / 221 passed (9 capture cases; 18-migration chain applies)
+$ npm run eval    # unchanged four scores; regression gate pass
+$ npm run typecheck && npm run lint && npm run web:build   # clean
+```
+
+**Not done, by charter:** lifecycle transitions (S09-01 — a request still cannot leave `new`), email delivery (S09-05). Copy review by the content owner (W00-10) is still owed before G1 sign-off; the honesty test constrains *claims*, not tone.

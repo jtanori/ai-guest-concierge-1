@@ -34,6 +34,7 @@ import { AiUnavailableError, type ResilientAi } from "../ai/provider.ts";
 import type { Channel, EventContext } from "../events/taxonomy.ts";
 import { emitEvent } from "../events/emit.ts";
 import { lockState, takeover, transition } from "../conversation/state.ts";
+import { captureRequest, type RequestTopic } from "../requests/capture.ts";
 import { t, type Lang } from "../i18n/catalog.ts";
 import type { TenantContext } from "../db/tenant.ts";
 import { signGuestTicket, type GuestTicket } from "./cookie.ts";
@@ -342,6 +343,32 @@ export function replyFor(outcome: AnswerOutcome, language: Lang): { body: string
   }
 }
 
+/**
+ * S07-03 — which queue row an outcome needs, if any.
+ *
+ * Every branch that is not an answer ends in a promise to the guest ("I've
+ * passed this to our team"), so every one of them must produce a request. The
+ * mapping is exhaustive over `GuestTurn["decision"]` on purpose: a new decision
+ * that forgets to declare itself here is a compile error, not a silently
+ * un-captured request.
+ */
+export function requestTopicFor(decision: GuestTurn["decision"]): RequestTopic | null {
+  switch (decision) {
+    case "answer":
+    case "fact":
+    case "handoff":
+      // `handoff` already captured its request in `postGuestHandoff` before the
+      // state change; capturing again here would be a second row for one tap.
+      return null;
+    case "no_answer":
+      return "unanswered_question";
+    case "unavailable":
+      return "ai_unavailable";
+    case "escalate":
+      return "needs_human";
+  }
+}
+
 function reasonFor(outcome: AnswerOutcome): string | null {
   switch (outcome.kind) {
     case "answer":
@@ -504,6 +531,26 @@ export async function postGuestMessage(
       at,
     });
     const reply = replyFor(outcome, language);
+
+    // S07-03 AC-1: the request row is written BEFORE the message that promises
+    // it, inside the same transaction. If the insert fails, the acknowledgement
+    // is rolled back with it and the guest sees an error rather than a promise
+    // no queue backs. The knowledge gap rides along for a no-answer — the
+    // pipeline already wrote one, and `captureRequest` reuses it rather than
+    // queueing the same question twice.
+    const topic = requestTopicFor(reply.decision);
+    if (topic !== null) {
+      await captureRequest(scoped, session.context, {
+        conversationId: conversation.conversationId,
+        topic,
+        question: text,
+        language,
+        knowledgeGap: reply.decision === "no_answer",
+        reasonCode: reasonFor(outcome),
+        at,
+      });
+    }
+
     const body = withDisclosure(reply.body, language, firstReply);
     const outbound = await insertMessage(scoped, session.context, {
       conversationId: conversation.conversationId,
@@ -628,42 +675,18 @@ export async function postGuestHandoff(
       language,
     });
 
-    // One open request per conversation. A guest who taps twice (or taps after
-    // a page reload) has one problem, and a human should see one row.
-    const openRequest = await scoped.query<{ request_id: string }>(
-      `SELECT request_id
-         FROM service_requests
-        WHERE org_id = $1 AND property_id = $2 AND conversation_id = $3
-          AND status IN ('new', 'acknowledged', 'assigned')
-        LIMIT 1`,
-      [session.context.orgId, session.context.propertyId, conversationId],
-    );
-    let requestId = openRequest.rows[0]?.request_id;
-    const requestCreated = requestId === undefined;
-    if (requestId === undefined) {
-      const created = await scoped.query<{ request_id: string }>(
-        `INSERT INTO service_requests (org_id, property_id, conversation_id, topic, status)
-         VALUES ($1, $2, $3, 'guest_requested_human', 'new')
-         RETURNING request_id`,
-        [session.context.orgId, session.context.propertyId, conversationId],
-      );
-      requestId = created.rows[0]!.request_id;
-      await emitEvent(
-        scoped,
-        session.context,
-        "request_created",
-        {
-          orgId: session.context.orgId,
-          propertyId: session.context.propertyId,
-          conversationId,
-          channel: "web",
-          language,
-          topic: null,
-          createdAt: at.toISOString(),
-        },
-        { request_id: requestId, topic: "guest_requested_human", source: "guest_handoff" },
-      );
-    }
+    // S07-03: one implementation of "a request exists", shared with the turn
+    // path below. A guest who taps twice (or taps after a page reload) has one
+    // problem, so capture reuses the open request and says so in the event.
+    const captured = await captureRequest(scoped, session.context, {
+      conversationId,
+      topic: "guest_requested_human",
+      language,
+      reasonCode: "guest_asked_human",
+      at,
+    });
+    const requestId = captured.requestId;
+    const requestCreated = captured.created;
 
     const body = withDisclosure(t("guest.staff_reply_pending", language), language, firstReply);
     const outbound = await insertMessage(scoped, session.context, {

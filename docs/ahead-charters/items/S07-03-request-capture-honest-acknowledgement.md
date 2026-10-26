@@ -9,14 +9,14 @@ priority: P0
 depends_on: [S06-02]
 labels: [sprint:S07, track:foundation, prio:P0]
 milestone: S07 - Chat hardening
-status: draft
+status: done
 issue: https://github.com/jtanori/ai-guest-concierge-1/issues/81
 pickup: ready
+approved: 2026-10-25
+done: 2026-10-25
 ---
 
 # S07-03 — Request capture + honest acknowledgement
-
-> **DRAFT — not approved.** Generated from the master backlog, `docs/01-development-plan.md` and the code at `main` + PR #32 head `81b19bb`. `docs/charters/README.md` says **"No item starts until its charter is approved"** — this file is a proposed contract, not permission to start. File paths, migration numbers and signatures are calculated from the current tree; rebase them on whatever merges first.
 
 | | |
 |---|---|
@@ -65,16 +65,27 @@ Request rows are tenant-scoped; add `service_requests`/`knowledge_gaps` to the i
 
 ## 8. Pickup status, blockers and decisions
 
-**READY — changes calculated below; can be picked up once its charter is approved and its dependencies merge.**
+**Started 2026-10-25** after S07-02 merged (`33469c9`). §4 was followed with three changes, each argued in §10:
 
-Open decisions / blockers:
+- `src/requests/honesty.ts` holds the denylist as a module (with reasons per rule) rather than inline in the test, so `tests/requests/honesty.test.ts` scans the catalogue and `replyFor`'s rendered output with the same rules the product is held to.
+- The sweep covers **every `guest.*` catalogue string**, not the curated "outbound template" list §4 implied; `staff.*` labels are exempt and why is recorded.
+- `guest.request_failed` was **not** added — see §10.
 
-- READY — no external decision. Copy must be reviewed by the content owner (W00-10) before G1 sign-off.
-
+Still owed to someone else: copy review by the content owner (W00-10) before G1 sign-off. The honesty test constrains claims, not tone.
 ## 9. Definition of done
 
-- [ ] CI green: `lint`, `typecheck`, `test`, `db-test`, `preview` (and `eval` once S06-03 lands).
-- [ ] Runbook entry in `docs/runbook.md` with the exact commands and counts.
-- [ ] Workbook ticked via `node scripts/update-workbook-status.mjs <ID> "✅ Done (<evidence>)"` only after the AC is objectively met.
-- [ ] Cross-tenant isolation suite extended for any new table or route; no new runtime dependency without explicit approval.
-- [ ] Review threads resolved; charter §9 decisions recorded in the runbook.
+- [x] CI green: `lint`, `typecheck`, `test`, `db-test`, `preview`, `web-build`, `eval`.
+- [x] Runbook entry in `docs/runbook.md` with the exact commands and counts.
+- [x] Workbook ticked via `node scripts/update-workbook-status.mjs S07-03 "✅ Done (…)"`.
+- [x] Cross-tenant isolation suite extended (no new table; `tests/db/request-capture.db.test.ts` proves a foreign conversation id is refused and writes nothing).
+- [x] Review threads resolved; charter §9 decisions recorded in the runbook.
+
+## 10. Outcome (2026-10-25)
+
+**AC-1 met.** `captureRequest` (`src/requests/capture.ts`) writes `service_requests` — and, for a no-answer, the `knowledge_gaps` row — **before** the acknowledgement message and inside the guest turn's transaction. If anything after capture fails, the request, the gap and the events roll back with the message; the test throws after capturing and asserts an empty result. One open request per conversation: a second unanswered question joins it, a second identical question reuses the gap. The end-to-end cases go through `postGuestMessage`: a refund question produces a `needs_human` request and a `guest.request_ack`; `xyzzyqqq` produces an `unanswered_question` request with exactly one gap, reusing the one the pipeline wrote.
+
+**AC-2 met.** `src/requests/honesty.ts` (five rules: confirmed, booked, en route, done, guaranteed, ES+EN) is applied to every `guest.*` string in both languages and to every branch of `replyFor` rendered in both languages. The suite first proves the rules are not vacuous — nine sample sentences that must be caught — then asserts zero offenders, and asserts it scanned at least twenty strings so an empty sweep cannot pass.
+
+**A real bug, not just a test.** The copy already promised a human on both the no-answer and outage paths while no request row existed. Capture closes that; the escalate path's copy changed from "I don't want to guess" to `guest.request_ack` because a refund question is not a knowledge gap, it is a human's job.
+
+**Deliberately not done:** `guest.request_failed` (a failed capture rolls the turn back, so the string would describe an unreachable state); the lifecycle transitions (S09-01) and email delivery (S09-05), both out of scope by §3.

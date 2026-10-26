@@ -76,15 +76,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      # TEMPORARY DIAGNOSTIC (remove before merge): the failure text is only
-      # reachable through the step summary, because the raw log archive host is
-      # not reachable from the agent sandbox.
-      - run: |
-          set +e
-          npm run db:test > /tmp/db.log 2>&1
-          status=$?
-          tail -80 /tmp/db.log >> "$GITHUB_STEP_SUMMARY"
-          exit $status
+      - run: npm run db:test
 
   # S04-01 — the staff screen (web/) is its own npm project, so a plain
   # `npm ci` at the root never touches it and a broken screen would merge

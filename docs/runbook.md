@@ -841,3 +841,53 @@ $ npm run typecheck && npm run lint && npm run build   # clean
 The db suite walks 8 legal and 4 illegal edges (plus 4 no-ops) through raw SQL, asserts the row is unchanged after a refusal, and drives the guest path end-to-end after a takeover.
 
 **Not done, by charter:** the inbox UI that produces takeovers in practice (S08-01), the AI↔staff hand-back UI (S08-03), and the service-request status machine (S09-01). Recorded for S08: `takeover()` accepts no actor yet — there is no staff identity on the conversation path until S08-01 supplies one, so `handoff_reasons` records *why* but not *who*.
+
+## S06-03 - Evaluation harness + CI job (1.50d)
+
+**AC (verbatim):** G2 passes on the fixture property; runs on every prompt change.
+
+- **AC-1** `npm run eval` loads the golden CSV, runs every question through the real pipeline with an injectable provider, and scores four ways.
+- **AC-2** CI fails on regression: false-answer >2% or correct-or-escalation <95%.
+- **AC-3** Nightly canary against the live property (config, no secrets in logs).
+
+**Status: HARNESS + CI DONE; the G2 number is measured and it is red.** `scripts/eval.ts`, `src/eval/harness.ts`, `src/eval/thresholds.ts`, `src/eval/fake-provider.ts`, `tests/eval/*`, `data/golden/eval-baseline.json`, `.github/workflows/eval.yml`.
+
+**The first honest measurement, on the demo fixture and golden v1:**
+
+```text
+$ npm run eval
+20 questions (13 answer-expected / 7 escalation-expected) — below the 50 the 2.0% cap needs
+| false answer                  | 25.0% (5/20)  | ≤2.0%  | FAIL |
+| correct or correctly escalated| 40.0% (8/20)  | ≥95.0% | FAIL |
+| correct escalation            | 100.0% (7/7)  | ≥90.0% | pass |
+| needless escalation           | 53.8% (7/13)  | ≤20.0% | FAIL |
+retrieval: the target topic reached the answer for 1/13 answerable questions (7.7%)
+regression gate: pass (baseline data/golden/eval-baseline.json)
+```
+
+**The measurement found two real defects on its first run, and both are fixed here:**
+
+1. **Three sensitive-topic misses.** "Quiero cancelar y que me devuelvan el dinero", "Creo que mi tarjeta se quedó cobrada dos veces" and "¿Pueden reservarme una mesa...?" all reached the model and were *answered*. The S05-02 keyword list held `devolucion` and `cobraron` but not `devolver`/`devuelvan`, and `reservar` but not `reservarme` — Spanish inflects by suffix, and a whole-word match cannot see that. `src/ai/sensitive.ts` now carries `stems` (`devolv`, `devuelv`, `cobr`, `reembols`, `factur`, `charg`, `reserv`, `cancel`, `disponib`), matched inside a word, and `tests/ai/guard.test.ts` pins the four phrasings that failed. This is exactly the "no silent fallbacks" rule: the harness named the reason, it did not just lower a score.
+2. **Five answers to the wrong question.** "What time is breakfast served?" was answered from the gym article; "¿A qué hora es el check-in?" from the quiet-hours policy; "Is the pool heated in winter?" from the gym. Every one of them **passed** `verifyAnswer`: the citation was real, the quote was verbatim, there was no banned content. Citation verification proves a quote exists in the article it names; it cannot prove the article was about the guest's question. The harness scores the answer's `topic_keys_used` against the golden row's `target_topic`, so those are `false_answer` — with `offTopic: { target, answered }` recorded, so the report says "answered from policy.quiet — not checkin.hours" instead of just counting.
+
+**What the red number is actually saying.** Only 1 of 13 answerable questions had its target topic retrieved: the demo fixture has seven adversarial articles (`dining.menu`, `policy.quiet`, `pool.hours`, `spa.services`, `gym.hours`, `policy.parking`) while golden v1 asks about pets, breakfast, wifi, check-in, transfers, extra beds and parking. So most of the red is **corpus**, not code — the harness is measuring the G1 content gap, which is the correct thing to measure, and it now says so in the report rather than leaving a reader to guess.
+
+**The decisions that shaped the code:**
+
+- *Two gates, because only one of them can be honest today.* The **absolute** gate (`evaluateGate`, plan Appendix D) needs a golden set that covers the property's articles; it is implemented and boundary-tested but takes `--enforce` to fail a build. The **regression** gate (`compareToBaseline`) is armed now, against `data/golden/eval-baseline.json`, and it is what CI actually blocks on: "did this change make it worse" is answerable from any deterministic set. Neither is allowed to stand in for the other, and the runbook prints which is which on every run.
+- *The 2% cap cannot be expressed on 20 questions.* One row is worth 5%. `thresholds.ts::MIN_QUESTIONS_FOR_GATE = 50` exists so the report says "below the 50 the 2% cap needs" instead of pretending 0/20 is a passing rate; `armed` is part of the verdict.
+- *A fake provider, and it is the right choice for CI.* `createGroundedProvider()` reads the prompt the pipeline actually built (same articles, same ids, same schema), and answers by quoting the sentence that shares the most content words with the question. It is deterministic, keyless, free, and network-free, so a red check on a PR is always something the author can fix. It is **not** a model-quality claim: it is the best case reachable from that retrieval, so a low score here is a retrieval or guardrail finding.
+- *The fake says `no_answer` when no article addresses the question* — quoting an unrelated sentence because it is the only one available is the exact behaviour the guardrail exists to stop, and a fake that faked it would be measuring itself.
+- *Live model quality is the nightly canary, in its own workflow.* `.github/workflows/eval.yml` has a `canary` job that only runs on `schedule`/`workflow_dispatch` with `GEMINI_API_KEY`. A vendor outage must not be able to block a pull request for a reason the author cannot fix, and an LLM key must not exist in PR CI at all. The PR job has no key.
+- *A provider outage always exits 2, enforced or not.* "0% false answers" measured while the model was unreachable is a lie with a nice table.
+- *`set -o pipefail` in the workflow.* Without it `npm run eval | tee report.md` swallows the gate's exit code and the job is green on a failure.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector + pg_trgm):**
+```text
+$ npm test        # 30 files / 403 passed (17 harness + 5 fake-provider cases new)
+$ npm run db:test # 23 files / 204 passed
+$ npm run eval    # four scores + 12 named misses + retrieval diagnostic; regression gate pass
+$ npm run typecheck && npm run lint && npm run web:build   # clean
+```
+
+**Not done, by design or by dependency:** G2 as a *pass* (needs G1: golden v2 and 25 current articles — the number stays red until then, and S05-02 AC-3 stays unmeasurable until it does); the nightly canary's first observed run (needs `GEMINI_API_KEY` as a repo secret — operator work, like S06-01's staging deploy); `--enforce` in CI (deliberately off until the corpus can pass it — switching it on today would make every PR red for a reason no author can fix, which is how a gate gets deleted).

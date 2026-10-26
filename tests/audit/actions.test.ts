@@ -10,6 +10,10 @@ describe("audit vocabulary (S02-03)", () => {
   it("keeps the closed action list explicit", () => {
     expect(AUDIT_ACTIONS).toEqual([
       "settings.updated",
+      "request.acknowledged",
+      "request.assigned",
+      "request.resolved",
+      "request.cancelled",
       "membership.granted",
       "membership.role_changed",
       "membership.revoked",
@@ -33,6 +37,7 @@ describe("audit vocabulary (S02-03)", () => {
   it("keeps the closed entity list explicit", () => {
     expect(ENTITY_TYPES).toEqual([
       "property",
+      "request",
       "membership",
       "user",
       "article",

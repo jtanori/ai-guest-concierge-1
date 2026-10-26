@@ -111,7 +111,8 @@ export interface ConversationDetailWire {
   messages: DetailMessageWire[];
   requests: Array<{
     requestId: string;
-    status: string;
+    /** S09-01 — the lifecycle's five words, mirroring `DetailRequest`. */
+    status: "new" | "acknowledged" | "assigned" | "resolved" | "cancelled";
     topic: string | null;
     createdAt: string;
   }>;

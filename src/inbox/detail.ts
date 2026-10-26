@@ -28,6 +28,7 @@
  * explicitly in addition to RLS.
  */
 import type pg from "pg";
+import type { InboxRequestStatus } from "./queries.ts";
 import { assertTenantShape, type TenantContext } from "../db/tenant.ts";
 import type { StaffSession } from "../auth/context.ts";
 import { loadCitations, type ReconstructedCitation } from "../ai/history.ts";
@@ -74,7 +75,16 @@ export interface DetailMessage {
 
 export interface DetailRequest {
   requestId: string;
-  status: string;
+  /**
+   * The five words of 0024's machine, not `string`.
+   *
+   * `service_requests.status` has been CHECKed to exactly these since 0001:157,
+   * so the loose type was never buying anything — and it cost something: it is
+   * why the detail screen rendered `request.status` raw instead of through the
+   * catalogue, because a `Record<union, StringId>` lookup will not compile
+   * against a `string` key. Tightening it makes the translation total.
+   */
+  status: InboxRequestStatus;
   topic: string | null;
   createdAt: string;
 }
@@ -201,7 +211,7 @@ export async function getConversationDetail(
 
   const requests = await client.query<{
     request_id: string;
-    status: string;
+    status: InboxRequestStatus;
     topic: string | null;
     created_at: Date;
   }>(

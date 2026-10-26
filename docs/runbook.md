@@ -1330,3 +1330,56 @@ $ npm run web:build    # green; /settings in the manifest
 Live: `GET /api/settings/ai-mode` answers `503 {"detail":"NEON_AUTH_JWKS_URL is required"}` without auth configured — the same degraded contract as every other staff route, which is what proves the new prefix reaches the shared pipeline.
 
 **Not done, by charter:** scheduled mode changes, per-channel modes, new modes.
+
+## S09-01 - Request lifecycle (2.00d)
+
+**AC (verbatim):** request_acknowledged is set by a real staff action.
+
+- **AC-1** Legal transitions `new→acknowledged→assigned→resolved|cancelled` enforced at the DB level.
+- **AC-2** `acknowledged_at` can only be set inside `withStaffSession` by a role allowed on `queue:write`.
+- **AC-3** `request_acknowledged`, `request_assigned`, `request_resolved` events are emitted.
+
+**Status: DONE (2026-10-26).** `db/migrations/0024_request_lifecycle.sql` (new), `src/requests/lifecycle.ts` (new), `src/audit/actions.ts` (4 actions + the `request` entity), `src/inbox/actions.ts` (Assign/Resolve now walk the edges), `src/staff/http.ts` (request-scoped routes + 409/404 mapping), `src/inbox/detail.ts` (status typed as the union), `web/lib/request-status.ts` (new, shared vocabulary), `web/app/(staff)/inbox/[conversationId]/{page,actions}.tsx|ts` (Acknowledge + Cancel buttons), `web/app/(staff)/inbox/page.tsx`, `web/lib/types.ts`, `src/i18n/catalog.ts` (`staff.inbox.acknowledge*`, `cancel_request`, en+es); tests `tests/db/request-lifecycle.db.test.ts` (new, 36), `tests/requests/lifecycle.test.ts` (new, 26), `tests/staff/http.test.ts` (+3), `tests/inbox/detail-page.test.ts` (+2), `tests/audit/actions.test.ts`, `tests/db/{schema,non-superuser,inbox-actions}.db.test.ts` updated for the new file.
+
+**Before this item the status column was a suggestion.** `service_requests.status` has carried the five words since 0001, and any writer that could reach the row could set any of them. S08-03 tightened two corners (one assignment per person; `acknowledged_at` implies "not new"). Nothing stopped `new → resolved`, nothing stopped reopening a closed request, and nothing asked *who* was writing.
+
+**0024 puts the machine in the database.** One `BEFORE INSERT OR UPDATE` trigger, `request_transition_guard`, split deliberately in two:
+
+| concern | rule | errcode |
+|---|---|---|
+| **shape** (one row in isolation) | `acknowledged_by` may not sit on a row that is still `new` | `P0001` — 0018's code, 0018's family |
+| **transition** (the row's history) | only `new→acknowledged`, `acknowledged→assigned`, `assigned→resolved\|cancelled` | `23514` |
+| **actor** | `app.current_user_id` set *and* `current_membership_role(property_id) ∈ (1,2,3)` | `42501` |
+| **evidence** | acknowledged needs `acknowledged_at` + the actor as `acknowledged_by`; assigned needs an `assignments` row; resolved needs `resolved_at` | `23514` |
+| **identity** | `(org_id, property_id, request_id)` is immutable — an UPDATE cannot move a request out of the range of every tenant predicate | `23514` |
+
+AC-2's real content is the **actor** row: the trigger does not merely check that a user GUC is non-empty, it checks the same `current_membership_role()` definer function the RLS policies and `requireRole()` already trust. So the read-only observer (role 4) is refused *by the database* even though they pass RLS on the row — which is the case a TypeScript-only check cannot cover, because a background job or a raw psql session never reaches the TypeScript.
+
+**Two charter deviations, recorded rather than quietly taken.**
+
+1. **One trigger, not two.** §4 proposed a separate `request_ack_guard` for the timestamp/actor shape. 0018's `service_requests_time_guard` already owns that rule for `acknowledged_at`/`resolved_at` and raises `P0001`; a second trigger for the same family would give one mistake two errcodes depending on which fired first (trigger order is alphabetical, so `request_…` beats `service_…`). The new column's shape rule lives in the new trigger and reuses `P0001`.
+2. **`acknowledged_by` is not frozen after the edge.** §8 asked to "reject changes to an existing acknowledgement". It doesn't, and that is deliberate: the immutable record of who acknowledged what and when is the `audit_log` row written on the edge — the same reasoning as S08-04, where `properties` has no `updated_at` because the audit row *is* the change record. Freezing the column would duplicate that history in a place that keeps none, and it broke two existing contracts (0018's "the honest pair is accepted" insert, and the S08-01 inbox fixture, which stamps `resolved_at` on an already-resolved row). What *is* enforced is that the column can only be established on the acknowledged edge, by the actor who is signed in.
+
+**The route.** `POST /api/inbox/requests/:id/{acknowledge|assign|resolve|cancel}`, not §4's `/staff/requests/:id/:action` — there is no `/staff` prefix; S08 established `/api/*` behind the shared identity → tenant → role pipeline. It is request-scoped rather than conversation-scoped because acknowledgement is a fact about one request, and a thread can hold several.
+
+**Assign and Resolve had to be integrated, not bypassed.** S08-03's writers went `new → assigned` and `open → resolved` directly; a strict trigger without touching them would have broken both in production while every test stayed green. They now walk the edges through the same service:
+
+- `assignRequest` from `new` acknowledges first, then assigns — both by the authenticated caller, so the acknowledgement is a real staff action rather than a fabricated intermediate.
+- `resolveConversation` walks `new → acknowledged → assigned → resolved` for **every** open request on the thread, in the same transaction.
+
+The consequence is honest and worth stating: resolving an untouched request attributes the acknowledgement *and* the assignment to the person who resolved it, and sets `acknowledged_at = resolved_at`. That is the truth — nobody looked at it earlier — and the audit rows name them.
+
+**UI: a button per legal edge, never more.** 0024 answers 409 to a skipped edge, so an always-visible button is a button that reliably fails, and staff who learn one button lies stop trusting the rest of the bar. Acknowledge shows only at `new`; Assign to me at `new`/`acknowledged`; Cancel only at `assigned`. Both new actions are plain server-action forms (work before hydration, token stays in the HttpOnly cookie). The request list now renders status through the catalogue — the list screen translated these five words while the detail screen printed them raw, so the same request read differently on the two screens. `web/lib/request-status.ts` holds the vocabulary once; `REQUEST_LABEL` is `Record<RequestStatus, StringId>`, so a sixth status is a compile error until it is translated. `DetailRequest.status` and its wire mirror were `string`, which is what let the raw rendering compile — both are the union now, honest against the CHECK at 0001:157.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector 0.6.2 + pg_trgm 1.6):**
+```text
+$ npm run db:migrate   # 24 applied from an EMPTY database (0024 lands)
+$ npm run db:test      # 34 files / 315 passed (lifecycle: 36)
+$ npm test             # 44 files / 562 passed (lifecycle matrix: 26, http: +3, detail page: +2)
+$ npx tsc --noEmit && npx tsc --noEmit -p web/tsconfig.json && npm run lint   # clean
+$ npm run web:build    # green; /inbox/[conversationId] in the manifest
+```
+
+**The 36 DB cases are mostly raw SQL.** The service already refuses an illegal edge and `tests/requests/lifecycle.test.ts` proves that; the database suite exists because a TypeScript refusal is only a refusal for callers that go through the TypeScript. Each illegal pair is attempted with a *valid* queue-write actor and a hand-built `UPDATE` that never imports the service — the shape a background job or a psql session takes — and the assertion is both the errcode and that the row did not move. The actor cases drop `app.current_user_id` entirely, or set it to the observer, and assert `42501` with the status unchanged.
+
+**Not done, by charter:** email delivery (S09-05), knowledge-gap queue (S09-02), reassignment to a colleague from the UI, a `request_cancelled` event (the taxonomy has no such name — cancellation is audit-only).

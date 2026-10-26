@@ -18,7 +18,11 @@ import {
   ReviewInputError,
   ReviewNotFoundError,
 } from "../../src/knowledge/review.ts";
-import { classifyError, ownsReviewPath, tenantFromHeaders } from "../../src/staff/http.ts";
+import {
+  RequestLifecycleError,
+  RequestNotFoundError,
+} from "../../src/requests/lifecycle.ts";
+import { classifyError, ownsInboxPath, ownsReviewPath, tenantFromHeaders } from "../../src/staff/http.ts";
 
 const ORG = "11111111-1111-5111-a111-111111111111";
 const PROP = "22222222-2222-5222-a222-222222222222";
@@ -64,6 +68,31 @@ describe("review surface: status mapping (S04-01)", () => {
   it("never leaks an unexpected error's message", () => {
     const failure = classifyError(new Error("connection string postgres://user:pw@host"));
     expect(failure).toEqual({ status: 500, error: "internal_error" });
+  });
+});
+
+describe("request lifecycle: status mapping (S09-01)", () => {
+  it("maps a refused edge to 409, distinct from a missing request", () => {
+    // 409 and not 400: the caller's request was well formed, the *state* refused
+    // it. A 400 would tell the UI to stop sending a valid edge.
+    const conflict = classifyError(new RequestLifecycleError("illegal request transition new → resolved"));
+    expect(conflict.status).toBe(409);
+    expect(conflict.error).toBe("request_transition_conflict");
+    expect(classifyError(new RequestNotFoundError("id")).status).toBe(404);
+  });
+
+  it("answers 404 for another tenant's request, never 403", () => {
+    // The service scopes the lookup by (org_id, property_id), so a valid id from
+    // somebody else's property is indistinguishable from one that never existed —
+    // the same reason the guest surface and S08-02's detail do not distinguish
+    // them. A 403 would confirm the id is real.
+    expect(classifyError(new RequestNotFoundError("foreign")).error).toBe("not_found");
+  });
+
+  it("claims /api/inbox, which now also carries the request-scoped edges", () => {
+    expect(ownsInboxPath("/api/inbox/requests/abc/acknowledge")).toBe(true);
+    expect(ownsInboxPath("/api/inbox")).toBe(true);
+    expect(ownsInboxPath("/api/requests")).toBe(false);
   });
 });
 

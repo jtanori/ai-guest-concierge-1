@@ -21,6 +21,7 @@
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type pg from "pg";
+import { transitionRequest, RequestLifecycleError, RequestNotFoundError, type RequestStatus } from "../requests/lifecycle.ts";
 import { RoleNotOnSurfaceError } from "../auth/guard.ts";
 import {
   NoMembershipError,
@@ -89,6 +90,8 @@ interface Failure {
 }
 
 export function classifyError(error: unknown): Failure {
+  if (error instanceof RequestNotFoundError) return { status: 404, error: "not_found" };
+  if (error instanceof RequestLifecycleError) return { status: 409, error: "request_transition_conflict" };
   if (error instanceof AuthVerifyError || error instanceof UnknownStaffUserError) {
     return { status: 401, error: "unauthorized" };
   }
@@ -279,6 +282,22 @@ const ROUTES: Route[] = [
  * `<Link>`s instead of client state (DEC-1).
  */
 const INBOX_ROUTES: Route[] = [
+  {
+    method: "POST",
+    pattern: /^\/api\/inbox\/requests\/([0-9a-f-]{36})\/(acknowledge|assign|resolve|cancel)$/i,
+    run: async (m, _d, session, scoped, context, req) => {
+      const body = await readJson(req);
+      const targets: Record<string, RequestStatus> = {
+        acknowledge: "acknowledged", assign: "assigned", resolve: "resolved", cancel: "cancelled",
+      };
+      if (body["assigneeUserId"] !== undefined &&
+          (typeof body["assigneeUserId"] !== "string" || !UUID_RE.test(body["assigneeUserId"]))) {
+        throw new ActionInputError("assigneeUserId must be a uuid");
+      }
+      return transitionRequest(scoped, context, session, m[1]!, targets[m[2]!.toLowerCase()]!,
+        body["assigneeUserId"] as string | undefined);
+    },
+  },
   {
     // S08-02 — the conversation, its transcript, and the sources behind each
     // answer. Read-only: staff do not act on a conversation in this item.

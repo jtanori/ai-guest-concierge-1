@@ -102,6 +102,15 @@ export const en = {
   "staff.inbox.resolve": "Resolve",
   "staff.inbox.resolve_hint": "Closes the conversation and any request it opened.",
   "staff.inbox.assign_me": "Assign to me",
+  // S09-01 — acknowledgement is its own edge, so it gets its own button: it is
+  // the moment a person takes responsibility for having *seen* this, which is a
+  // different fact from being handed the work (assign) or finishing it (resolve).
+  // Without the button the only way to acknowledge was to assign, and then the
+  // time-to-acknowledge metric would have measured time-to-assignment instead.
+  "staff.inbox.acknowledge": "Acknowledge",
+  "staff.inbox.acknowledge_hint":
+    "Records that a person has seen this request. Assigning and resolving come after.",
+  "staff.inbox.cancel_request": "Cancel request",
   "staff.inbox.actions": "Actions",
   "staff.mode.nav": "Settings",
   // S08-04 — the operating mode. The hints are the whole product decision: an
@@ -240,6 +249,10 @@ export const es: Record<StringId, string> = {
   "staff.inbox.resolve": "Resolver",
   "staff.inbox.resolve_hint": "Cierra la conversación y cualquier solicitud que haya abierto.",
   "staff.inbox.assign_me": "Asignármela",
+  "staff.inbox.acknowledge": "Acusar recibo",
+  "staff.inbox.acknowledge_hint":
+    "Registra que una persona ya vio esta solicitud. Asignar y resolver vienen después.",
+  "staff.inbox.cancel_request": "Cancelar solicitud",
   "staff.inbox.actions": "Acciones",
   "staff.mode.nav": "Configuración",
   "staff.mode.title": "Modo del asistente",

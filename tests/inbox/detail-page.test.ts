@@ -68,6 +68,26 @@ describe("conversation detail page", () => {
     expect(actions.startsWith('"use server";')).toBe(true);
   });
 
+  it("offers only the lifecycle edges the database will accept (S09-01)", () => {
+    // 0024 answers 409 to an edge that is not in the matrix, so a button that is
+    // always on screen is a button that reliably fails — and staff who learn one
+    // button lies stop trusting the rest of the bar. Each request-scoped action
+    // is therefore gated on the status it is legal *from*.
+    expect(source).toContain("action={acknowledgeAction}");
+    expect(source).toContain('openRequest.status !== "new" ? null');
+    expect(source).toContain("action={cancelRequestAction}");
+    expect(source).toContain('openRequest.status !== "assigned" ? null');
+  });
+
+  it("renders the request status through the catalogue, not raw (S09-01)", () => {
+    // The list screen already translated these five words; the detail screen did
+    // not, so the same request read differently on the two screens. A raw
+    // `{request.status}` also has no ceiling — a sixth status would surface in
+    // English on the Spanish screen with nothing failing.
+    expect(source).toContain("REQUEST_LABEL[request.status]");
+    expect(code).not.toContain("{request.status}");
+  });
+
   it("labels a citation whose version is no longer current, rather than hiding it", () => {
     // AC-2's twin: an answer that cites history is history working, and staff
     // need to see that the source moved on without the answer being wrong.

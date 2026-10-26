@@ -36,6 +36,7 @@
  * (`resolved → awaiting_ai`, 0017).
  */
 import type pg from "pg";
+import { transitionRequest, type RequestStatus } from "../requests/lifecycle.ts";
 import { assertTenantShape, type TenantContext } from "../db/tenant.ts";
 import type { StaffSession } from "../auth/context.ts";
 import { writeAudit } from "../audit/write.ts";
@@ -329,6 +330,18 @@ export async function assignRequest(
   );
   if (member.rowCount === 0) throw new AssigneeNotMemberError(assignee);
 
+  const current = await client.query<{ status: RequestStatus }>(
+    "SELECT status FROM service_requests WHERE org_id = $1 AND property_id = $2 AND request_id = $3 FOR UPDATE",
+    [context.orgId, context.propertyId, requestId],
+  );
+  if (current.rows[0]!.status === "new") {
+    await transitionRequest(client, context, session, requestId, "acknowledged");
+  }
+  if (current.rows[0]!.status !== "assigned") {
+    await transitionRequest(client, context, session, requestId, "assigned", assignee);
+    return { requestId, assignedTo: assignee, created: true };
+  }
+  // Additional assignees remain append-only; retries produce no event or audit.
   const inserted = await client.query<{ assignment_id: string }>(
     `INSERT INTO assignments (org_id, property_id, request_id, assigned_to)
      VALUES ($1, $2, $3, $4)
@@ -336,21 +349,14 @@ export async function assignRequest(
      RETURNING assignment_id`,
     [context.orgId, context.propertyId, requestId, assignee],
   );
-
-  await client.query(
-    `UPDATE service_requests
-        SET status = CASE WHEN status = 'new' THEN 'assigned' ELSE status END
-      WHERE org_id = $1 AND property_id = $2 AND request_id = $3`,
-    [context.orgId, context.propertyId, requestId],
-  );
-
   const created = inserted.rowCount === 1;
   if (created) {
     await emitEvent(client, context, "request_assigned", eventContext(context, input.conversationId, head.language, new Date()), {
-      request_id: requestId,
-      assigned_to: assignee,
-      assignment_id: inserted.rows[0]!.assignment_id,
+      request_id: requestId, assigned_to: assignee, assignment_id: inserted.rows[0]!.assignment_id,
     });
+    await writeAudit(client, { ...context, actorUserId: session.userUuid,
+      action: "request.assigned", entityType: "request", entityId: requestId,
+      detail: { assigned_to: assignee } });
   }
 
   return { requestId, assignedTo: assignee, created };
@@ -379,8 +385,7 @@ export async function resolveConversation(
 ): Promise<ResolveResult> {
   session.requireRole("queue", "write");
   assertTenantShape(context);
-  const head = await lockConversation(client, context, input.conversationId);
-  const at = new Date();
+  await lockConversation(client, context, input.conversationId);
 
   // Close EVERY open request on the thread, not just the newest. "Resolve" is
   // about the conversation; leaving a second request `assigned` behind is exactly
@@ -402,15 +407,10 @@ export async function resolveConversation(
   }
 
   for (const requestId of requestIds) {
-    await client.query(
-      `UPDATE service_requests
-          SET status = 'resolved', resolved_at = $4::timestamptz
-        WHERE org_id = $1 AND property_id = $2 AND request_id = $3`,
-      [context.orgId, context.propertyId, requestId, at],
-    );
-    await emitEvent(client, context, "request_resolved", eventContext(context, input.conversationId, head.language, at), {
-      request_id: requestId,
-    });
+    // A click on Resolve is a real staff acknowledgement and assignment too.
+    // Execute every legal edge in the same transaction, never skip the guard.
+    await assignRequest(client, context, session, { conversationId: input.conversationId, requestId });
+    await transitionRequest(client, context, session, requestId, "resolved");
   }
 
   // `resolved -> resolved` is legal (`canTransition` returns true for identity),

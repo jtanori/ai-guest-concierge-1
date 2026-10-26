@@ -3,8 +3,11 @@ import { redirect } from "next/navigation";
 import { currentLang, translator, type StringId } from "@/lib/i18n";
 import { apiBase, readSession, type StaffCookieSession } from "@/lib/session";
 import type { ApiFailure, ConversationDetailWire, DetailMessageWire } from "@/lib/types";
+import { OPEN_REQUEST_STATUSES, REQUEST_LABEL } from "@/lib/request-status";
 import {
+  acknowledgeAction,
   assignToMeAction,
+  cancelRequestAction,
   replyAction,
   resolveAction,
   takeOverAction,
@@ -94,7 +97,7 @@ const PROBLEM_IDS = {
   error: "staff.inbox.problem_error",
 } as const;
 
-const OPEN_REQUEST = new Set(["new", "acknowledged", "assigned"]);
+const OPEN_REQUEST = OPEN_REQUEST_STATUSES;
 
 export default async function ConversationDetailPage({
   params,
@@ -186,12 +189,42 @@ export default async function ConversationDetailPage({
               </button>
             </form>
           )}
-          {openRequest === undefined ? null : (
+          {/*
+            S09-01 — the lifecycle, one button per edge the caller can legally
+            walk from where this request currently is. Showing all four always
+            would put a button on screen that the database is about to refuse:
+            the guard in 0024 answers 409 to `new → resolved`, and a button that
+            reliably fails teaches staff to ignore the screen.
+          */}
+          {openRequest === undefined || openRequest.status !== "new" ? null : (
+            <form action={acknowledgeAction}>
+              <input type="hidden" name="conversationId" value={detail.conversationId} />
+              <input type="hidden" name="requestId" value={openRequest.requestId} />
+              <button
+                type="submit"
+                className="rounded border px-3 py-1.5 text-xs font-medium"
+                title={tr("staff.inbox.acknowledge_hint")}
+              >
+                {tr("staff.inbox.acknowledge")}
+              </button>
+            </form>
+          )}
+          {openRequest === undefined || openRequest.status === "assigned" ||
+          openRequest.status === "resolved" || openRequest.status === "cancelled" ? null : (
             <form action={assignToMeAction}>
               <input type="hidden" name="conversationId" value={detail.conversationId} />
               <input type="hidden" name="requestId" value={openRequest.requestId} />
               <button type="submit" className="rounded border px-3 py-1.5 text-xs font-medium">
                 {tr("staff.inbox.assign_me")}
+              </button>
+            </form>
+          )}
+          {openRequest === undefined || openRequest.status !== "assigned" ? null : (
+            <form action={cancelRequestAction}>
+              <input type="hidden" name="conversationId" value={detail.conversationId} />
+              <input type="hidden" name="requestId" value={openRequest.requestId} />
+              <button type="submit" className="rounded border px-3 py-1.5 text-xs font-medium">
+                {tr("staff.inbox.cancel_request")}
               </button>
             </form>
           )}
@@ -233,7 +266,8 @@ export default async function ConversationDetailPage({
           <ul className="space-y-1">
             {detail.requests.map((request) => (
               <li key={request.requestId} className="text-[11px] text-muted-foreground">
-                {request.topic ?? "—"} · {request.status} · {formatTime(request.createdAt)}
+                {request.topic ?? "—"} · {tr(REQUEST_LABEL[request.status])} ·{" "}
+                {formatTime(request.createdAt)}
               </li>
             ))}
           </ul>

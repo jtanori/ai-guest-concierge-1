@@ -1,5 +1,9 @@
 export const AUDIT_ACTIONS = [
   "settings.updated",
+  "request.acknowledged",
+  "request.assigned",
+  "request.resolved",
+  "request.cancelled",
   "membership.granted",
   "membership.role_changed",
   "membership.revoked",
@@ -20,6 +24,7 @@ export const AUDIT_ACTIONS = [
 
 export const ENTITY_TYPES = [
   "property",
+  "request",
   "membership",
   "user",
   "article",

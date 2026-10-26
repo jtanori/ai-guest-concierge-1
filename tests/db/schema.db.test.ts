@@ -96,6 +96,7 @@ describe("schema (db)", () => {
       "0021_inbox_indexes.sql",
       "0022_citation_quotes.sql",
       "0023_staff_action_guards.sql",
+      "0024_request_lifecycle.sql",
     ]);
   });
 

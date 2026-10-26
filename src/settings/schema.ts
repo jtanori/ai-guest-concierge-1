@@ -21,6 +21,8 @@ export const SETTINGS_KEYS = [
   "enabled_topics",
   "spend_cap",
   "retention_days",
+  // S04-03
+  "retrieval_weights",
 ] as const;
 
 export type SettingsKey = (typeof SETTINGS_KEYS)[number];
@@ -35,6 +37,11 @@ export interface EscalationContact {
   value: string;
 }
 
+/** S04-03 — the three candidate lists hybrid retrieval fuses. */
+export const RETRIEVAL_WEIGHT_KEYS = ["lexical", "vector", "trigram"] as const;
+export type RetrievalWeightKey = (typeof RETRIEVAL_WEIGHT_KEYS)[number];
+export type RetrievalWeights = Record<RetrievalWeightKey, number>;
+
 export interface PropertySettings {
   tone: Tone;
   business_hours: BusinessDay[];
@@ -42,6 +49,13 @@ export interface PropertySettings {
   enabled_topics: string[];
   spend_cap: { daily_usd: number; per_conversation_usd: number };
   retention_days: number;
+  /**
+   * Relative weights for reciprocal-rank fusion. Only RATIOS matter: the
+   * fusion divides each weight by (60 + rank), so (1,1,1) and (2,2,2) rank
+   * identically. All-zero is refused because it would make every score 0 and
+   * the ordering arbitrary.
+   */
+  retrieval_weights: RetrievalWeights;
 }
 
 export class SettingsValidationError extends Error {
@@ -68,6 +82,7 @@ export const DEFAULT_SETTINGS: PropertySettings = {
   enabled_topics: [],
   spend_cap: { daily_usd: 10, per_conversation_usd: 0.5 },
   retention_days: 90,
+  retrieval_weights: { lexical: 1, vector: 1, trigram: 1 },
 };
 
 const TIME_RE = /^([01][0-9]|2[0-3]):[0-5][0-9]$/;
@@ -232,6 +247,30 @@ function parseRetention(value: unknown, path: string): number {
 }
 
 /**
+ * S04-03: exactly three weights, each a finite non-negative number, not all
+ * zero. Mirrors 0013's SQL validator clause for clause, so a value the DB
+ * refuses is refused here first with a path instead of a 23514.
+ */
+function parseRetrievalWeights(value: unknown, path: string): RetrievalWeights {
+  if (!isRecord(value)) fail(path, "must be an object");
+  assertExactKeys(value, RETRIEVAL_WEIGHT_KEYS, path);
+
+  const weights = {} as RetrievalWeights;
+  let total = 0;
+  for (const key of RETRIEVAL_WEIGHT_KEYS) {
+    const raw = value[key];
+    if (typeof raw !== "number" || !Number.isFinite(raw)) {
+      fail(`${path}.${key}`, "must be a finite number");
+    }
+    if (raw < 0) fail(`${path}.${key}`, "must be >= 0");
+    weights[key] = raw;
+    total += raw;
+  }
+  if (total <= 0) fail(path, "at least one weight must be > 0");
+  return weights;
+}
+
+/**
  * Parses stored JSON into a complete settings object. `{}` returns a fresh
  * copy of DEFAULT_SETTINGS; every other value must be complete.
  */
@@ -248,6 +287,7 @@ export function parsePropertySettings(value: unknown): PropertySettings {
     enabled_topics: parseTopics(value["enabled_topics"], "enabled_topics"),
     spend_cap: parseSpendCap(value["spend_cap"], "spend_cap"),
     retention_days: parseRetention(value["retention_days"], "retention_days"),
+    retrieval_weights: parseRetrievalWeights(value["retrieval_weights"], "retrieval_weights"),
   };
 }
 

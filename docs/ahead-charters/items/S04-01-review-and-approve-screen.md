@@ -9,10 +9,11 @@ priority: P0
 depends_on: [S03-01, S03-03]
 labels: [sprint:S04, track:foundation, prio:P0]
 milestone: S04 - Retrieval and review
-status: draft
+status: done
 issue: https://github.com/jtanori/ai-guest-concierge-1/issues/70
 pickup: decision
 approved: 2026-10-25
+done: 2026-10-25
 ---
 
 # S04-01 — Review-and-approve screen

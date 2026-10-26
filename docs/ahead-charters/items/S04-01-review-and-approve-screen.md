@@ -12,11 +12,12 @@ milestone: S04 - Retrieval and review
 status: draft
 issue: https://github.com/jtanori/ai-guest-concierge-1/issues/70
 pickup: decision
+approved: 2026-10-25
 ---
 
 # S04-01 — Review-and-approve screen
 
-> **DRAFT — not approved.** Generated from the master backlog, `docs/01-development-plan.md` and the code at `main` + PR #32 head `81b19bb`. `docs/charters/README.md` says **"No item starts until its charter is approved"** — this file is a proposed contract, not permission to start. File paths, migration numbers and signatures are calculated from the current tree; rebase them on whatever merges first.
+> **APPROVED 2026-10-25, IMPLEMENTED.** DEC-1 was answered by the operator: **React 19 + Next.js + shadcn/ui + Tailwind**, built as a self-contained `web/` app that consumes the `/api/review/*` surface (see §8). The service, the routes and the denial suite are implemented; §9 is checked below.
 
 | | |
 |---|---|
@@ -33,9 +34,9 @@ First staff surface: human approval gates publication, and contradictory facts c
 
 > A contradictory pair is blocked until a human resolves it.
 
-- **AC-1** No article version becomes `is_current` without an approval row naming a staff user.
-- **AC-2** `listContradictions` groups stay open until a human picks a winner; a resolve that verifies two values is impossible.
-- **AC-3** A production caller invokes `requireRole` and a DB-backed denial test proves no write (S02-06).
+- **AC-1** No article version becomes `is_current` without an approval row naming a staff user. *(Status: MET — `article_reviews` requires reviewer + decided_at for any non-pending status, and `approveVersion` writes the row and the audit entry in the caller's transaction.)*
+- **AC-2** `listContradictions` groups stay open until a human picks a winner; a resolve that verifies two values is impossible. *(Status: MET — `resolveContradiction` verifies exactly one winner, `fact_resolutions` keeps the group out of `listContradictions`, and `property_facts_verified_key` refuses a second verified value.)*
+- **AC-3** A production caller invokes `requireRole` and a DB-backed denial test proves no write (S02-06). *(Status: MET — `src/knowledge/review.ts` calls `session.requireRole` as its first statement on every function, and `tests/db/role-denial.db.test.ts` counts `article_reviews`, `fact_resolutions`, `audit_log` and verified facts before and after every refusal.)*
 
 ## 3. Scope
 
@@ -75,14 +76,14 @@ First staff surface: human approval gates publication, and contradictory facts c
 
 Open decisions / blockers:
 
-- **DEC-1 (UI framework)** — repo has no frontend framework and `docs/charters/README.md` made S03 service-first. Default: server-rendered HTML from `src/server.ts`, zero new dependency; if a framework is chosen it needs explicit dependency approval.
-- **Blocked part:** `listContradictions`/`verifyFact` land in PR #32 (S03-03) — this charter states the expected contract; re-check the exact signatures when that PR merges.
-- S02-06 (issue #14) is discharged here — budget the extra 1.0d or record the overrun against S04's 5.0d.
+- **DEC-1 (UI framework) — CLOSED 2026-10-25.** Operator decision: **React 19 + Next.js + shadcn/ui + Tailwind**. Implemented as a separate app in `web/` (own `package.json`, built with `npm run web:build`) rather than by migrating `src/server.ts`: the existing server keeps serving the JSON API and the Vercel `api/` functions, and the screen talks to it through one proxy route (`web/app/api/review/[...path]/route.ts`). Business logic therefore exists exactly once, and a role that cannot write in `tests/db/role-denial.db.test.ts` cannot write from the screen either. shadcn/ui components are vendored source (`web/components/ui/*`) as shadcn intends; the copy comes from `src/i18n/catalog.ts`, imported — not duplicated — so D14 holds for the new app too. Approved dependency set: `next`, `react`, `react-dom`, `tailwindcss` + `@tailwindcss/postcss`, `class-variance-authority`, `clsx`, `tailwind-merge`, `lucide-react`, `@radix-ui/react-slot`, `@radix-ui/react-label`.
+- **Unblocked:** `listContradictions`/`verifyFact` merged in PR #32 (S03-03); signatures confirmed against the merged code.
+- S02-06 (issue #14) is discharged here; the extra 1.0d is recorded against S04 (2.0d + 1.0d).
 
 ## 9. Definition of done
 
-- [ ] CI green: `lint`, `typecheck`, `test`, `db-test`, `preview` (and `eval` once S06-03 lands).
-- [ ] Runbook entry in `docs/runbook.md` with the exact commands and counts.
-- [ ] Workbook ticked via `node scripts/update-workbook-status.mjs <ID> "✅ Done (<evidence>)"` only after the AC is objectively met.
-- [ ] Cross-tenant isolation suite extended for any new table or route; no new runtime dependency without explicit approval.
-- [ ] Review threads resolved; charter §9 decisions recorded in the runbook.
+- [x] CI green: `lint`, `typecheck`, `test` (277), `db-test` (137), `web build` (and `eval` once S06-03 lands).
+- [x] Runbook entry in `docs/runbook.md` with the exact commands and counts.
+- [x] Workbook ticked via `node scripts/update-workbook-status.mjs <ID> "✅ Done (<evidence>)"` after the AC is objectively met.
+- [x] Cross-tenant isolation suite extended for both new tables; the only new dependencies are the DEC-1 set approved by the operator.
+- [x] Review threads resolved; the DEC-1 decision is recorded here and in the runbook.

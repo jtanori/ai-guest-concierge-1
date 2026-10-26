@@ -293,3 +293,26 @@ erDiagram
         timestamptz created_at
         timestamptz processed_at
     }
+    article_reviews {
+        uuid review_id PK
+        uuid org_id FK
+        uuid property_id FK
+        uuid article_version_id FK
+        text status
+        uuid reviewer_user_id FK
+        text note
+        timestamptz created_at
+        timestamptz decided_at
+    }
+    fact_resolutions {
+        uuid resolution_id PK
+        uuid org_id FK
+        uuid property_id FK
+        text topic_key
+        text fact_key
+        text language
+        date effective_from
+        uuid winner_fact_id FK
+        uuid resolved_by FK
+        timestamptz resolved_at
+    }

@@ -14,9 +14,12 @@
  * (Vercel-style) win, defaulting to 127.0.0.1:3000 for local dev.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import type pg from "pg";
 import { createLogger, isLogLevel, type LogLevel } from "./logging/index.ts";
 import { loadConfig, type AppConfig } from "./config/env.ts";
-import { postgresStatus, closePool } from "./neon/postgres.ts";
+import { postgresStatus, closePool, getPool } from "./neon/postgres.ts";
+import { loadAuthConfig, verifyIdentityToken } from "./auth/session.ts";
+import { handleReviewRequest, ownsReviewPath, type ReviewHttpDeps } from "./staff/http.ts";
 import { authStatus } from "./neon/auth.ts";
 import {
   getS3Client,
@@ -101,8 +104,51 @@ function send(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body, null, 2));
 }
 
+/**
+ * S04-01 — the first staff surface. Auth config is resolved per request so a
+ * host without Neon Auth answers 503 with a reason instead of refusing to boot
+ * (the same degraded-host contract the health routes follow).
+ */
+function reviewDeps(client: ReviewHttpDeps["client"]): ReviewHttpDeps {
+  const auth = loadAuthConfig(process.env);
+  return {
+    client,
+    verifyToken: (token) =>
+      verifyIdentityToken(token, { url: auth.url }, { issuer: auth.issuer, audience: auth.audience }),
+  };
+}
+
 const server = createServer((req: IncomingMessage, res: ServerResponse) => {
   const path = new URL(req.url ?? "/", `http://${req.headers.host}`).pathname;
+
+  if (ownsReviewPath(path)) {
+    // One checked-out client per request: withStaffSession runs BEGIN/COMMIT,
+    // so it must never borrow a different connection per statement.
+    void (async () => {
+      let deps: ReviewHttpDeps;
+      let client: pg.PoolClient;
+      try {
+        client = await getPool().connect();
+      } catch (error) {
+        send(res, 503, { status: "error", path, detail: (error as Error).message });
+        return;
+      }
+      try {
+        deps = reviewDeps(client);
+      } catch (error) {
+        client.release();
+        send(res, 503, { status: "error", path, detail: (error as Error).message });
+        return;
+      }
+      try {
+        await handleReviewRequest(req, res, deps);
+      } finally {
+        client.release();
+      }
+    })();
+    return;
+  }
+
   const handler = routes[path];
   if (!handler) {
     send(res, 404, { status: "not_found", path });

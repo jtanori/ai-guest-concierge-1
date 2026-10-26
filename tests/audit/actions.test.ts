@@ -17,9 +17,13 @@ describe("audit vocabulary (S02-03)", () => {
       "article.version_created",
       "article.updated",
       "article.archived",
+      // S04-01: the review queue's decisions are auditable events
+      "article.version_approved",
+      "article.version_rejected",
       "fact.created",
       "fact.updated",
       "fact.verified",
+      "fact.contradiction_resolved",
       "conversation.takeover",
       "message.sent",
       "support.access",
@@ -34,6 +38,7 @@ describe("audit vocabulary (S02-03)", () => {
       "article",
       "article_version",
       "fact",
+      "fact_group",
       "conversation",
       "message",
     ]);

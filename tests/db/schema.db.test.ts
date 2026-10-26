@@ -32,6 +32,8 @@ export const PLAN_TABLES = [
   "knowledge_sources", "knowledge_articles", "article_versions",
   "property_facts", "ai_runs", "citations", "handoff_reasons",
   "knowledge_gaps", "events", "rollups", "audit_log", "outbox",
+  // S04-01 (0010): the plan's 25 plus the review queue's two tenant tables.
+  "article_reviews", "fact_resolutions",
 ] as const;
 
 async function publicTables(client: pg.Client): Promise<Array<string>> {
@@ -74,15 +76,16 @@ describe("schema (db)", () => {
       "0007_audit_privileges.sql",
       "0008_article_versions_body_nullable.sql",
       "0009_property_facts.sql",
+      "0010_review_queue.sql",
     ]);
   });
 
-  it("has exactly the 25 tables the plan of record names", async () => {
+  it("has exactly the plan's 25 tables plus S04-01's two", async () => {
     const tables = (await publicTables(client)).filter(
       (t) => t !== "schema_migrations",
     );
     expect(new Set(tables)).toEqual(new Set(PLAN_TABLES));
-    expect(tables).toHaveLength(25);
+    expect(tables).toHaveLength(27);
   });
 
   it("fails loudly when an applied migration's file content drifts (checksum guard)", async () => {

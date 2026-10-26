@@ -506,7 +506,9 @@ describe("review queue (db)", () => {
         const claim = async (c: pg.PoolClient) => {
           await c.query("BEGIN");
           await c.query("SET LOCAL ROLE concierge_app");
-          const rows = await c.query<{ claimed_id: string }>("SELECT * FROM claim_review_outbox(1)");
+          const rows = await c.query<{ claimed_id: string }>(
+            "SELECT * FROM claim_outbox('review', 1)",
+          );
           return rows.rows.map((row) => row.claimed_id);
         };
         const a = await claim(first);

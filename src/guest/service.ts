@@ -695,6 +695,7 @@ export async function postGuestMessage(
         language,
         knowledgeGap: false,
         reasonCode: "staff_takeover",
+        messageId: inbound.messageId,
         at,
       });
       await scoped.query(
@@ -723,6 +724,11 @@ export async function postGuestMessage(
         language,
         knowledgeGap: reply.decision === "no_answer",
         reasonCode: reasonFor(outcome),
+        // S09-05: the pointer the escalation email follows to quote the guest. The
+        // text itself stays off `service_requests` — see `question` in
+        // CaptureRequestInput — so what travels is the id, and the body is read at
+        // send time under the tenant policy.
+        messageId: inbound.messageId,
         at,
       });
     }

@@ -37,6 +37,7 @@ import type pg from "pg";
 import { emitEvent } from "../events/emit.ts";
 import type { EventContext } from "../events/taxonomy.ts";
 import { recordGap } from "../gaps/queue.ts";
+import { enqueueEmail } from "../notifications/email.ts";
 import type { TenantContext } from "../db/tenant.ts";
 import type { Lang } from "../i18n/catalog.ts";
 
@@ -71,6 +72,19 @@ export interface CaptureRequestInput {
   knowledgeGap?: boolean;
   /** Appendix B reason code, for the event detail. */
   reasonCode?: string | null;
+  /**
+   * S09-05 — the guest message that triggered this request, as a pointer.
+   *
+   * `service_requests` deliberately has no message column (see `question` above:
+   * guest text does not ride on a queue row), but the escalation email quotes what
+   * the guest wrote so an on-call person can act without opening the console. So
+   * the id travels here and the body is read at send time, under the tenant policy.
+   *
+   * Absent on the "Talk to a person" path, where the guest tapped a button and
+   * wrote nothing. The email composes without the quote rather than printing an
+   * empty one.
+   */
+  messageId?: string | null;
   at?: Date;
 }
 
@@ -182,6 +196,35 @@ export async function captureRequest(
   // `knowledge_gap_created` is emitted by recordGap, on the row it actually
   // inserted. Emitting it here too would double-count every gap the pipeline had
   // already recorded, which is the same drift this item removes.
+
+  // S09-05 AC-1 — queued in THIS transaction, only for a request this call created.
+  //
+  // Same-commit is the whole guarantee: a notification service that polled for
+  // recent requests would have a window where the request exists and nothing has
+  // decided to send mail yet, and a crash in that window is a guest who asked for a
+  // person and got silence with nothing recording the absence.
+  //
+  // Not queued when an open request was reused: that request already announced
+  // itself, and 0028's dedupe index would refuse the second row anyway. Skipping
+  // here rather than relying on the index keeps the intent local.
+  //
+  // This is inside the guest's turn, so it must not be able to fail the turn: a
+  // guest who asked for help gets their request even if the mail cannot be queued,
+  // and `enqueueEmail` reports a duplicate instead of throwing.
+  if (created) {
+    await enqueueEmail(client, {
+      orgId: context.orgId,
+      propertyId: context.propertyId,
+      requestId,
+      conversationId: input.conversationId,
+      messageId: input.messageId ?? null,
+      stage: "new",
+      // No actor: the guest is not a `users` row and `audit_log.actor_user_id` is
+      // nullable. Attributing a system notification to a person would be a false
+      // record.
+      actorUserId: null,
+    });
+  }
 
   return { requestId, created, gapId, gapCreated };
 }

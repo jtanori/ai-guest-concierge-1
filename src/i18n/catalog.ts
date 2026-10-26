@@ -201,6 +201,39 @@ export const en = {
   "staff.session.language": "Language",
   "staff.session.help":
     "Paste the token your identity provider issued for you. It is stored in an HttpOnly cookie and never in the browser's storage.",
+  // S09-05 — the escalation email, composed from blocks rather than one template
+  // per case. Stage x fallback x "did the guest leave a message" is eight
+  // permutations; blocks keep one copy of each fact and let the composer decide
+  // which blocks apply. The button-tap path ("Talk to a person") has no guest
+  // message at all, so a body that assumed one would print an empty quote.
+  //
+  // §7 of the charter fixes the subject to the request id plus the property and
+  // "no PII beyond that": a subject is stored on the outbox row, is indexed by a
+  // third party's mail infrastructure, is legible on a locked phone's banner, and
+  // outlives the request. The guest's own words belong in the body, which goes only
+  // to people who could already open this conversation in the console.
+  "email.request.new.subject": "New guest request at {property} ({requestId})",
+  "email.request.acknowledged.subject": "Request acknowledged at {property} ({requestId})",
+  "email.request.new.intro": "A guest asked for a person at {property}.",
+  "email.request.acknowledged.intro":
+    "{actorName} acknowledged request {requestId} at {property}.",
+  "email.request.facts":
+    "Request: {requestId}\nType: {topic}\nConversation: {conversationId}",
+  "email.request.quote": "What the guest wrote:\n{message}",
+  // Printed instead of the quote when the mail goes to the deployment-wide
+  // fallback because the property configured no contacts of its own. That address
+  // is operator level, not scoped to this property, so it gets the pointer and not
+  // the content: forwarding one property's guest conversation to an address outside
+  // that property's access boundary would be a disclosure, and "nobody was
+  // configured, go look" is still the entire point of the notification.
+  "email.request.redacted_notice":
+    "This property has no escalation email configured, so this went to the deployment fallback. The guest's message is not included here, because this address is not scoped to that property.",
+  "email.request.open": "Open it in the console:\n{url}",
+  // The acknowledging colleague's display name is not readable from a worker:
+  // 0004's `users.staff_select` authorises your own row only, and widening that is
+  // an S02 security decision, not something an email composer should do quietly.
+  // So the sentence names the role; the console names the person.
+  "email.request.actor_team": "A member of our team",
 } as const;
 
 export type StringId = keyof typeof en;
@@ -373,6 +406,18 @@ export const es: Record<StringId, string> = {
   "staff.session.language": "Idioma",
   "staff.session.help":
     "Pega el token que tu proveedor de identidad emitió para ti. Se guarda en una cookie HttpOnly, nunca en el almacenamiento del navegador.",
+  "email.request.new.subject": "Nueva solicitud de huésped en {property} ({requestId})",
+  "email.request.acknowledged.subject": "Solicitud confirmada en {property} ({requestId})",
+  "email.request.new.intro": "Un huésped pidió hablar con una persona en {property}.",
+  "email.request.acknowledged.intro":
+    "{actorName} confirmó la solicitud {requestId} en {property}.",
+  "email.request.facts":
+    "Solicitud: {requestId}\nTipo: {topic}\nConversación: {conversationId}",
+  "email.request.quote": "Lo que escribió el huésped:\n{message}",
+  "email.request.redacted_notice":
+    "Esta propiedad no tiene configurado un correo de escalamiento, así que esto llegó al destinatario de respaldo del despliegue. El mensaje del huésped no se incluye aquí, porque esta dirección no pertenece a esa propiedad.",
+  "email.request.open": "Ábrela en la consola:\n{url}",
+  "email.request.actor_team": "Un miembro de nuestro equipo",
 };
 
 // Index with a readonly lookup; unknown ids are a type error, not an

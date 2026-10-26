@@ -493,12 +493,18 @@ describe("request lifecycle (db)", () => {
           WHERE entity_type = 'request' AND entity_id = $1 ORDER BY audit_id`,
         [requestId],
       );
+      // S09-05 adds a second row on the acknowledged edge only: the transition is
+      // audited, then the escalation email is queued and that is audited too, in the
+      // same transaction. `assigned` and `cancelled` queue nothing — emailing every
+      // status change would turn the escalation channel into noise.
       expect(audit.rows.map((row) => row.action)).toEqual([
         "request.acknowledged",
+        "notification.queued",
         "request.assigned",
         "request.cancelled",
       ]);
       expect(audit.rows.map((row) => row.actor_user_id)).toEqual([
+        DESK.userUuid,
         DESK.userUuid,
         DESK.userUuid,
         OWNER.userUuid,

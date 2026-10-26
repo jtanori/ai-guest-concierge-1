@@ -160,9 +160,13 @@ async function processOne(client: pg.PoolClient): Promise<Outcome | null> {
   await client.query("BEGIN");
   try {
     await client.query("SET LOCAL ROLE concierge_app");
-    // The one cross-tenant read, through 0027's definer function: `outbox` is
-    // FORCE RLS, so without this a worker sees no rows at all.
-    const rows = await client.query<ClaimedRow>("SELECT * FROM claim_review_outbox(1)");
+    // The one cross-tenant read, through the definer function 0027 added and 0028
+    // generalised to every kind: `outbox` is FORCE RLS, so without it a worker sees
+    // no rows at all.
+    const rows = await client.query<ClaimedRow>(
+      "SELECT * FROM claim_outbox($1, 1)",
+      [REVIEW_OUTBOX_KIND],
+    );
     if (rows.rowCount === 0) {
       await client.query("ROLLBACK");
       return null;

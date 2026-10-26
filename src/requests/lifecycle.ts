@@ -4,6 +4,7 @@ import type { StaffSession, TenantContext } from "../auth/context.ts";
 import { assertTenantShape } from "../db/tenant.ts";
 import { writeAudit } from "../audit/write.ts";
 import { emitEvent } from "../events/emit.ts";
+import { enqueueEmail } from "../notifications/email.ts";
 
 export const REQUEST_STATUSES = ["new", "acknowledged", "assigned", "resolved", "cancelled"] as const;
 export type RequestStatus = (typeof REQUEST_STATUSES)[number];
@@ -77,6 +78,30 @@ export async function transitionRequest(
     action: `request.${to}`, entityType: "request", entityId: requestId,
     detail: { previous: row.status, status: to },
   });
+  // S09-05 AC-1 — the acknowledgement is the second of the two notifications, and
+  // the more actionable one: it is the moment a human said "I have this". Queued in
+  // THIS transaction, so there is no window where the transition committed and
+  // nothing was told; if the enqueue fails the transition rolls back with it.
+  //
+  // Only on the acknowledged edge. `assigned` and `resolved` are already visible in
+  // the inbox to anyone looking, and emailing every status change turns the
+  // escalation channel into noise — which is how the one notification that mattered
+  // ends up filtered along with the rest.
+  //
+  // No messageId: this announces a staff action, not a new guest question, so the
+  // email carries the request facts and the console link and quotes nobody.
+  if (to === "acknowledged") {
+    await enqueueEmail(client, {
+      orgId: context.orgId,
+      propertyId: context.propertyId,
+      requestId,
+      conversationId: row.conversation_id!,
+      messageId: null,
+      stage: "acknowledged",
+      actorUserId: session.userUuid,
+    });
+  }
+
   if (to !== "cancelled") {
     // Only legal non-identity transitions reach here: 'new' is not a target.
     await emitEvent(client, context, `request_${to}`, {

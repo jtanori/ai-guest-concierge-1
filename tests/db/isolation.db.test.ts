@@ -36,6 +36,8 @@ const EXPECTED_TENANT_TABLES = [
   "rate_limits", "spend_counters",
   // S09-03 (0026): "wrong or outdated", append-only and tenant-scoped like the rest
   "answer_flags",
+  // S09-04 (0027): the review disposition the outbox worker writes
+  "answer_reviews",
 ];
 /** users/memberships carry S02-01's own surfaces (staff_select/staff_update_name
  *  and membership_select/insert/update/delete);
@@ -81,7 +83,7 @@ describe("row-level security (db)", () => {
       "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename != 'schema_migrations'",
     );
     const names = allTables.rows.map((r) => r.tablename).sort();
-    expect(names).toHaveLength(31);
+    expect(names).toHaveLength(32);
     expect(names).toEqual(
       [...EXPECTED_TENANT_TABLES, ...EXPECTED_GLOBAL_TABLES].sort(),
     );
@@ -444,6 +446,12 @@ async function seedOneTenant(client: pg.Client, tag: "a" | "b"): Promise<SeedRes
     `INSERT INTO answer_flags (org_id, property_id, ai_run_id, flagged_by, note)
      VALUES ($1, $2, $3, $4, 'stale hours')`,
     [ORG, PROP, RUN, USER],
+  );
+  // S09-04: the disposition the worker would have written for that same run.
+  await client.query(
+    `INSERT INTO answer_reviews (org_id, property_id, ai_run_id, needs_review, reason)
+     VALUES ($1, $2, $3, false, 'answered')`,
+    [ORG, PROP, RUN],
   );
   await client.query(
     `INSERT INTO handoff_reasons (org_id, property_id, conversation_id, reason_code)

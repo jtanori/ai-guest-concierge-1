@@ -32,6 +32,7 @@ erDiagram
     ai_runs ||--o{ citations : "grounded in"
     ai_runs ||--o{ answer_flags : "called wrong by"
     users ||--o{ answer_flags : "filed by"
+    ai_runs ||--o| answer_reviews : "disposed by"
     article_versions ||--o{ citations : "cited via"
     conversations ||--o{ handoff_reasons : "escaped for"
     conversations |o--o{ knowledge_gaps : "surfaced from"
@@ -365,4 +366,13 @@ erDiagram
         uuid flagged_by FK
         text note
         timestamptz created_at
+    }
+    answer_reviews {
+        uuid org_id PK
+        uuid property_id PK
+        uuid ai_run_id PK
+        boolean needs_review
+        text reason
+        timestamptz created_at
+        timestamptz reviewed_at
     }

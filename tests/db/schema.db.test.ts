@@ -42,6 +42,8 @@ export const PLAN_TABLES = [
   "rate_limits", "spend_counters",
   // S09-03 (0026): the "wrong or outdated" flag, attributable to an ai_run.
   "answer_flags",
+  // S09-04 (0027): the disposition of one answer, written by the outbox worker.
+  "answer_reviews",
 ] as const;
 
 async function publicTables(client: pg.Client): Promise<Array<string>> {
@@ -101,6 +103,7 @@ describe("schema (db)", () => {
       "0024_request_lifecycle.sql",
       "0025_knowledge_gap_queue.sql",
       "0026_answer_flags.sql",
+      "0027_answer_review_outbox.sql",
     ]);
   });
 
@@ -109,7 +112,7 @@ describe("schema (db)", () => {
       (t) => t !== "schema_migrations",
     );
     expect(new Set(tables)).toEqual(new Set(PLAN_TABLES));
-    expect(tables).toHaveLength(31);
+    expect(tables).toHaveLength(32);
   });
 
   it("fails loudly when an applied migration's file content drifts (checksum guard)", async () => {

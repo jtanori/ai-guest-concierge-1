@@ -1505,3 +1505,55 @@ $ npm run web:build    # green; /inbox/[conversationId] in the manifest
 ```
 
 **Not done, by charter:** the review queue that consumes flags (S09-04); retraining or automated fixes; retracting a flag (would need its own column or a new row, not the ability to delete this one); flag counts surfaced on the review screen or in analytics (S10-03).
+
+## S09-04 - Non-blocking review queue (0.50d)
+
+**AC (verbatim):** Flagging an answer does not delay the guest reply.
+
+- **AC-1** The outbound guest message is committed before any review/flag work starts.
+- **AC-2** Review work is retried from the outbox on failure; a failure never re-sends the guest message.
+
+**Status: DONE (2026-10-26).** `db/migrations/0027_answer_review_outbox.sql` (new), `db/erd.mmd`, `src/review/queue.ts` (new), `src/ai/answer.ts` (`aiRunIdFor`), `src/guest/service.ts` (enqueue in the turn), `tests/db/review-queue.db.test.ts` (new, 16), `tests/review/queue.test.ts` (new, 6), `tests/db/{schema,isolation,non-superuser}.db.test.ts`.
+
+**`outbox` has existed since 0001 with `status`, `attempts`, `next_attempt_at`, `last_error` and `processed_at`, and nothing had ever read it.** This is its first consumer, so it sets the conventions the later ones inherit — S09-05's email and S11-01's worker — rather than each inventing its own idea of a retry.
+
+**The guarantee is not "review is fast", it is that review is not on the guest's path at all.** The turn writes the reply and an outbox row in ONE transaction and commits; only then can anything read the row. So slow, broken or absent review machinery cannot delay a reply (the guest is already answered), there is no window where the reply exists and the review work was lost, and none where review work survives a rolled-back reply. AC-2's "never re-sends" is **structural**: `src/review/queue.ts` touches `outbox` and `answer_reviews` and nothing else — it holds no provider, no channel adapter and no reference to `insertMessage`, so there is no path by which a retry could produce a second guest message. The test counts outbound messages across a failure, a retry and a replay anyway, because "cannot" is a claim worth checking.
+
+**Enqueueing cannot break the reply either.** `enqueueReview` runs inside the guest's transaction, so any error it raised would roll the reply back — the opposite of AC-1. It uses `ON CONFLICT … DO NOTHING` against a partial unique index rather than a read-then-insert, so the statement cannot raise on a duplicate and there is nothing to catch inside somebody else's transaction (no savepoint needed). The index is partial on `status IN ('pending','sending','failed')`, so a finished row does not block a future one and a `dead` row can be re-queued by hand.
+
+**Three bugs this item found, none of them visible from reading the code.**
+
+1. **`SECURITY DEFINER` does not bypass RLS.** The cross-tenant claim was a definer function owned by a new NOLOGIN `concierge_worker` role, with the right table privileges. It ran, and returned **zero rows**: `outbox` is FORCE RLS whose policy reads `current_org_id()`, and at claim time no tenant GUC is set — setting them per row *after* claiming is the whole point. An empty queue looks exactly like a healthy one, so this would have shipped as a review queue that silently never reviewed anything. BYPASSRLS is not available (it needs a superuser, which is why 0015 went the narrow-role route for the guest slug lookup), so `concierge_worker` gets its own permissive policy on `outbox`, split `FOR SELECT` and `FOR UPDATE` rather than one `FOR ALL` because `SELECT … FOR UPDATE` is checked against both and a blanket policy would advertise INSERT and DELETE the table privileges already refuse. Contained the way 0015 contains `concierge_public`: NOLOGIN, not a member of anything the app can `SET ROLE` into, no grants on any other tenant table, reachable only through the one function.
+2. **`SELECT … FOR UPDATE SKIP LOCKED` needs the UPDATE privilege.** `concierge_worker` had `GRANT SELECT ON outbox` and the claim failed `permission denied for table outbox`. Locking a row for writing requires UPDATE even when the statement writes nothing — and "SELECT needs SELECT" is exactly the assumption that looks right.
+3. **`ALTER FUNCTION … OWNER TO` needs `SET ROLE` membership under a non-superuser.** On Neon the migration role is the deployed login role, not a superuser, so transferring the claim function to `concierge_worker` failed with `must be able to SET ROLE "concierge_worker"`. `tests/db/non-superuser.db.test.ts` — which exists precisely to run the chain as a non-superuser owner — caught it. Fixed with 0015's idiom (`GRANT concierge_worker TO current_user` via `format`, for the duration) plus 0005's reason for revoking it immediately after: a login role that stays a member of a definer role can `SET ROLE` into it and reach whatever permissive policy that role has, which here is *every tenant's outbox*. `EXECUTE` goes to `concierge_app` only and deliberately not to `CURRENT_USER` the way 0009 does, because the worker always switches roles first and granting it would let a session that forgot claim across every tenant.
+
+**The disposition rule §4 implied cannot exist, and finding that out is the item's most useful negative result.** The obvious reading of S08-04 is "in `draft` mode every answer needs a human", so `needs_review` should be true in draft mode. It can never be true: draft mode escalates with **zero provider calls** (S08-04's own evidence table), so there is no `ai_runs` row to dispose of. Draft mode's queue is the inbox, where a human writes the reply. A rule that cannot fire is not a rule, and shipping it would have produced a table that is always `false` and looks like it is working.
+
+What shipped instead reads one column the pipeline already writes, `ai_runs.decision`, so it invents no policy and no threshold (`settings` has no confidence floor, and adding one here would be a second undocumented policy hiding inside a plumbing item):
+
+| `ai_runs.decision` | `needs_review` | reason |
+|---|---|---|
+| `answer` | no | `answered` — it went out, guardrails passed, citations reconstructed |
+| `escalate` | **yes** | `escalated:<reason_code>` — a human was asked for *after* the model was consulted |
+| `no_answer` | no | `no_answer_owned_by_gap_queue` — S09-02 already holds the verbatim question and the hit count |
+
+`aiRunIdFor` is exhaustive over `AnswerOutcome` with no `default`, for the same reason `requestTopicFor` is: a new outcome kind that forgets to declare itself is a compile error rather than an answer that silently never reaches the queue. Its two `null` branches are not oversights — a `fact` called no model, and a no-answer on the empty-retrieval path records no run at all.
+
+**Failure handling.** Exponential backoff 1s→2s→4s→8s→16s capped at a minute, `dead` after `REVIEW_MAX_ATTEMPTS` (5). A claim a worker ignores because `next_attempt_at` is in the future is asserted behaviourally — the worker declines the row — rather than as a clock window, which would flake on slow hardware. `dead` rows keep their `next_attempt_at` so "when did we give up" is answerable from the row and not from a log nobody has. No jitter, and that is a recorded gap rather than an oversight: with one worker there is nothing to thundering-herd, and S11-01 runs more than one.
+
+**One row per transaction, and that is load-bearing.** `FOR UPDATE SKIP LOCKED` holds its lock only for the duration of the transaction that took it, so a batch claimed up front would be unlocked again before any of it was processed and a second worker would claim the same rows. Claiming inside the work transaction also means this loop never writes `status = 'sending'`, so it cannot strand a row a dead worker was holding — the failure mode S11-01's reaper exists for. A review whose run has been deleted (its conversation cascaded) is marked `sent` rather than retried, because burning five attempts toward `dead` over a row that will never come back is an alert about nothing.
+
+**§4's timing test was replaced.** It asked for "delta <10ms with and without a failing review worker". A wall-clock delta under 10ms is not a property this can guarantee on shared CI hardware and would flake; what it was a proxy for is *ordering*, and that is what is asserted: from a session that was not part of the turn, the reply is visible while the review row is still `pending` with `processed_at IS NULL` and no disposition written — the review work provably has not started.
+
+**Failure is injected by revoking a privilege**, not by telling a stub to throw: `REVOKE INSERT ON answer_reviews FROM concierge_app`, run the worker, get a real `42501`, then grant it back. The retry is the same code path a deploy would take.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector 0.6.2 + pg_trgm 1.6):**
+```text
+$ npm run db:migrate   # 27 applied from an EMPTY database (0027 lands)
+$ npm run db:test      # 37 files / 368 passed (review queue: 16)
+$ npm test             # 46 files / 576 passed (pure queue: 6)
+$ npx tsc --noEmit && npx tsc --noEmit -p web/tsconfig.json && npm run lint   # clean
+$ npm run web:build    # green
+```
+
+**Not done, by charter:** the worker is not scheduled — `processReviewOutbox` is implemented and tested but nothing calls it in production; S11-01 owns its lifecycle (interval, shutdown, concurrency, the `sending` reaper). Also out: a review screen for `answer_reviews` (the flags from S09-03 are already on the conversation detail, and the gap queue from S09-02 has one); email (S09-05); jitter and worker metrics.

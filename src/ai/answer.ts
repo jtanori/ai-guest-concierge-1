@@ -173,6 +173,31 @@ async function recordKnowledgeGap(
 }
 
 /**
+ * S09-04 — the run behind an outcome, when there is one.
+ *
+ * Exhaustive over `AnswerOutcome` on purpose, and for the same reason
+ * `requestTopicFor` is: a new kind that forgets to declare itself here should be a
+ * compile error, not an answer that silently never reaches the review queue.
+ *
+ * The two `null` branches are not oversights. A `fact` called no model — it is a
+ * verified value from `property_facts`, and there is no answer to review. A
+ * `no_answer` on the empty-retrieval path records no `ai_runs` row at all (no
+ * model was consulted), and the knowledge-gap queue (S09-02) is where that miss
+ * lands; queueing it for review too would be a second queue for one fact.
+ */
+export function aiRunIdFor(outcome: AnswerOutcome): string | null {
+  switch (outcome.kind) {
+    case "answer":
+    case "escalate":
+    case "unavailable":
+      return outcome.aiRunId;
+    case "fact":
+    case "no_answer":
+      return null;
+  }
+}
+
+/**
  * S07-05 — records an outage: one `ai_runs` row and one `message_failed` event,
  * in the caller's transaction.
  *

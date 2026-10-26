@@ -30,13 +30,20 @@
 import type pg from "pg";
 import { assertTenantShape, type TenantContext } from "../db/tenant.ts";
 import { emitEvent } from "../events/emit.ts";
-import type { Channel } from "../events/taxonomy.ts";
-import type { Lang } from "../i18n/catalog.ts";
+import type { Channel, EventContext } from "../events/taxonomy.ts";
+import { t, type Lang } from "../i18n/catalog.ts";
 import { resolveAnswerSource, type StructuredQuestion } from "../knowledge/answer.ts";
-import { lookupFact, type FactLookupResult } from "../knowledge/facts.ts";
+import {
+  listContradictions,
+  lookupFact,
+  type FactLookupResult,
+} from "../knowledge/facts.ts";
 import type { RetrievalHit } from "../knowledge/retrieval.ts";
-import { isAfterHours, isTopicEnabled, type AiMode } from "../settings/policy.ts";
-import { parsePropertySettings, type PropertySettings } from "../settings/schema.ts";
+import type { AiMode } from "../settings/policy.ts";
+import { policyGate } from "./policy.ts";
+import { verifyAnswer } from "./guard.ts";
+import { classifySensitive } from "./sensitive.ts";
+import { parsePropertySettings } from "../settings/schema.ts";
 import {
   AiContractError,
   parseAiOutput,
@@ -73,6 +80,12 @@ export interface AnswerDeps {
   ai: ResilientAi;
   /** Overrides `PROMPT_VERSION` only for eval runs that pin a prompt. */
   promptVersion?: string;
+  /** Spend so far today, from S07-04's counter. Omitted when unknown. */
+  spendTodayUsd?: number;
+  /** Spend so far in this conversation, from S07-04's counter. */
+  conversationSpendUsd?: number;
+  /** Guardrail confidence floor; 0 (default) leaves it off until calibrated. */
+  minConfidence?: number;
 }
 
 export type AnswerOutcome =
@@ -85,13 +98,20 @@ export type AnswerOutcome =
       hits: RetrievalHit[];
     }
   | { kind: "fact"; fact: FactLookupResult; topicKey: string; factKey: string }
-  | { kind: "no_answer"; reasonCode: "low_retrieval"; eventId: bigint }
+  | {
+      kind: "no_answer";
+      reasonCode: "low_retrieval";
+      eventId: bigint;
+      /** The catalogue string the channel sends — never model text. */
+      guestMessage: string;
+    }
   | {
       kind: "escalate";
       reasonCode: AiReasonCode;
       /** Machine-readable cause, e.g. "mode_human_only" or "contract_violation". */
       detail: string;
       aiRunId: string | null;
+      guestMessage: string;
     }
   /** Both providers failed: the outage path (S07-05), never a 500. */
   | { kind: "unavailable"; detail: string };
@@ -103,26 +123,29 @@ interface PropertyRow {
   settings: unknown;
 }
 
+/** The catalogue string for every non-answer path (D14: no hardcoded copy). */
+function idontknow(language: Lang | null): string {
+  return t("guest.idontknow", language ?? "es");
+}
+
 /**
- * The policy causes are evaluated individually rather than through
- * `escalationDecision`, for one reason: the pipeline must REPORT which rule
- * blocked (the operator needs to know "after hours" is not "topic disabled"),
- * and classification may not have produced a topic key yet, so the topic rule
- * cannot always be evaluated at all.
+ * A gap row is what makes a refusal actionable. Both no-answer paths write one
+ * — the empty-retrieval path and the model's own `no_answer` — so they share
+ * this, because a second copy of the column list is how the two drift apart.
  */
-function policyBlock(
-  settings: PropertySettings,
-  input: { aiMode: AiMode; timeZone: string; at: Date; topicKey: string | null },
-): { reasonCode: AiReasonCode; detail: string } | null {
-  if (input.aiMode === "human_only") return { reasonCode: "policy_block", detail: "mode_human_only" };
-  if (input.aiMode === "draft") return { reasonCode: "policy_block", detail: "mode_draft" };
-  if (input.aiMode === "after_hours" && isAfterHours(settings, input.at, input.timeZone)) {
-    return { reasonCode: "policy_block", detail: "after_hours" };
-  }
-  if (input.topicKey !== null && !isTopicEnabled(settings, input.topicKey)) {
-    return { reasonCode: "policy_block", detail: "topic_disabled" };
-  }
-  return null;
+async function recordKnowledgeGap(
+  client: pg.Client | pg.PoolClient,
+  context: TenantContext,
+  input: { conversationId: string; text: string; language: Lang | null },
+  why: { reason_code: string },
+  eventBase: EventContext,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO knowledge_gaps (org_id, property_id, conversation_id, question, language)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [context.orgId, context.propertyId, input.conversationId, input.text, input.language],
+  );
+  await emitEvent(client, context, "knowledge_gap_created", eventBase, why);
 }
 
 export async function answerMessage(
@@ -157,18 +180,47 @@ export async function answerMessage(
   };
 
   // ---- 1. policy -------------------------------------------------------
-  const blocked = policyBlock(settings, {
+  const gate = policyGate({
+    settings,
     aiMode: row.ai_mode,
-    timeZone: row.time_zone,
-    at,
     topicKey: input.topicKey ?? null,
+    at,
+    timeZone: row.time_zone,
+    ...(deps.spendTodayUsd === undefined ? {} : { spendTodayUsd: deps.spendTodayUsd }),
+    ...(deps.conversationSpendUsd === undefined
+      ? {}
+      : { conversationSpendUsd: deps.conversationSpendUsd }),
   });
-  if (blocked !== null) {
+  if (!gate.allow) {
     await emitEvent(client, context, "ai_escalated", eventBase, {
-      reason_code: blocked.reasonCode,
-      detail: blocked.detail,
+      reason_code: gate.reasonCode,
+      detail: gate.detail,
     });
-    return { kind: "escalate", reasonCode: blocked.reasonCode, detail: blocked.detail, aiRunId: null };
+    return {
+      kind: "escalate",
+      reasonCode: gate.reasonCode ?? "policy_block",
+      detail: gate.detail,
+      aiRunId: null,
+      guestMessage: idontknow(input.language),
+    };
+  }
+
+  // ---- 1b. sensitive topics and intents (S05-02 AC-2) ------------------
+  // Before retrieval, before facts and before any model call: the point of a
+  // guardrail is that it costs nothing and cannot be argued with.
+  const sensitive = classifySensitive(text, input.language);
+  if (sensitive !== null) {
+    await emitEvent(client, context, "ai_escalated", eventBase, {
+      reason_code: sensitive.reasonCode,
+      detail: `sensitive:${sensitive.ruleId}`,
+    });
+    return {
+      kind: "escalate",
+      reasonCode: sensitive.reasonCode,
+      detail: `sensitive:${sensitive.ruleId}`,
+      aiRunId: null,
+      guestMessage: idontknow(input.language),
+    };
   }
 
   // ---- 2. verified facts (S03-03) beat prose ---------------------------
@@ -198,13 +250,53 @@ export async function answerMessage(
     ...(input.embedding === undefined ? {} : { embedding: input.embedding }),
   });
   const hits = source.kind === "articles" ? source.hits : [];
+
+  // ---- 3b. unresolved contradictions (S05-02 / S03-03) -----------------
+  // If the sources disagree with a VERIFIED value, answering means picking a
+  // side arbitrarily. G1 requires zero unresolved contradictions before a
+  // property goes live; until then the honest move is a human.
+  const contradictions = await listContradictions(client, context);
+  const topicsInPlay = new Set(hits.map((hit) => hit.topicKey));
+  if (input.structured !== undefined) topicsInPlay.add(input.structured.topicKey);
+  const contested = contradictions.find(
+    (entry) =>
+      topicsInPlay.has(entry.topicKey) &&
+      new Set(entry.entries.map((item) => item.value)).size > 1 &&
+      entry.entries.some((item) => item.verified),
+  );
+  if (contested !== undefined) {
+    await emitEvent(client, context, "ai_escalated", eventBase, {
+      reason_code: "contradiction",
+      detail: `contradiction:${contested.topicKey}.${contested.factKey}`,
+    });
+    return {
+      kind: "escalate",
+      reasonCode: "contradiction",
+      detail: `contradiction:${contested.topicKey}.${contested.factKey}`,
+      aiRunId: null,
+      guestMessage: idontknow(input.language),
+    };
+  }
   if (hits.length === 0) {
     // Weak retrieval is a legitimate "I don't know", not an exception to log
-    // and ignore. S09-02 turns this event into a knowledge-gap row.
+    // and ignore. The gap row is what makes it actionable: the verbatim
+    // question, in the guest's language, in the queue the hotel already reads.
     const eventId = await emitEvent(client, context, "no_answer_emitted", eventBase, {
       reason_code: "low_retrieval",
     });
-    return { kind: "no_answer", reasonCode: "low_retrieval", eventId };
+    await recordKnowledgeGap(
+      client,
+      context,
+      { conversationId: input.conversationId, text, language: input.language },
+      { reason_code: "low_retrieval" },
+      eventBase,
+    );
+    return {
+      kind: "no_answer",
+      reasonCode: "low_retrieval",
+      eventId,
+      guestMessage: idontknow(input.language),
+    };
   }
 
   // ---- 4. generate -----------------------------------------------------
@@ -276,6 +368,34 @@ export async function answerMessage(
       reasonCode: "policy_block",
       detail: "contract_violation",
       aiRunId,
+      guestMessage: idontknow(input.language),
+    };
+  }
+
+  // ---- 5b. the guardrail gate (S05-02 AC-1) ---------------------------
+  const guarded = verifyAnswer(output, hits, {
+    ...(deps.minConfidence === undefined ? {} : { minConfidence: deps.minConfidence }),
+  });
+  if (!guarded.ok) {
+    const aiRunId = await recordAiRun(client, context, {
+      ...baseRun,
+      decision: "escalate",
+      reasonCode: guarded.reasonCode,
+      confidence: output.confidence,
+      usage: { ...baseRun.usage, guard: guarded.detail, violations: guarded.violations.slice(0, 5) },
+    });
+    await emitEvent(client, context, "ai_escalated", eventBase, {
+      reason_code: guarded.reasonCode,
+      detail: guarded.detail,
+      ai_run_id: aiRunId,
+      violations: guarded.violations.length,
+    });
+    return {
+      kind: "escalate",
+      reasonCode: guarded.reasonCode,
+      detail: guarded.detail,
+      aiRunId,
+      guestMessage: idontknow(input.language),
     };
   }
 
@@ -328,6 +448,7 @@ export async function answerMessage(
       reasonCode: output.reasonCode ?? "policy_block",
       detail: "model_needs_human",
       aiRunId,
+      guestMessage: idontknow(input.language),
     };
   }
 
@@ -335,5 +456,19 @@ export async function answerMessage(
     ai_run_id: aiRunId,
     reason_code: output.reasonCode ?? "low_retrieval",
   });
-  return { kind: "no_answer", reasonCode: "low_retrieval", eventId: 0n };
+  // The model itself said no_answer: same product state as an empty retrieval,
+  // so it gets the same gap row and the same guest string.
+  await recordKnowledgeGap(
+    client,
+    context,
+    { conversationId: input.conversationId, text, language: input.language },
+    { reason_code: output.reasonCode ?? "low_retrieval" },
+    eventBase,
+  );
+  return {
+    kind: "no_answer",
+    reasonCode: "low_retrieval",
+    eventId: 0n,
+    guestMessage: idontknow(input.language),
+  };
 }

@@ -9,14 +9,14 @@ priority: P0
 depends_on: [S05-01]
 labels: [sprint:S05, track:foundation, prio:P0]
 milestone: S05 - AI core and evaluation
-status: draft
+status: done
 issue: https://github.com/jtanori/ai-guest-concierge-1/issues/74
-pickup: decision
+pickup: ready
+approved: 2026-10-25
+done: 2026-10-25
 ---
 
 # S05-02 — Guardrail layer
-
-> **DRAFT — not approved.** Generated from the master backlog, `docs/01-development-plan.md` and the code at `main` + PR #32 head `81b19bb`. `docs/charters/README.md` says **"No item starts until its charter is approved"** — this file is a proposed contract, not permission to start. File paths, migration numbers and signatures are calculated from the current tree; rebase them on whatever merges first.
 
 | | |
 |---|---|
@@ -79,8 +79,14 @@ Open decisions / blockers:
 
 ## 9. Definition of done
 
-- [ ] CI green: `lint`, `typecheck`, `test`, `db-test`, `preview` (and `eval` once S06-03 lands).
-- [ ] Runbook entry in `docs/runbook.md` with the exact commands and counts.
-- [ ] Workbook ticked via `node scripts/update-workbook-status.mjs <ID> "✅ Done (<evidence>)"` only after the AC is objectively met.
-- [ ] Cross-tenant isolation suite extended for any new table or route; no new runtime dependency without explicit approval.
-- [ ] Review threads resolved; charter §9 decisions recorded in the runbook.
+- [x] CI green: `lint`, `typecheck`, `test`, `db-test`, `preview` (and `eval` once S06-03 lands).
+- [x] Runbook entry in `docs/runbook.md` with the exact commands and counts.
+- [x] Workbook ticked via `node scripts/update-workbook-status.mjs <ID> "…"` — **`🚧` , not `✅`**: AC-3 is unproven (see §10).
+- [x] Cross-tenant isolation suite extended for any new table or route; no new runtime dependency without explicit approval.
+- [x] Review threads resolved; charter §9 decisions recorded in the runbook.
+
+## 10. Outcome (2026-10-25)
+
+**AC-1 and AC-2: met.** `verifyAnswer` (`src/ai/guard.ts`) requires ≥1 citation drawn from the retrieved set and normalised-substring entailment of every quote in its cited chunk or version body; `findBannedContent` (`src/ai/banned.ts`) covers prices, availability, "confirmed", "on the way" and Luhn-valid card numbers in Spanish and English; `classifySensitive` (`src/ai/sensitive.ts`) routes refunds, medical, accessibility, allergens, complaints, transaction intent and "asked for a person" with `sensitive_topic` / `booking_intent` / `guest_asked_human`; `policyGate` (`src/ai/policy.ts`) covers mode, after-hours, topic and both spend caps. Every rejection carries a `reason_code` and a machine-readable `detail`, writes an `ai_runs` row, and a no-answer additionally writes a `knowledge_gaps` row. Evidence: 23 guardrail unit cases + 4 end-to-end db cases; 356 unit / 184 db green.
+
+**AC-3: NOT met and not claimed.** ≤2% false answers and ≥95% correct-or-correct-escalation are measurements, and the instrument — golden set v2 (25 articles, G1) plus `npm run eval` (S06-03) — does not exist. The guardrail code is what AC-3 will measure; no number can be honestly asserted until the harness runs. Deliberately not done here: semantic entailment (substring containment only; S12's audit covers meaning), a topic classifier (topic-scoped policy records `topicUnclassified: true` until one exists), the spend counter (S07-04 — `policyGate` consumes it), and persistence of the verbatim `quote` (S05-03's recorded gap: `citations` has no quote column).

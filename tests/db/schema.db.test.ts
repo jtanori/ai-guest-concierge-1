@@ -93,6 +93,7 @@ describe("schema (db)", () => {
       "0018_request_capture.sql",
       "0019_abuse_and_spend.sql",
       "0020_embed_settings.sql",
+      "0021_inbox_indexes.sql",
     ]);
   });
 

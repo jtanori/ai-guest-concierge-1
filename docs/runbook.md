@@ -1151,3 +1151,46 @@ $ (cd web && REVIEW_API_URL=http://127.0.0.1:8787 npm run dev) &
 $ curl -sD- -o /tmp/out https://<preview-or-local>/c/<slug>{,/qr.svg,/embed.txt,/embed.js}
 ```
 Read the status, the content type and the body. A generated artifact is not verified until it has been fetched from a running process.
+
+## S08-01 - Phone-first shared inbox (2.00d)
+
+**AC (verbatim):** An agent triages a queue on a phone in under 60 seconds.
+
+- **AC-1** `GET /staff/inbox` shows needs-attention / mine / unresolved filters with last message + wait time.
+- **AC-2** Every query is tenant-scoped and paged; p95 read <300ms at fixture scale.
+
+**Status: DONE (2026-10-26), with one human-measured evidence item still owed.** `src/inbox/queries.ts` (new), `src/staff/http.ts` (the pipeline became shared), `db/migrations/0021_inbox_indexes.sql` (new), `src/server.ts` (wiring), `src/i18n/catalog.ts` (inbox + `staff.common.*` copy), `web/app/(staff)/inbox/page.tsx` (new), `web/app/(staff)/layout.tsx` (nav), `web/lib/types.ts`; tests `tests/inbox/queries.test.ts` (new), `tests/db/inbox.db.test.ts` (new).
+
+**The path moved, and that is the first thing to know.** The charter said `GET /staff/inbox`; this repository's staff surface has been `/api/*` behind `handleStaffRequest` plus a Next page since S04-01. So the API is **`GET /api/inbox?filter=&limit=&cursor=`** and the screen is **`/inbox`**. `handleReviewRequest` and the new `handleInboxRequest` are now both thin wrappers over one `handleStaffRequest` — token → tenant headers → `withStaffSession` → `requireRole`. A second copy of that sequence is exactly how a surface ends up missing its authorisation check, and the inbox is a list of strangers' conversations.
+
+**The decisions that shaped the code:**
+
+- *Keyset paging, never OFFSET.* A guest message between page 1 and page 2 re-sorts an OFFSET query, so the agent silently sees a row twice or never sees it — and never finds out. The cursor is `(last_activity_at, conversation_id)` as opaque base64url JSON, validated on the way back in: a hand-edited cursor is a 400, not a page from somewhere else. The tenant predicate runs first, so even a forged cursor cannot reach another property's range.
+- *One statement, not four.* The last message and the open request are `LEFT JOIN LATERAL ... LIMIT 1` against the row the ordered scan already chose. Fetching messages per conversation afterwards is the N+1 that hides at fixture scale and falls over at 200 conversations — and on a phone it is the difference between a queue that appears and one that loads.
+- *`unresolved` is about requests, not conversations.* A conversation can be answered and finished while a request it opened is still open, and that is precisely the row a hotel loses track of. `needs_attention` is `ai_state = 'awaiting_staff'` — the only queue where doing nothing costs money — and it is the default.
+- *"Mine" is request assignment, because that is what the schema has.* `assignments` has hung off `service_requests` since 0001, never off conversations. The filter reads what S08-03 will write.
+- *The screen is a server component with `<Link>` tabs.* The inbox is one GET and a list; a client-side version would trade that for a loading state, an error state and a retry — three things that can be wrong while an agent stands in a lobby. Links also mean the filters are the back button, which `useState` is not. DEC-1 says React, not `"use client"`.
+- *Wait time comes from the database clock, formatted in the component.* A phone with a skewed clock must never show "-3 min waiting", and "who waited longest" is the ordering the screen promises. The catalogue holds templates with a `{count}` hole (the `guest.chat.rate_limited_seconds` convention); the number is filled where the number is.
+- *Three indexes, and two charter indexes that did not ship.* `0021` adds the last-message index (with `message_id` in it, because `created_at` is not unique — a turn writes the inbound and the outbound row in one transaction), `assignments_user` for "mine", and the keyset page index with `org_id` leading and `conversation_id` trailing. The charter's `service_requests_open_by_conversation` **already exists** in 0017, and shipping it twice would be a second index to maintain on the guest write path for one read.
+- *The observer deviation, recorded rather than silently fixed.* The charter's test plan expected `observer → 403`; the shipped matrix grants `queue: read` to all four roles and this item adds no write action, so an observer reads the queue (and `mine` is empty). The 401/400/404 deny paths are tested. Making observers read-only-denied is a matrix change with its own test.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector 0.6.2 + pg_trgm):**
+```text
+$ npm run db:migrate   # 21 applied (0021 lands)
+$ npm run db:test      # 29 files / 253 passed (10 inbox cases: filters, tenancy, keyset paging, plan, 401/400/404)
+$ npm test             # 39 files / 514 passed (14 pure inbox cases)
+$ npm run eval         # regression gate pass; absolute gate unchanged (golden v1 is 20 questions, needs 50)
+$ npx tsc --noEmit && npm run lint   # clean
+$ npm run web:build    # green; /inbox in the manifest
+```
+
+**Live wiring check:** with the real server up and no Neon auth configured, both `/api/inbox` and `/api/inbox/anything` answer `503 {"detail":"NEON_AUTH_JWKS_URL is required"}` — the same degraded-host contract as `/api/review/*`, which is what proves the inbox branch reaches the shared pipeline instead of falling through to the health table.
+
+**Owed — the thing this item cannot measure itself: 60 seconds on a phone.** AC-1's clause is a human stopwatch. What is proven is the machine half (one round trip, 20 rows, single-digit milliseconds server-side, an index-backed plan). Procedure for the operator:
+
+1. Deploy with auth configured; sign in as `front_desk` on a real phone.
+2. Have the demo property open three conversations that land in `awaiting_staff` (the guest "talk to a person" button in `/c/<slug>` does this).
+3. Time from opening `/inbox` to tapping into the oldest conversation. Record phone model, property and date here.
+4. Screenshot the queue at 390px width into this section.
+
+**Not done, by charter:** reply/takeover/assign/resolve (S08-03), the AI-sources pane (S08-02), AI operating modes (S08-04). **Also owed:** there is no realtime — the page is a snapshot and an agent refreshes; that becomes real in S08-03 when rows grow actions.

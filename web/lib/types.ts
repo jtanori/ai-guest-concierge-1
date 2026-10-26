@@ -34,3 +34,31 @@ export interface ApiFailure {
   error: string;
   detail?: string;
 }
+
+/**
+ * S08-01 — one row of the staff inbox, as `src/inbox/queries.ts` serialises it.
+ *
+ * `waitSeconds` is a number and not a date because the server computes it from
+ * the database clock: a phone with a skewed clock must not show "-3 min
+ * waiting", and "who has waited longest" is the only ordering the screen
+ * promises.
+ */
+export interface InboxItemWire {
+  conversationId: string;
+  aiState: "idle" | "awaiting_ai" | "awaiting_staff" | "resolved";
+  language: string | null;
+  lastActivityAt: string;
+  waitSeconds: number;
+  lastMessage: { body: string; authorRole: "guest" | "ai" | "staff"; createdAt: string } | null;
+  request: {
+    requestId: string;
+    status: "new" | "acknowledged" | "assigned" | "resolved" | "cancelled";
+    topic: string | null;
+    assignedTo: string | null;
+  } | null;
+}
+
+export interface InboxPageWire {
+  items: InboxItemWire[];
+  nextCursor: string | null;
+}

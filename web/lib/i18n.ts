@@ -1,6 +1,8 @@
 import { cookies } from "next/headers";
 import { LANGUAGES, t, type Lang, type StringId } from "../../src/i18n/catalog.ts";
 
+export type { StringId } from "../../src/i18n/catalog.ts";
+
 export const LANG_COOKIE = "staff_lang";
 
 /** The catalogue is the only source of copy — D14 applies to this app too. */

@@ -31,7 +31,9 @@ import {
   type GuestTicket,
 } from "./cookie.ts";
 import {
+  BotCheckFailedError,
   GuestInputError,
+  RateLimitedError,
   UnknownPropertyError,
   loadPublicProperty,
   loadTranscript,
@@ -61,8 +63,24 @@ export function classifyGuestError(error: unknown): {
   status: number;
   error: string;
   detail?: string;
+  /** Extra response headers a client needs (S07-04: `Retry-After`). */
+  headers?: Record<string, string>;
 } {
   if (error instanceof UnknownPropertyError) return { status: 404, error: "unknown_property" };
+  // S07-04 — 429 with a number, not 500 and not silence. A guest client that
+  // gets a countdown can show it; a client that gets an opaque failure retries.
+  if (error instanceof RateLimitedError) {
+    return {
+      status: 429,
+      error: "rate_limited",
+      detail: `bucket=${error.bucket} limit=${error.limit}`,
+      headers: { "retry-after": String(error.retryAfterSeconds) },
+    };
+  }
+  // 403, not 400: the request was well-formed, the client was not believed.
+  if (error instanceof BotCheckFailedError) {
+    return { status: 403, error: "bot_check_failed", detail: error.reason };
+  }
   if (error instanceof GuestInputError) {
     return { status: 400, error: "invalid_message", detail: error.message };
   }
@@ -132,6 +150,29 @@ function isSecure(req: IncomingMessage): boolean {
   return (req.socket as { encrypted?: boolean } | undefined)?.encrypted === true;
 }
 
+/**
+ * S07-04 — the client address, as the proxy in front of us reported it.
+ *
+ * `x-forwarded-for` is a chain and only the FIRST hop is the client; the rest
+ * are proxies we do not control, and trusting the last one would let a caller
+ * choose its own bucket. The header is still caller-supplied on a host with no
+ * trusted proxy, which is why the ip bucket is a flood speed-bump and the
+ * property bucket (which cannot be spoofed) is the hard ceiling.
+ */
+export function clientIp(req: IncomingMessage): string | null {
+  const forwarded = req.headers["x-forwarded-for"];
+  const raw = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+  if (typeof raw === "string") {
+    const first = raw.split(",")[0]!.trim();
+    if (first !== "") return first;
+  }
+  const real = req.headers["x-real-ip"];
+  const single = Array.isArray(real) ? real[0] : real;
+  if (typeof single === "string" && single.trim() !== "") return single.trim();
+  const socket = req.socket as { remoteAddress?: string } | undefined;
+  return socket?.remoteAddress ?? null;
+}
+
 function ticketFrom(req: IncomingMessage, cookieSecret: string): GuestTicket | null {
   const raw = readCookie(req.headers.cookie, GUEST_COOKIE);
   if (raw === undefined) return null;
@@ -187,6 +228,11 @@ const ROUTES: Route[] = [
         text: typeof body["text"] === "string" ? body["text"] : "",
         language: requestedLanguage(url, req.headers),
         ticket: ticketFrom(req, deps.cookieSecret),
+        // S07-04: the address is read from the transport, never the body — a
+        // client that could choose its own bucket would have no limit at all.
+        ip: clientIp(req),
+        turnstileToken:
+          typeof body["turnstileToken"] === "string" ? body["turnstileToken"] : null,
       });
       setTicket(res, turn.ticket, req);
       return turn;
@@ -242,6 +288,7 @@ export async function handleGuestRequest(
   } catch (error) {
     const failure = classifyGuestError(error);
     res.removeHeader("set-cookie");
+    for (const [name, value] of Object.entries(failure.headers ?? {})) res.setHeader(name, value);
     send(res, failure.status, {
       error: failure.error,
       ...(failure.detail === undefined ? {} : { detail: failure.detail }),

@@ -185,7 +185,7 @@ A coding agent can pick up any `ready` item the moment its charter is **approved
 1. **Approve sprint-by-sprint.** Move the relevant `items/*.md` into `docs/charters/` (or approve in place) via one docs PR per sprint, exactly like PR #23 (`docs: S03 item charters (draft, approval requested)`). Resolve the decisions in §2 that the sprint touches.
 2. **Create the GitHub layer.** One milestone per sprint, one `Epic: Sxx — …` issue per sprint carrying the gate AC, one story issue per item whose body is its charter, `blocked by` links from `depends_on`, labels `sprint:Sxx`, `track:foundation`, `prio:P0/P1`. `docs/charters/README.md` §'GitHub equivalent' describes the mapping and says the import is scriptable with `gh`.
 3. **Hand off.** Point the coding agent at one `items/<ID>-*.md`; it contains the AC, the calculated files/SQL/signatures, named tests, evidence commands and DoD. Rebase migration numbers (`0010`…`0026` here) on whatever merges first and update `tests/db/schema.db.test.ts` + `tests/db/non-superuser.db.test.ts` counts.
-4. **Close out.** Resolve review threads, add a runbook entry with real numbers, then tick the workbook with `node scripts/update-workbook-status.mjs <ID> "✅ Done (<evidence>)"` in a follow-up PR (the pattern used by #29/#31).
+4. **Close out.** Resolve review threads, add a runbook entry with real numbers, tick the workbook with `node scripts/update-workbook-status.mjs <ID> "✅ Done (<evidence>)"`, and **regenerate the progress report with `npm run progress`** — the report is derived from the workbook, so it is stale until it is re-run, and the close-out commit is the only place it belongs.
 
 ### Notes and caveats
 

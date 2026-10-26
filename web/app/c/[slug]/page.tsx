@@ -68,7 +68,15 @@ export default async function GuestPropertyPage({
         // transcript cannot disagree about what was disclosed.
         disclosure: property.disclosure,
         talkToPerson: property.talkToPerson,
+        // S07-04: the two refusal messages, both from the catalogue.
+        rateLimited: tr("guest.chat.rate_limited"),
+        rateLimitedSeconds: tr("guest.chat.rate_limited_seconds"),
+        botCheck: tr("guest.chat.bot_check"),
       }}
+      // Public by design (Cloudflare's site key is not a secret). Absent on a
+      // host that does not enforce a bot check — the widget then renders
+      // nothing, and the server accepts a message with no token.
+      botCheckSiteKey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY}
     />
   );
 }

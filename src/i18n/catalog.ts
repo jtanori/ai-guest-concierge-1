@@ -20,6 +20,15 @@ export const en = {
   "guest.chat.placeholder": "Write your question",
   "guest.chat.send": "Send",
   "guest.chat.error": "That message didn't go through. Please try again.",
+  // S07-04: the two ways the server can refuse a message. Never a 5xx and never
+  // a silent drop: a guest who is told to wait 30 seconds waits, and a guest who
+  // is told a bot check is needed can complete it.
+  "guest.chat.rate_limited":
+    "That was a lot of messages at once. Please wait a moment and send it again.",
+  "guest.chat.rate_limited_seconds":
+    "That was a lot of messages at once. Please wait {seconds} seconds and send it again.",
+  "guest.chat.bot_check":
+    "We couldn't confirm this is a real browser. Please reload the page and try again.",
   "guest.idontknow":
     "I don't want to guess on that one — I've asked the front desk to reply directly.",
   // S07-03: sent when a request was captured for a reason other than a missing
@@ -77,6 +86,12 @@ export const es: Record<StringId, string> = {
   "guest.chat.placeholder": "Escriba su pregunta",
   "guest.chat.send": "Enviar",
   "guest.chat.error": "El mensaje no se envió. Inténtelo de nuevo.",
+  "guest.chat.rate_limited":
+    "Fueron muchos mensajes a la vez. Espere un momento y envíelo otra vez.",
+  "guest.chat.rate_limited_seconds":
+    "Fueron muchos mensajes a la vez. Espere {seconds} segundos y envíelo otra vez.",
+  "guest.chat.bot_check":
+    "No pudimos confirmar que es un navegador real. Recargue la página e inténtelo de nuevo.",
   "guest.idontknow":
     "No quiero adivinar en esa — le pedí a recepción que le responda directamente.",
   "guest.request_ack":

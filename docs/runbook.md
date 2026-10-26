@@ -952,3 +952,40 @@ $ npm run typecheck && npm run lint && npm run web:build   # clean
 ```
 
 **Not done, by charter:** lifecycle transitions (S09-01 — a request still cannot leave `new`), email delivery (S09-05). Copy review by the content owner (W00-10) is still owed before G1 sign-off; the honesty test constrains *claims*, not tone.
+
+## S07-04 - Abuse + cost protection (1.00d)
+
+**AC (verbatim):** Cap trip degrades to 'a team member will reply' without an error.
+
+- **AC-1** Rate limits per IP / conversation / property; Turnstile (or equivalent) on the first message.
+- **AC-2** Daily AI spend cap from `spendCaps()`; exceeding it never produces a 5xx.
+
+**Status: DONE (2026-10-25).** `db/migrations/0019_abuse_and_spend.sql`, `src/security/ratelimit.ts`, `src/security/botcheck.ts`, `src/ai/spend.ts`, wiring in `src/guest/service.ts` / `src/ai/answer.ts` / `src/guest/http.ts` / `src/guest/runtime.ts`, guest widget `web/components/bot-check.tsx`.
+
+**The bug this item closed was a lie in the settings screen.** `spend_cap` has existed since S02-02 with real defaults (`daily_usd: 10`, `per_conversation_usd: 0.5`), `policyGate` has refused on it since S05-02, and **no production call ever passed the counters** — both arguments were `undefined`, which the gate documents as "no budget information ⇒ allow". A property could open settings, see a cap, and have no cap. This item supplies the numbers.
+
+**The decisions that shaped the code:**
+
+- *Two ceilings with different owners.* **Spend** lives in `PropertySettings` because it is the property's money and `spendCaps()` already reads it. **Rate limits** are constants in `src/security/ratelimit.ts` (20/min per IP, 10/min per conversation, 600/hour per property) because a flood ceiling a property can raise is not a ceiling — the night a script is running is exactly the night someone raises it. Changing them is a pull request, not a toggle.
+- *The counters are Postgres rows, not process memory.* A per-replica counter multiplies the published limit by the number of instances and resets on deploy. The cost is one upsert per guest message — three orders of magnitude cheaper than the model call it protects — and it needs no new runtime dependency.
+- *Counters are consumed inside the turn transaction.* A turn that rolls back did not happen, so charging it would lock a real guest out after a transient failure. `tests/db/abuse.db.test.ts` proves the rollback: a `checkRate` in a transaction that then throws leaves the count untouched. The same transaction boundary is what makes the spend counter trustworthy — the money is added by the turn that actually spent it.
+- *The IP is hashed before it reaches the table.* `key` is `sha256(salt‖ip)` truncated to 32 hex characters. A rate-limit table is precisely the kind of "operational" table that gets exported during an incident, and an IP address is personal data in every regime this product will meet. The salt is per-deployment (`DEFAULT_IP_SALT`, rotatable in S11-03).
+- *`checkRate` consumes the property bucket even when the IP bucket already refused.* The tenant-wide number is what an operator looks at during an incident; a flood that is being refused must still be visible in it.
+- *The bot check is a port, and it fails closed.* Turnstile is a third-party processor (DEC-9 / W00-18), so the default is the charter's: no-op in `local`, **boot failure** in `staging`/`prod` without `TURNSTILE_SECRET` — the same shape as `GUEST_COOKIE_SECRET`, because a control that is "on if someone remembered" is off. Unreachable vendor, non-2xx, non-JSON and a missing `success` field are all *refusals*: a check that fails open is one an attacker disables by blackholing a hostname. It applies to the **first message only** — Turnstile tokens are single use, so checking every turn would reject a real guest's second message.
+- *Spend is estimated, and the code says so.* The provider adapters return text, not `usageMetadata`; changing that contract from a cost-protection item would touch every adapter and test, and it is S07-06's. So `spend.ts` estimates tokens as `ceil(chars / 4)` (conservative for Spanish as well as English) and prices them from one table, **rounding up to six decimals** — a 1-token call costs `$0.000001`, not `$0`. An unknown model id is priced as the most expensive known model, because a new model appearing in configuration must not mean "free". `calls` is stored alongside `cost_usd` so the exact count survives next to the inexact money, for the invoice reconciliation that S07-06 owes.
+- *The cap trip reuses S07-03's honesty path unchanged.* `policyGate` refuses → `answerMessage` returns `escalate` with `guest.request_ack` → `requestTopicFor("escalate")` = `needs_human` → `captureRequest` writes the request **before** the acknowledgement, in the same transaction. So the guest is told "a person will reply", the queue actually holds that request, and there is no 5xx anywhere on the path. `guest.team_will_reply` from the charter was **not** added: `guest.request_ack` already says exactly that, and a second key for one promise would drift.
+- *HTTP is 429 and 403 with numbers attached.* `RateLimitedError` carries the bucket, the limit and `retryAfterSeconds`, which `src/guest/http.ts` turns into `retry-after`; the guest UI renders `guest.chat.rate_limited_seconds` with the actual countdown. A client told nothing retries immediately; a client told "17 seconds" waits.
+- *The client address comes from the transport, never the body.* `clientIp` reads the first `x-forwarded-for` hop, then `x-real-ip`, then the socket. A client that could name its own bucket would have no limit at all — and when there is no trusted proxy, the header is caller-supplied, which is why the ip bucket is a speed bump and the **property** bucket (which cannot be forged) is the real ceiling.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector + pg_trgm):**
+```text
+$ npm test        # 34 files / 442 passed
+$ npm run db:test # 26 files / 232 passed (11 abuse cases; the 19-migration chain applies)
+$ npm run db:migrate                # 19 applied
+$ npm run eval    # unchanged four scores; regression gate pass
+$ npm run typecheck && npm run lint && npm run web:build   # clean
+```
+
+**New standing procedure — `docs/progress.md`.** `npm run progress` (`scripts/progress.mjs`) reads column K of `docs/07-master-backlog.xlsx` and writes the report: overall and per-sprint bars, in-flight items with their recorded blocker, remaining days by block, and the delta against the previous run (read from an HTML comment at the top of the previous file, so the comparison cannot be faked by editing prose). It fails loudly on a status it does not recognise rather than silently counting it as "not started" — the workbook uses two vocabularies (`✅ Done` and an older bare `Done (...)`), both are supported, and a third would be a mistake worth stopping for. Re-running it is part of every item's close-out (`docs/ahead-charters/README.md` §6.4).
+
+**Not done, by charter:** outage fallback (S07-05 — a provider outage is still handled by S05's `unavailable` path, not by this item's degradation); PII redaction (S11-03). **Open, and flagged:** DEC-9 / W00-18 — enabling the bot check in production sends guest IPs and browser metadata to Cloudflare, which must appear in the privacy notice and be covered by a DPA first. Until that closes, production runs with the check disabled and the rate limits as the only ceiling. **Also owed:** real token accounting and one invoice reconciliation (S07-06), a retention rule for both counter tables (S11), and the ip-hash salt joining the PII work (S11-03).

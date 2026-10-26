@@ -32,6 +32,8 @@ const EXPECTED_TENANT_TABLES = [
   "article_reviews", "fact_resolutions",
   // S04-02 (0011)
   "article_chunks",
+  // S07-04 (0019)
+  "rate_limits", "spend_counters",
 ];
 /** users/memberships carry S02-01's own surfaces (staff_select/staff_update_name
  *  and membership_select/insert/update/delete);
@@ -72,12 +74,12 @@ describe("row-level security (db)", () => {
   it("S01-03: the suite derives the tenant-table list FROM the database (policies, not hardcoded drift)", async () => {
     const scoped = await tenantTablesByPolicy(owner);
     expect([...scoped].sort()).toEqual([...EXPECTED_TENANT_TABLES].sort());
-    // and the whole 28 (25 plan + S04-01 + S04-02) split cleanly: scoped + global = all tables
+    // and the whole 30 (25 plan + S04-01 + S04-02 + S07-04) split cleanly: scoped + global = all tables
     const allTables = await owner.query<{ tablename: string }>(
       "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename != 'schema_migrations'",
     );
     const names = allTables.rows.map((r) => r.tablename).sort();
-    expect(names).toHaveLength(28);
+    expect(names).toHaveLength(30);
     expect(names).toEqual(
       [...EXPECTED_TENANT_TABLES, ...EXPECTED_GLOBAL_TABLES].sort(),
     );
@@ -394,6 +396,20 @@ async function seedOneTenant(client: pg.Client, tag: "a" | "b"): Promise<SeedRes
     `INSERT INTO article_chunks (org_id, property_id, article_version_id, ordinal, body)
      VALUES ($1, $2, $3, 0, 'The pool closes at 20:00.')`,
     [ORG, PROP, VERSION],
+  );
+
+  // S07-04 (0019): the counters are tenant rows like any other — which is the
+  // point of putting them in Postgres instead of a shared cache. A property's
+  // spend and its flood counters must be invisible to the next property.
+  await client.query(
+    `INSERT INTO rate_limits (org_id, property_id, bucket, key, window_start, count)
+     VALUES ($1, $2, 'ip', 'hashed-key', now(), 3)`,
+    [ORG, PROP],
+  );
+  await client.query(
+    `INSERT INTO spend_counters (org_id, property_id, scope, key, cost_usd, calls)
+     VALUES ($1, $2, 'day', '2026-10-25', 0.0123, 4)`,
+    [ORG, PROP],
   );
 
   // S04-01 (0010): a decision and a resolution are tenant rows too, so the

@@ -14,6 +14,7 @@ describe("audit vocabulary (S02-03)", () => {
       "request.assigned",
       "request.resolved",
       "request.cancelled",
+      "knowledge_gap.closed",
       "membership.granted",
       "membership.role_changed",
       "membership.revoked",
@@ -38,6 +39,7 @@ describe("audit vocabulary (S02-03)", () => {
     expect(ENTITY_TYPES).toEqual([
       "property",
       "request",
+      "knowledge_gap",
       "membership",
       "user",
       "article",

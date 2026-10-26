@@ -1383,3 +1383,72 @@ $ npm run web:build    # green; /inbox/[conversationId] in the manifest
 **The 36 DB cases are mostly raw SQL.** The service already refuses an illegal edge and `tests/requests/lifecycle.test.ts` proves that; the database suite exists because a TypeScript refusal is only a refusal for callers that go through the TypeScript. Each illegal pair is attempted with a *valid* queue-write actor and a hand-built `UPDATE` that never imports the service — the shape a background job or a psql session takes — and the assertion is both the errcode and that the row did not move. The actor cases drop `app.current_user_id` entirely, or set it to the observer, and assert `42501` with the status unchanged.
 
 **Not done, by charter:** email delivery (S09-05), knowledge-gap queue (S09-02), reassignment to a colleague from the UI, a `request_cancelled` event (the taxonomy has no such name — cancellation is audit-only).
+
+## S09-02 - Knowledge-gap queue (0.50d)
+
+**AC (verbatim):** Every no_answer lands in the queue automatically.
+
+- **AC-1** Each `no_answer` creates/updates one `knowledge_gaps` row with the verbatim question, language and property.
+- **AC-2** Close produces `knowledge_gap_closed`; median age is computable.
+
+**Status: DONE (2026-10-26).** `db/migrations/0025_knowledge_gap_queue.sql` (new), `src/gaps/queue.ts` (new), `src/ai/answer.ts` + `src/requests/capture.ts` (both now call the one writer), `src/audit/actions.ts` (`knowledge_gap.closed` + the `knowledge_gap` entity), `src/staff/http.ts` (`/api/gaps` routes) + `src/server.ts` (wiring), `web/app/(staff)/gaps/{page.tsx,actions.ts}` (new), `web/app/(staff)/layout.tsx` (nav), `web/lib/types.ts`, `src/i18n/catalog.ts` (`staff.gaps.*`, en+es); tests `tests/db/gaps.db.test.ts` (new, 21), `tests/gaps/page.test.ts` (new, 5), `tests/audit/actions.test.ts`, `tests/db/{schema,non-superuser}.db.test.ts` updated for the new file.
+
+**The gap table already existed and already had two writers — that was the bug, not the missing feature.** `knowledge_gaps` is in 0001, and since S05-02/S07-03 both `src/ai/answer.ts` (empty retrieval, and the model's own `no_answer`) and `src/requests/capture.ts` (riding along with a `no_answer` request) inserted into it. Capture guarded against double-writing with a lookup scoped to the **conversation**, so the same question asked by a second guest was a second row. The result was a queue that showed one entry per guest instead of one per question, and threw away the only number that tells a content owner what to write first.
+
+**0025 makes the row a queue entry.** One open row per distinct unanswered question per property, plus:
+
+| column / index | why |
+|---|---|
+| `hits integer NOT NULL DEFAULT 1` | how many guests hit the miss |
+| `topic text` | carried from the request, filled in on a later ask if the first did not know it |
+| `question_key` generated | the dedupe key (see the two traps below) |
+| `UNIQUE (property_id, question_key) WHERE status='open'` | one open entry per question; *partial*, so closing a gap lets the same question be recorded again |
+| `(property_id, status, created_at DESC)` | the queue query |
+| `CHECK (resolved_at IS NULL OR status='resolved')` | the same rule 0023 added for requests: the median reads `status`, so `resolved_at` may not contradict it |
+
+`recordGap` is the single upsert. `capture.ts` calls it instead of inserting, and no longer emits `knowledge_gap_created` — `recordGap` emits it only for a row it actually created, so a repeat ask is a count and not an event.
+
+**Trap 1 — a btree key cannot hold a guest message.** The obvious index is `lower(question)`. A btree key is capped at ~2704 bytes and `MAX_MESSAGE_CHARS` is 2000 *characters*, so a guest typing 2000 accented or CJK characters is ~4000 bytes: the INSERT would fail, meaning **a guest who writes a long question breaks their own reply**. `question_key` is therefore `left(…, 400)` — capped at 1600 bytes worst case. The question column keeps the guest's exact text; only the matching key is truncated. `tests/db/gaps.db.test.ts` drives a 1600-character question through the real guest route to hold that line.
+
+**Trap 2 — `lower()` is not case folding.** Found by testing the migration's merge branch on a real database: `lower('¿A QUÉ HORA')` returns `'¿a quÉ hora'` under a C/POSIX collation. ASCII folds, accented capitals do not. So a shouted Spanish question would open a *second* queue entry next to the same question asked normally — on one deployment and not another, depending on a locale flag nobody sets deliberately. For a product whose working language is Spanish that is the common case, not the corner. `question_key` now runs `translate(question, 'ÁÉÍÓÚÜÑÇ', 'áéíóúüñç')` before `lower()`, which is locale-independent. There is a test for it, because "simplify the generated column to plain `lower()`" looks like a tidy-up and is a behaviour change.
+
+**One ask per turn, not per writer.** A no-answer turn reaches `recordGap` twice by design — the pipeline records the miss, then capture links the escalation to it — both inside the one guest transaction. Counting both would make `hits` exactly double the guests who asked, which is the kind of wrong that looks plausible on a dashboard for months. The upsert increments only when the existing row's `xmin` is not the current transaction:
+
+```sql
+hits = knowledge_gaps.hits + CASE
+         WHEN knowledge_gaps.xmin = pg_current_xact_id()::xid THEN 0 ELSE 1 END
+```
+
+`xmin` is the transaction that wrote the row, so "written by the transaction I am in" is the precise test for "already counted this turn". A later turn — same guest tomorrow, or a different guest — has a different `xmin` and increments. `(xmax = 0)` in the `RETURNING` distinguishes a real insert from a conflict-update, which is what decides whether `knowledge_gap_created` may fire. Both primitives were probed against PostgreSQL 16.2 before being relied on.
+
+**The migration deletes rows, on purpose.** The unique index cannot be created while two open rows share a key, and on a database running since S05-02 they do. So duplicates are merged first: the **oldest** row survives (its `created_at` is the honest "how long has this gone unanswered"), the others are folded into `hits`. The duplicates are not distinct history — they are one event recorded twice by two writers — and keeping them would keep the double-count this item exists to remove. `knowledge_gap_created` events already emitted for a deleted row stay in `events`; their payload names a `gap_id` that no longer resolves, which is the normal fate of a log entry outliving its subject.
+
+**Verified against a real pre-0025 database, because the test suite never reaches that branch.** Every scratch database is built from empty, so the merge's `HAVING count(*) > 1` never fires in CI. Applied 0001–0024 to a fresh database, seeded the shape the two writers actually leave behind, then applied 0025:
+
+```text
+before: 7 rows  (3× "¿A qué hora es el desayuno?" open at 9/5/1 days,
+                 1× the same SHOUTED, 1× the same resolved at 30 days,
+                 1× "¿Hay gimnasio?" open, 1× "  ¿Hay gimnasio?  " open)
+after:  3 rows  desayuno open  hits=4 age=9d  (all four folded, oldest kept)
+                desayuno resolved hits=1 age=30d (untouched — partial merge)
+                gimnasio open  hits=2 age=7d  (whitespace variants folded)
+```
+
+**That check found a second bug the runner was hiding.** The merge used `CREATE TEMPORARY TABLE gap_merge ON COMMIT DROP`. Under `src/db/migrate.ts` each file is one transaction, so it works — but run the same file statement-by-statement (`psql -f` in autocommit, a restore, a manual hotfix, any tool that does not know this repo's convention) and each statement commits, the table is dropped immediately, and the migration dies at the UPDATE **after the ALTERs have already landed**: a half-migrated database, which is worse than a clean failure. `ON COMMIT DROP` is gone; a temporary table is dropped at session end anyway, so nothing was given up.
+
+**Median, not mean.** `percentile_cont(0.5)` over `now() - created_at` for open rows, in SQL. A mean is dragged by the one gap nobody has touched since launch; a page is not the population. Appendix D's target is ≤7 days, so the screen colours the median against it and says the target out loud — a number with no target is a number nobody acts on. An empty queue reports `null`, not `0`: zero would read as a measurement of nothing.
+
+**Surface.** `GET /api/gaps` (`knowledge: read`) and `POST /api/gaps/:id/close` (`knowledge: write`), its own prefix rather than a branch of `/api/inbox` because the two have different role matrices — a front desk works the inbox and may only *read* the gaps, since closing is a claim that the content now exists. The screen is a server component with links and forms like the inbox: oldest-first (because `hits` is mutable and keyset pagination over a moving key repeats and skips rows), `hits` and age on every row, the question verbatim as a JSX child, and a link through to the conversation that first asked it.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector 0.6.2 + pg_trgm 1.6):**
+```text
+$ npm run db:migrate   # 25 applied from an EMPTY database (0025 lands)
+$ npm run db:test      # 35 files / 336 passed (gaps: 21)
+$ npm test             # 45 files / 567 passed (gap screen: 5)
+$ npx tsc --noEmit && npx tsc --noEmit -p web/tsconfig.json && npm run lint   # clean
+$ npm run web:build    # green; /gaps in the manifest
+```
+
+AC-1's primary assertions drive **real guest turns** through `postGuestMessage` against a property seeded with no articles, so an empty retrieval is the no-answer and the stub provider is never consulted. A test that called `recordGap` directly would prove the function works and not that the pipeline calls it — and "automatically" is the whole AC.
+
+**Not done, by charter:** the gap analytics tile (S10-03), a "write the article from here" flow into the review queue, gap re-opening by hand (a repeat ask reopens it), per-topic grouping.

@@ -97,6 +97,7 @@ describe("schema (db)", () => {
       "0022_citation_quotes.sql",
       "0023_staff_action_guards.sql",
       "0024_request_lifecycle.sql",
+      "0025_knowledge_gap_queue.sql",
     ]);
   });
 

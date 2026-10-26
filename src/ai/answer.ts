@@ -29,6 +29,7 @@
  */
 import type pg from "pg";
 import { assertTenantShape, type TenantContext } from "../db/tenant.ts";
+import { recordGap } from "../gaps/queue.ts";
 import { emitEvent } from "../events/emit.ts";
 import type { Channel, EventContext } from "../events/taxonomy.ts";
 import { t, type Lang } from "../i18n/catalog.ts";
@@ -157,12 +158,18 @@ async function recordKnowledgeGap(
   why: { reason_code: string },
   eventBase: EventContext,
 ): Promise<void> {
-  await client.query(
-    `INSERT INTO knowledge_gaps (org_id, property_id, conversation_id, question, language)
-     VALUES ($1, $2, $3, $4, $5)`,
-    [context.orgId, context.propertyId, input.conversationId, input.text, input.language],
+  // S09-02: through the queue's one writer. `recordGap` upserts on
+  // (property, question) and emits `knowledge_gap_created` only for the row it
+  // actually created, so a repeat ask becomes `hits + 1` instead of a second
+  // queue entry — and this function no longer owns a column list that could
+  // drift from the one in src/gaps/queue.ts.
+  await recordGap(
+    client,
+    context,
+    { conversationId: input.conversationId, question: input.text, language: input.language },
+    eventBase,
+    { reasonCode: why.reason_code },
   );
-  await emitEvent(client, context, "knowledge_gap_created", eventBase, why);
 }
 
 /**

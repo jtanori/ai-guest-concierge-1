@@ -20,9 +20,11 @@ import { loadConfig, type AppConfig } from "./config/env.ts";
 import { postgresStatus, closePool, getPool } from "./neon/postgres.ts";
 import { loadAuthConfig, verifyIdentityToken } from "./auth/session.ts";
 import {
+  handleGapsRequest,
   handleInboxRequest,
   handleReviewRequest,
   handleSettingsRequest,
+  ownsGapsPath,
   ownsInboxPath,
   ownsReviewPath,
   ownsSettingsPath,
@@ -189,7 +191,12 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
 
   // S08-01: the inbox is the same pipeline with a different route table, so it
   // shares this branch rather than growing a second copy of the auth dance.
-  if (ownsReviewPath(path) || ownsInboxPath(path) || ownsSettingsPath(path)) {
+  if (
+    ownsReviewPath(path) ||
+    ownsInboxPath(path) ||
+    ownsSettingsPath(path) ||
+    ownsGapsPath(path)
+  ) {
     // One checked-out client per request: withStaffSession runs BEGIN/COMMIT,
     // so it must never borrow a different connection per statement.
     void (async () => {
@@ -211,6 +218,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       try {
         if (ownsInboxPath(path)) await handleInboxRequest(req, res, deps);
         else if (ownsSettingsPath(path)) await handleSettingsRequest(req, res, deps);
+        else if (ownsGapsPath(path)) await handleGapsRequest(req, res, deps);
         else await handleReviewRequest(req, res, deps);
       } finally {
         client.release();

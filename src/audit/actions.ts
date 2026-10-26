@@ -4,6 +4,8 @@ export const AUDIT_ACTIONS = [
   "request.assigned",
   "request.resolved",
   "request.cancelled",
+  // S09-02: closing a knowledge gap is a claim that the content now exists.
+  "knowledge_gap.closed",
   "membership.granted",
   "membership.role_changed",
   "membership.revoked",
@@ -25,6 +27,7 @@ export const AUDIT_ACTIONS = [
 export const ENTITY_TYPES = [
   "property",
   "request",
+  "knowledge_gap",
   "membership",
   "user",
   "article",

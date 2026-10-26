@@ -22,6 +22,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type pg from "pg";
 import { transitionRequest, RequestLifecycleError, RequestNotFoundError, type RequestStatus } from "../requests/lifecycle.ts";
+import {
+  closeGap,
+  GapNotFoundError,
+  listOpenGaps,
+} from "../gaps/queue.ts";
 import { RoleNotOnSurfaceError } from "../auth/guard.ts";
 import {
   NoMembershipError,
@@ -81,6 +86,7 @@ const MAX_BODY_BYTES = 64 * 1024;
 const REVIEW_PREFIX = "/api/review";
 const INBOX_PREFIX = "/api/inbox";
 const SETTINGS_PREFIX = "/api/settings";
+const GAPS_PREFIX = "/api/gaps";
 
 /** 401/403/404/409/400 mapping — one place, so no route invents its own code. */
 interface Failure {
@@ -91,6 +97,7 @@ interface Failure {
 
 export function classifyError(error: unknown): Failure {
   if (error instanceof RequestNotFoundError) return { status: 404, error: "not_found" };
+  if (error instanceof GapNotFoundError) return { status: 404, error: "not_found" };
   if (error instanceof RequestLifecycleError) return { status: 409, error: "request_transition_conflict" };
   if (error instanceof AuthVerifyError || error instanceof UnknownStaffUserError) {
     return { status: 401, error: "unauthorized" };
@@ -394,6 +401,34 @@ const SETTINGS_ROUTES: Route[] = [
   },
 ];
 
+/**
+ * S09-02 — the knowledge-gap queue.
+ *
+ * Its own prefix rather than a branch of `/api/inbox`: the inbox is per
+ * conversation and is `queue`-surface work, while the gap queue is per question
+ * and is `knowledge`-surface work — different roles may act on it (a front desk
+ * can read the inbox and may only read the gaps), so sharing a prefix would put
+ * two role matrices behind one path.
+ */
+const GAPS_ROUTES: Route[] = [
+  {
+    method: "POST",
+    pattern: /^\/api\/gaps\/([0-9a-f-]{36})\/close$/i,
+    run: (m, _d, session, scoped, context) => closeGap(scoped, context, session, m[1]!),
+  },
+  {
+    method: "GET",
+    pattern: /^\/api\/gaps$/,
+    run: (_m, _d, session, scoped, context, req) => {
+      const url = new URL(req.url ?? "/", "http://localhost");
+      return listOpenGaps(scoped, context, session, {
+        limit: url.searchParams.get("limit"),
+        cursor: url.searchParams.get("cursor"),
+      });
+    },
+  },
+];
+
 /** True when this handler owns the path (so the health table never sees it). */
 export function ownsReviewPath(path: string): boolean {
   return path === REVIEW_PREFIX || path.startsWith(`${REVIEW_PREFIX}/`);
@@ -402,6 +437,11 @@ export function ownsReviewPath(path: string): boolean {
 /** True for `/api/settings` (S08-04). */
 export function ownsSettingsPath(path: string): boolean {
   return path === SETTINGS_PREFIX || path.startsWith(`${SETTINGS_PREFIX}/`);
+}
+
+/** True for `/api/gaps` (S09-02). */
+export function ownsGapsPath(path: string): boolean {
+  return path === GAPS_PREFIX || path.startsWith(`${GAPS_PREFIX}/`);
 }
 
 /** True for `/api/inbox` (S08-01). */
@@ -437,6 +477,15 @@ export function handleInboxRequest(
   deps: ReviewHttpDeps,
 ): Promise<void> {
   return handleStaffRequest(req, res, deps, INBOX_ROUTES);
+}
+
+/** S09-02 — `/api/gaps`, same pipeline, `knowledge: read|write`. */
+export function handleGapsRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ReviewHttpDeps,
+): Promise<void> {
+  return handleStaffRequest(req, res, deps, GAPS_ROUTES);
 }
 
 /**

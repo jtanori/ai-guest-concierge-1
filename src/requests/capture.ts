@@ -36,6 +36,7 @@
 import type pg from "pg";
 import { emitEvent } from "../events/emit.ts";
 import type { EventContext } from "../events/taxonomy.ts";
+import { recordGap } from "../gaps/queue.ts";
 import type { TenantContext } from "../db/tenant.ts";
 import type { Lang } from "../i18n/catalog.ts";
 
@@ -86,10 +87,6 @@ interface OpenRequestRow {
   request_id: string;
 }
 
-interface GapRow {
-  gap_id: string;
-}
-
 export async function captureRequest(
   client: pg.Client | pg.PoolClient,
   context: TenantContext,
@@ -118,32 +115,49 @@ export async function captureRequest(
     requestId = inserted.rows[0]!.request_id;
   }
 
+  // S09-02 — capture goes through the queue's one writer instead of being a
+  // second one.
+  //
+  // The old code here inserted into `knowledge_gaps` itself, guarded by a lookup
+  // scoped to the *conversation*. That guard was the bug: the same question asked
+  // in a second conversation was a second row, so the queue showed one miss per
+  // guest instead of one per question, and nothing recorded how many guests hit
+  // it. `recordGap` upserts on (property, question) and counts a second ask
+  // within the same transaction as the same ask — which is what makes it safe for
+  // the pipeline to have already recorded this one a few statements earlier.
+  //
+  // It still writes rather than only reading, deliberately: `knowledgeGap: true`
+  // is passed exactly when the reply decision is `no_answer`, and both no-answer
+  // paths in src/ai/answer.ts record a gap first, so in production this is always
+  // the second call. But "the other writer definitely ran" is an invariant about
+  // somebody else's code, and a capture that only *looked* would silently drop the
+  // gap the day a new no-answer path forgot to. Writing keeps S07-03's guarantee
+  // local to this function.
   let gapId: string | null = null;
   let gapCreated = false;
   if (input.knowledgeGap === true && typeof input.question === "string" && input.question !== "") {
-    // The pipeline (S05-02) already writes a gap for an empty retrieval and for
-    // the model's own `no_answer`. Capture must not add a second one for the
-    // same question — the queue would show the guest twice and the "top gaps"
-    // count would double-count the same miss.
-    const existing = await client.query<GapRow>(
-      `SELECT gap_id
-         FROM knowledge_gaps
-        WHERE org_id = $1 AND property_id = $2 AND conversation_id = $3
-          AND question = $4 AND status = 'open'
-        LIMIT 1`,
-      [context.orgId, context.propertyId, input.conversationId, input.question],
+    const recorded = await recordGap(
+      client,
+      context,
+      {
+        conversationId: input.conversationId,
+        question: input.question,
+        language: input.language ?? null,
+        topic: input.topic,
+      },
+      {
+        orgId: context.orgId,
+        propertyId: context.propertyId,
+        conversationId: input.conversationId,
+        channel: "web",
+        language: input.language ?? null,
+        topic: input.topic,
+        createdAt: at.toISOString(),
+      },
+      { reasonCode: input.reasonCode ?? "low_retrieval" },
     );
-    gapId = existing.rows[0]?.gap_id ?? null;
-    if (gapId === null) {
-      const inserted = await client.query<GapRow>(
-        `INSERT INTO knowledge_gaps (org_id, property_id, conversation_id, question, language, status)
-         VALUES ($1, $2, $3, $4, $5, 'open')
-         RETURNING gap_id`,
-        [context.orgId, context.propertyId, input.conversationId, input.question, input.language ?? null],
-      );
-      gapId = inserted.rows[0]!.gap_id;
-      gapCreated = true;
-    }
+    gapId = recorded.gapId;
+    gapCreated = recorded.created;
   }
 
   const eventContext: EventContext = {
@@ -165,13 +179,9 @@ export async function captureRequest(
         : { reason_code: input.reasonCode }),
     });
   }
-  if (gapCreated && gapId !== null) {
-    await emitEvent(client, context, "knowledge_gap_created", eventContext, {
-      gap_id: gapId,
-      request_id: requestId,
-      reason_code: input.reasonCode ?? "low_retrieval",
-    });
-  }
+  // `knowledge_gap_created` is emitted by recordGap, on the row it actually
+  // inserted. Emitting it here too would double-count every gap the pipeline had
+  // already recorded, which is the same drift this item removes.
 
   return { requestId, created, gapId, gapCreated };
 }

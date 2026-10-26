@@ -123,3 +123,25 @@ export interface AiModeStateWire {
   aiMode: "auto" | "draft" | "human_only" | "after_hours";
   timeZone: string;
 }
+
+/** S09-02 — the knowledge-gap queue, as `GET /api/gaps` serialises it. */
+export interface GapItemWire {
+  gapId: string;
+  /** Verbatim guest text. Rendered as a JSX child, never as HTML. */
+  question: string;
+  language: string | null;
+  topic: string | null;
+  hits: number;
+  createdAt: string;
+  openSeconds: number;
+  conversationId: string | null;
+}
+
+export interface GapPageWire {
+  items: GapItemWire[];
+  nextCursor: string | null;
+  /** `null` when nothing is open: an empty queue has no median, and 0 would read
+   * as a measurement of nothing. */
+  medianOpenAgeDays: number | null;
+  openCount: number;
+}

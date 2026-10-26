@@ -88,6 +88,42 @@ describe("conversation detail page", () => {
     expect(code).not.toContain("{request.status}");
   });
 
+  it("hooks the S09-03 flag onto the answer itself (S09-03)", () => {
+    // The attribute S08-02 pre-installed is now load-bearing: the button posts it,
+    // and the AC is attribution to the run rather than to the bubble.
+    expect(source).toContain("data-ai-run-id");
+    expect(source).toContain('name="aiRunId" value={message.aiRun.aiRunId}');
+    expect(source).toContain("action={flagAnswerAction}");
+    // The note is optional and rides in the SAME form: 0026 grants no UPDATE on
+    // answer_flags, so a note cannot be attached to a flag afterwards.
+    const start = source.indexOf("action={flagAnswerAction}");
+    // Comments stripped from the slice too: the prose in this form explains why
+    // the note is NOT required, so the word appears in a comment.
+    const flagForm = source
+      .slice(start, source.indexOf("</form>", start))
+      .replace(/\{\/[\s\S]*?\/\}/g, "");
+    expect(flagForm).toContain('name="note"');
+    // Scoped to this form on purpose: the reply textarea above it IS required, and
+    // an empty reply is meaningless. An empty note is not — it is the common case.
+    expect(flagForm).not.toMatch(/\brequired\b/);
+  });
+
+  it("shows the flag on the answer, and the notes as text (S09-03)", () => {
+    // The indicator belongs on the bubble. A separate roster of complaints invites
+    // reading the answer without them, which is how a wrong answer keeps being
+    // trusted by the next person who opens the thread.
+    expect(source).toContain("message.aiRun.flags");
+    expect(source).toContain("staff.flag.flagged");
+    expect(source).toContain("{flag.note}");
+  });
+
+  it("stops offering the button to the person who already pressed it (S09-03)", () => {
+    // The schema refuses a second flag from the same person, so showing the button
+    // again would be showing something that cannot work.
+    expect(source).toContain("flag.mine");
+    expect(source).toContain('flags.some((flag) => flag.mine) ? null');
+  });
+
   it("labels a citation whose version is no longer current, rather than hiding it", () => {
     // AC-2's twin: an answer that cites history is history working, and staff
     // need to see that the source moved on without the answer being wrong.

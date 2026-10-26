@@ -89,6 +89,24 @@ export interface DetailAiRunWire {
   confidence: number | null;
   latencyMs: number | null;
   citations: DetailCitationWire[];
+  /** S09-03 — who called this answer wrong or outdated, newest last. */
+  flags: AnswerFlagWire[];
+}
+
+/**
+ * S09-03 — one "wrong or outdated" flag.
+ *
+ * `flaggedBy` is a UUID and there is deliberately no name next to it: 0004's
+ * `users.staff_select` authorises your own row only, so a colleague's display_name
+ * is not readable from this surface. `mine` is what the screen needs in order to
+ * stop offering the button to the person who already pressed it.
+ */
+export interface AnswerFlagWire {
+  flagId: string;
+  flaggedBy: string;
+  mine: boolean;
+  note: string | null;
+  createdAt: string;
 }
 
 export interface DetailMessageWire {

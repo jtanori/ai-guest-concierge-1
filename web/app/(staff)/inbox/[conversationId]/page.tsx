@@ -6,6 +6,7 @@ import type { ApiFailure, ConversationDetailWire, DetailMessageWire } from "@/li
 import { OPEN_REQUEST_STATUSES, REQUEST_LABEL } from "@/lib/request-status";
 import {
   acknowledgeAction,
+  flagAnswerAction,
   assignToMeAction,
   cancelRequestAction,
   replyAction,
@@ -253,7 +254,12 @@ export default async function ConversationDetailPage({
       <ol className="space-y-3">
         {detail.messages.map((message) => (
           <li key={message.messageId}>
-            <MessageBubble message={message} tr={tr} formatTime={formatTime} />
+            <MessageBubble
+              message={message}
+              conversationId={detail.conversationId}
+              tr={tr}
+              formatTime={formatTime}
+            />
           </li>
         ))}
       </ol>
@@ -287,10 +293,12 @@ function BackLink({ label }: { label: string }): React.ReactElement {
 
 function MessageBubble({
   message,
+  conversationId,
   tr,
   formatTime,
 }: {
   message: DetailMessageWire;
+  conversationId: string;
   tr: (id: StringId) => string;
   formatTime: (iso: string) => string;
 }): React.ReactElement {
@@ -338,6 +346,69 @@ function MessageBubble({
               </span>
             )}
           </div>
+
+          {/*
+            S09-03 — the flag lives ON the answer, not in a list beside it. A
+            screen that shows an answer and a separate roster of complaints
+            invites reading one without the other, which is how a wrong answer
+            keeps being trusted by the next person who opens this thread.
+          */}
+          {message.aiRun.flags.length === 0 ? null : (
+            <div className="rounded border border-destructive/40 bg-destructive/5 p-2">
+              <p className="text-[11px] font-medium text-destructive">
+                {message.aiRun.flags.length === 1
+                  ? tr("staff.flag.flagged_one")
+                  : tr("staff.flag.flagged").replace(
+                      "{count}",
+                      String(message.aiRun.flags.length),
+                    )}
+                {message.aiRun.flags.some((flag) => flag.mine)
+                  ? ` · ${tr("staff.flag.flagged_by_you")}`
+                  : ""}
+              </p>
+              {/* The notes are staff text, but they are still text: JSX child,
+                  never markup, for the same reason the guest's words are. */}
+              <ul className="mt-1 space-y-0.5">
+                {message.aiRun.flags
+                  .filter((flag) => flag.note !== null)
+                  .map((flag) => (
+                    <li key={flag.flagId} className="text-[11px] text-muted-foreground">
+                      {flag.mine ? `${tr("staff.flag.your_note")}: ` : ""}
+                      {flag.note} · {formatTime(flag.createdAt)}
+                    </li>
+                  ))}
+              </ul>
+            </div>
+          )}
+
+          {/* One click, and no modal: a flag that demanded a sentence would be a
+              flag nobody files, and an unfiled flag is a wrong answer that stays
+              in rotation. Hidden once you have filed it — the schema refuses a
+              second one, so showing the button would be showing a lie. */}
+          {message.aiRun.flags.some((flag) => flag.mine) ? null : (
+            <form action={flagAnswerAction} className="flex flex-wrap items-center gap-2">
+              <input type="hidden" name="conversationId" value={conversationId} />
+              <input type="hidden" name="aiRunId" value={message.aiRun.aiRunId} />
+              <button
+                type="submit"
+                className="rounded border px-3 py-1.5 text-xs font-medium"
+                title={tr("staff.flag.hint")}
+              >
+                {tr("staff.flag.button")}
+              </button>
+              {/* Optional, and deliberately not `required`: the button alone is
+                  the whole action. It has to be in THIS form, though — 0026
+                  grants no UPDATE on answer_flags, so a note cannot be attached
+                  to a flag afterwards. */}
+              <input
+                type="text"
+                name="note"
+                maxLength={2000}
+                placeholder={tr("staff.flag.note_placeholder")}
+                className="min-w-0 flex-1 rounded border px-2 py-1.5 text-xs"
+              />
+            </form>
+          )}
 
           {message.aiRun.citations.length === 0 ? (
             <p className="text-[11px] text-muted-foreground">{tr("staff.inbox.no_sources")}</p>

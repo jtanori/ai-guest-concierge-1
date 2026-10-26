@@ -6,6 +6,8 @@ export const AUDIT_ACTIONS = [
   "request.cancelled",
   // S09-02: closing a knowledge gap is a claim that the content now exists.
   "knowledge_gap.closed",
+  // S09-03: calling an answer wrong is attributable, so it is audited.
+  "answer.flagged",
   "membership.granted",
   "membership.role_changed",
   "membership.revoked",
@@ -28,6 +30,7 @@ export const ENTITY_TYPES = [
   "property",
   "request",
   "knowledge_gap",
+  "ai_run",
   "membership",
   "user",
   "article",

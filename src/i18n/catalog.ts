@@ -112,6 +112,16 @@ export const en = {
     "Records that a person has seen this request. Assigning and resolving come after.",
   "staff.inbox.cancel_request": "Cancel request",
   "staff.inbox.actions": "Actions",
+  // S09-03 — "wrong or outdated". The label names both failure modes because they
+  // have different fixes (a bad article vs a stale one) and the person clicking
+  // often cannot tell which it is yet; the note is where they say more.
+  "staff.flag.button": "Wrong or outdated",
+  "staff.flag.hint": "One click. Add a note only if you have one.",
+  "staff.flag.flagged": "Flagged by {count}",
+  "staff.flag.flagged_one": "Flagged by 1 person",
+  "staff.flag.flagged_by_you": "You flagged this",
+  "staff.flag.note_placeholder": "What is wrong with it? (optional)",
+  "staff.flag.your_note": "Your note",
   "staff.mode.nav": "Settings",
   // S08-04 — the operating mode. The hints are the whole product decision: an
   // admin who does not know that "draft" still answers the guest (into the queue)
@@ -285,6 +295,13 @@ export const es: Record<StringId, string> = {
     "Registra que una persona ya vio esta solicitud. Asignar y resolver vienen después.",
   "staff.inbox.cancel_request": "Cancelar solicitud",
   "staff.inbox.actions": "Acciones",
+  "staff.flag.button": "Incorrecto o desactualizado",
+  "staff.flag.hint": "Un clic. Agregue una nota solo si la tiene.",
+  "staff.flag.flagged": "Marcado por {count} personas",
+  "staff.flag.flagged_one": "Marcado por 1 persona",
+  "staff.flag.flagged_by_you": "Usted lo marcó",
+  "staff.flag.note_placeholder": "¿Qué está mal? (opcional)",
+  "staff.flag.your_note": "Su nota",
   "staff.mode.nav": "Configuración",
   "staff.mode.title": "Modo del asistente",
   "staff.mode.intro": "Se aplica desde el siguiente mensaje del huésped. Sin despliegue ni reinicio.",

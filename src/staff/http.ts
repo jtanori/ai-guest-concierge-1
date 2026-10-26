@@ -22,6 +22,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type pg from "pg";
 import { transitionRequest, RequestLifecycleError, RequestNotFoundError, type RequestStatus } from "../requests/lifecycle.ts";
+import { flagAnswer, FlagInputError, FlagNotFoundError } from "../inbox/flags.ts";
 import {
   closeGap,
   GapNotFoundError,
@@ -98,6 +99,10 @@ interface Failure {
 export function classifyError(error: unknown): Failure {
   if (error instanceof RequestNotFoundError) return { status: 404, error: "not_found" };
   if (error instanceof GapNotFoundError) return { status: 404, error: "not_found" };
+  // One 404 for "no such answer" and "somebody else's answer": a 403 would
+  // confirm that a run id is real, which is the same reason the guest surface and
+  // the gap queue do not distinguish them.
+  if (error instanceof FlagNotFoundError) return { status: 404, error: "not_found" };
   if (error instanceof RequestLifecycleError) return { status: 409, error: "request_transition_conflict" };
   if (error instanceof AuthVerifyError || error instanceof UnknownStaffUserError) {
     return { status: 401, error: "unauthorized" };
@@ -151,6 +156,9 @@ export function classifyError(error: unknown): Failure {
       error: "illegal_transition",
       extra: { detail: error.message, from: error.from, to: error.to },
     };
+  }
+  if (error instanceof FlagInputError) {
+    return { status: 400, error: "invalid_request", extra: { detail: error.message } };
   }
   if (error instanceof ActionInputError) {
     return { status: 400, error: "invalid_request", extra: { detail: error.message } };
@@ -289,6 +297,24 @@ const ROUTES: Route[] = [
  * `<Link>`s instead of client state (DEC-1).
  */
 const INBOX_ROUTES: Route[] = [
+  {
+    // S09-03 — one click on an answer. Addressed by run, not by message: the AC is
+    // attribution to the `ai_run`, and a message id would make the flag about the
+    // bubble instead of about the model call that produced it.
+    method: "POST",
+    pattern: /^\/api\/inbox\/answers\/([0-9a-f-]{36})\/flag$/i,
+    run: async (m, _d, session, scoped, context, req) => {
+      const body = await readJson(req);
+      const note = body["note"];
+      if (note !== undefined && note !== null && typeof note !== "string") {
+        throw new FlagInputError("note must be a string");
+      }
+      return flagAnswer(scoped, context, session, {
+        aiRunId: m[1]!,
+        note: note === undefined || note === null ? null : note,
+      });
+    },
+  },
   {
     method: "POST",
     pattern: /^\/api\/inbox\/requests\/([0-9a-f-]{36})\/(acknowledge|assign|resolve|cancel)$/i,

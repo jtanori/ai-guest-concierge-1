@@ -173,3 +173,59 @@ export async function cancelRequestAction(formData: FormData): Promise<void> {
   const requestId = String(formData.get("requestId") ?? "");
   refresh(conversationId, await callRequest(conversationId, requestId, "cancel", {}));
 }
+
+/**
+ * S09-03 — one click: "this answer is wrong or outdated".
+ *
+ * One click means no modal and no *required* note: the note field is optional and
+ * the form posts whether or not anybody filled it in. A flag that demanded a
+ * sentence would be a flag nobody files, and an unfiled flag is a wrong answer
+ * that stays in rotation.
+ *
+ * The note has to travel in THIS request. 0026 grants concierge_app no UPDATE on
+ * `answer_flags`, so there is no "add a note to the flag I filed a minute ago" —
+ * which is the point of an append-only flag, and the reason the input sits in the
+ * same form as the button rather than behind a second one.
+ *
+ * Addressed by `ai_run_id`, not by message: the AC is attribution to the run, and
+ * the run is what per-model and per-prompt-version accuracy are computed from.
+ */
+export async function flagAnswerAction(formData: FormData): Promise<void> {
+  const conversationId = String(formData.get("conversationId") ?? "");
+  const aiRunId = String(formData.get("aiRunId") ?? "");
+  // Optional, and omitted rather than sent empty: the service refuses a
+  // whitespace-only note (400) because an empty string says nothing and costs a
+  // column, and a blank field means "no note", not "a note that is blank".
+  const note = String(formData.get("note") ?? "").trim();
+  const session = await readSession();
+  if (session === null) redirect("/session");
+  if (!UUID.test(conversationId) || !UUID.test(aiRunId)) {
+    redirect(`/inbox/${conversationId}?problem=missing`);
+  }
+
+  let status = 0;
+  try {
+    const response = await fetch(`${apiBase()}/api/inbox/answers/${aiRunId}/flag`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${session.token}`,
+        "x-org-id": session.orgId,
+        "x-property-id": session.propertyId,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(note === "" ? {} : { note }),
+      cache: "no-store",
+    });
+    status = response.status;
+  } catch {
+    redirect(`/inbox/${conversationId}?problem=error`);
+  }
+
+  revalidatePath(`/inbox/${conversationId}`);
+  revalidatePath("/inbox");
+  redirect(
+    status === 200
+      ? `/inbox/${conversationId}`
+      : `/inbox/${conversationId}?problem=${problemFor(status)}`,
+  );
+}

@@ -19,7 +19,7 @@ import { dropScratch, recreateScratch, scratchUrl } from "./helpers.db.ts";
 /** The RLS policy name that marks a table as tenant-scoped (0002). */
 const TENANT_POLICY = "tenant";
 
-/** The 24 tenant tables: the plan's 25 minus organizations/users/roles/memberships, plus S04-01's two. */
+/** Every tenant table: the plan's 25 minus organizations/users/roles/memberships, plus each item that added one. */
 const EXPECTED_TENANT_TABLES = [
   "properties",
   "channel_connections", "channel_identities",
@@ -34,6 +34,8 @@ const EXPECTED_TENANT_TABLES = [
   "article_chunks",
   // S07-04 (0019)
   "rate_limits", "spend_counters",
+  // S09-03 (0026): "wrong or outdated", append-only and tenant-scoped like the rest
+  "answer_flags",
 ];
 /** users/memberships carry S02-01's own surfaces (staff_select/staff_update_name
  *  and membership_select/insert/update/delete);
@@ -79,7 +81,7 @@ describe("row-level security (db)", () => {
       "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename != 'schema_migrations'",
     );
     const names = allTables.rows.map((r) => r.tablename).sort();
-    expect(names).toHaveLength(30);
+    expect(names).toHaveLength(31);
     expect(names).toEqual(
       [...EXPECTED_TENANT_TABLES, ...EXPECTED_GLOBAL_TABLES].sort(),
     );
@@ -435,6 +437,13 @@ async function seedOneTenant(client: pg.Client, tag: "a" | "b"): Promise<SeedRes
   await client.query(
     "INSERT INTO citations (org_id, property_id, ai_run_id, article_version_id) VALUES ($1, $2, $3, $4)",
     [ORG, PROP, RUN, VERSION],
+  );
+  // S09-03: a flag on the run above. The composite FK is what makes the tenant
+  // columns here load-bearing rather than decorative.
+  await client.query(
+    `INSERT INTO answer_flags (org_id, property_id, ai_run_id, flagged_by, note)
+     VALUES ($1, $2, $3, $4, 'stale hours')`,
+    [ORG, PROP, RUN, USER],
   );
   await client.query(
     `INSERT INTO handoff_reasons (org_id, property_id, conversation_id, reason_code)

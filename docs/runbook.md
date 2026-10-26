@@ -1452,3 +1452,56 @@ $ npm run web:build    # green; /gaps in the manifest
 AC-1's primary assertions drive **real guest turns** through `postGuestMessage` against a property seeded with no articles, so an empty retrieval is the no-answer and the stub provider is never consulted. A test that called `recordGap` directly would prove the function works and not that the pipeline calls it — and "automatically" is the whole AC.
 
 **Not done, by charter:** the gap analytics tile (S10-03), a "write the article from here" flow into the review queue, gap re-opening by hand (a repeat ask reopens it), per-topic grouping.
+
+## S09-03 - One-click 'wrong or outdated' (0.50d)
+
+**AC (verbatim):** A flag is attributable to an ai_run.
+
+- **AC-1** One click creates a flag row with `ai_run_id`, staff user id, timestamp and optional note.
+- **AC-2** The flag is visible on the conversation detail view and emits `answer_flagged_wrong`.
+
+**Status: DONE (2026-10-26).** `db/migrations/0026_answer_flags.sql` (new), `db/erd.mmd`, `src/inbox/flags.ts` (new), `src/inbox/detail.ts` (flags ride with each run), `src/audit/actions.ts` (`answer.flagged` + the `ai_run` entity), `src/staff/http.ts` (`POST /api/inbox/answers/:aiRunId/flag`), `web/app/(staff)/inbox/[conversationId]/{page.tsx,actions.ts}`, `web/lib/types.ts`, `src/i18n/catalog.ts` (`staff.flag.*`, en+es); tests `tests/db/flags.db.test.ts` (new, 16), `tests/inbox/detail-page.test.ts` (+3), `tests/db/{isolation,schema,non-superuser}.db.test.ts`, `tests/audit/actions.test.ts`.
+
+**Attribution is the whole AC, and it is what makes the flag useful later.** A flag pointing at a run supports per-model accuracy, per-prompt-version regressions, and "the answer that cited this article version was called wrong nine times". A flag attached to a message, a conversation, or a run id inside a JSONB payload supports none of them. So `ai_run_id` is `NOT NULL` and the run is read back inside the caller's transaction before the insert.
+
+**The composite FK is the security property.** `FOREIGN KEY (org_id, property_id, ai_run_id) REFERENCES ai_runs (org_id, property_id, ai_run_id)`. A bare `ai_run_id → ai_runs(ai_run_id)` would let a row name a run that exists — in somebody else's property. RLS would then *hide* it, but hidden is not refused: the insert would succeed, the flag would be orphaned from every query that reads it, and the failure would stay invisible until somebody noticed a count that never moved. `tests/db/flags.db.test.ts` bypasses the application entirely — raw `INSERT` as `concierge_app` with tenant A's GUCs naming tenant B's run — and asserts the row is refused.
+
+**One flag per person per answer.** `UNIQUE (org_id, property_id, ai_run_id, flagged_by)`. A second click is a phone on a bad connection, not a second opinion, so the service reports `created: false` and writes no second event or audit row. Nine flags from one person would read as nine people — the same inflation the gap queue's `hits` exists to avoid. Two *colleagues* flagging is two flags, because it is two people.
+
+**Append-only, and the grant that did not do what it looked like it did.**
+
+0026 was written `GRANT SELECT, INSERT ON answer_flags TO concierge_app` — the same shape as an audit trail, no UPDATE, no DELETE, so a disputed flag could not be quietly withdrawn. The test asserted that instead of assuming it, and **the UPDATE succeeded**. The reason is in 0002:
+
+```sql
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO concierge_app;
+```
+
+Every table created since 0002 already has all four before its own migration says anything, and a `GRANT` is *additive* — listing two privileges does not withdraw the other two. `\dp answer_flags` after only the grant reads `concierge_app=arwd`. The append-only design would have been a comment, not a constraint, and the test that would have caught it is the one I nearly did not write.
+
+The fix follows the repo's own precedent: `0007_audit_privileges.sql` is a whole migration consisting of `REVOKE UPDATE, DELETE ON audit_log FROM concierge_app`, which is why `audit_log` reads `concierge_app=ar`. 0026 now revokes, and also adds 0003's `raise_immutable()` trigger — the REVOKE binds `concierge_app`, but the migration role and any future grantee can still write, and `events`/`audit_log` are trigger-protected for exactly that reason. Both tables now read `ar`:
+
+```text
+   relname    |                        relacl
+--------------+-------------------------------------------------------
+ audit_log    | {postgres=arwdDxt/postgres,concierge_app=ar/postgres}
+ answer_flags | {postgres=arwdDxt/postgres,concierge_app=ar/postgres}
+```
+
+**The consequence for the UI: the note cannot be added later.** AC-1 says "optional note" without saying when, and append-only answers it — there is no "attach a note to the flag I filed a minute ago". So the optional note input sits in the *same form* as the button, and one click still means one click: the field may be left blank, and a blank field is omitted rather than sent as an empty string (the service 400s on whitespace-only, because an empty note says nothing and costs a column).
+
+**Whose name is on it.** `flagged_by` is stored and is the attribution the AC asks for. It cannot be *displayed* as a name for anybody but the caller: 0004's `users.staff_select` policy authorises your own row only, so a join for a colleague's `display_name` returns NULL for everyone else. Widening that policy would expose staff names and emails across a property — an S02 security decision, not something to slip into a 0.5d item. So the wire carries `flaggedBy` (UUID) and `mine`, and the screen shows how many people flagged an answer, the notes they left, and whether you are one of them. A test asserts the flag object's exact key set, so widening it later is a deliberate act rather than an accident.
+
+**The indicator is on the answer, not beside it.** A screen that shows an answer and a separate roster of complaints invites reading one without the other, which is how a wrong answer keeps being trusted by the next person who opens the thread. The button disappears once you have filed one, because the schema refuses a second and a button that reliably fails teaches staff that the screen lies (the same rule as S09-01's action bar).
+
+**Three drift guards caught the new table, and each earned its keep.** `tests/db/isolation.db.test.ts` derives the tenant-table list *from the database's own policies* and compares it to the declared one; `tests/db/schema.db.test.ts` checks the migration list, the table count, and that the committed ERD in `db/erd.mmd` matches reality; `tests/db/non-superuser.db.test.ts` counts applied migrations. All three failed until `answer_flags` was declared, seeded in both tenants, and drawn. Adding it to the isolation list made the cross-tenant sweep cover it for free — zero rows without context, and no leak in either direction.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector 0.6.2 + pg_trgm 1.6):**
+```text
+$ npm run db:migrate   # 26 applied from an EMPTY database (0026 lands)
+$ npm run db:test      # 36 files / 352 passed (flags: 16)
+$ npm test             # 45 files / 570 passed (detail page: +3)
+$ npx tsc --noEmit && npx tsc --noEmit -p web/tsconfig.json && npm run lint   # clean
+$ npm run web:build    # green; /inbox/[conversationId] in the manifest
+```
+
+**Not done, by charter:** the review queue that consumes flags (S09-04); retraining or automated fixes; retracting a flag (would need its own column or a new row, not the ability to delete this one); flag counts surfaced on the review screen or in analytics (S10-03).

@@ -40,6 +40,8 @@ export const PLAN_TABLES = [
   // tables with RLS rather than a Redis-shaped side channel, because a limit
   // that a replica can reset is not a limit.
   "rate_limits", "spend_counters",
+  // S09-03 (0026): the "wrong or outdated" flag, attributable to an ai_run.
+  "answer_flags",
 ] as const;
 
 async function publicTables(client: pg.Client): Promise<Array<string>> {
@@ -98,6 +100,7 @@ describe("schema (db)", () => {
       "0023_staff_action_guards.sql",
       "0024_request_lifecycle.sql",
       "0025_knowledge_gap_queue.sql",
+      "0026_answer_flags.sql",
     ]);
   });
 
@@ -106,7 +109,7 @@ describe("schema (db)", () => {
       (t) => t !== "schema_migrations",
     );
     expect(new Set(tables)).toEqual(new Set(PLAN_TABLES));
-    expect(tables).toHaveLength(30);
+    expect(tables).toHaveLength(31);
   });
 
   it("fails loudly when an applied migration's file content drifts (checksum guard)", async () => {

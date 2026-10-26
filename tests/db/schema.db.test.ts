@@ -84,6 +84,7 @@ describe("schema (db)", () => {
       "0013_retrieval_weights.sql",
       "0014_ai_runs_indexes.sql",
       "0015_guest_chat.sql",
+      "0016_conversation_state.sql",
     ]);
   });
 

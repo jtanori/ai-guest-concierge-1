@@ -33,6 +33,7 @@ import { answerMessage, type AnswerOutcome } from "../ai/answer.ts";
 import { AiUnavailableError, type ResilientAi } from "../ai/provider.ts";
 import type { Channel, EventContext } from "../events/taxonomy.ts";
 import { emitEvent } from "../events/emit.ts";
+import { lockState, transition } from "../conversation/state.ts";
 import { t, type Lang } from "../i18n/catalog.ts";
 import type { TenantContext } from "../db/tenant.ts";
 import { signGuestTicket, type GuestTicket } from "./cookie.ts";
@@ -83,7 +84,7 @@ export interface GuestTurn {
   /** Re-issued cookie value: the server signs, the browser only carries it. */
   ticket: string;
   messages: GuestMessage[];
-  decision: "answer" | "fact" | "escalate" | "no_answer" | "unavailable";
+  decision: "answer" | "fact" | "escalate" | "no_answer" | "unavailable" | "handoff";
   reasonCode: string | null;
   language: Lang;
 }
@@ -383,6 +384,12 @@ export async function postGuestMessage(
       language,
     );
 
+    // S06-02: take the conversation's row lock for the REST of this transaction.
+    // Everything below — the model call, the outbound message, the state write —
+    // happens under it, which is what makes a concurrent staff takeover and this
+    // turn mutually exclusive rather than merely unlikely.
+    const state = await lockState(scoped, session.context, conversation.conversationId);
+
     const eventBase: EventContext = {
       orgId: session.context.orgId,
       propertyId: session.context.propertyId,
@@ -412,6 +419,29 @@ export async function postGuestMessage(
       characters: text.length,
     });
 
+    // A human owns this thread: record the guest's words, answer honestly that
+    // someone will reply, and do NOT call the model. This is the state S08's
+    // inbox produces and S08-03 depends on.
+    if (state === "awaiting_staff") {
+      const pending = t("guest.staff_reply_pending", language);
+      const outbound = await insertMessage(scoped, session.context, {
+        conversationId: conversation.conversationId,
+        direction: "outbound",
+        authorRole: "ai",
+        body: pending,
+        language,
+      });
+      await scoped.query(
+        `UPDATE conversations SET last_activity_at = $2::timestamptz WHERE conversation_id = $1`,
+        [conversation.conversationId, outbound.createdAt],
+      );
+      return finish("handoff", "awaiting_staff", { ...outbound, body: pending });
+    }
+
+    // The model is about to speak, so the conversation is no longer idle. A
+    // `resolved` thread reopens here rather than staying a dead end.
+    await transition(scoped, session.context, conversation.conversationId, "awaiting_ai");
+
     const outcome = await askModel(deps, scoped, session.context, {
       conversationId: conversation.conversationId,
       messageId: inbound.messageId,
@@ -434,39 +464,60 @@ export async function postGuestMessage(
       [conversation.conversationId, outbound.createdAt],
     );
 
-    const ticket = signGuestTicket(
-      {
-        identityId: identity.identityId,
-        conversationId: conversation.conversationId,
-        propertyId: session.context.propertyId,
-      },
-      deps.cookieSecret,
+    // An answer returns the thread to `idle`; anything that needs a human parks
+    // it in `awaiting_staff` so the next turn (and S08's queue) knows the model
+    // has stepped back.
+    await transition(
+      scoped,
+      session.context,
+      conversation.conversationId,
+      reply.decision === "answer" || reply.decision === "fact" ? "idle" : "awaiting_staff",
     );
 
-    return {
-      property: propertyView(session.property, language),
-      conversationId: conversation.conversationId,
-      ticket,
-      messages: [
-        {
-          messageId: inbound.messageId,
-          direction: "inbound",
-          authorRole: "guest",
-          body: text,
-          createdAt: inbound.createdAt,
-        },
-        {
-          messageId: outbound.messageId,
-          direction: "outbound",
-          authorRole: "ai",
-          body: reply.body,
-          createdAt: outbound.createdAt,
-        },
-      ],
-      decision: reply.decision,
-      reasonCode: reasonFor(outcome),
-      language,
-    };
+    return finish(reply.decision, reasonFor(outcome), { ...outbound, body: reply.body });
+
+    /**
+     * Shared tail: the ticket, the wire shape and the language. Written as a
+     * closure so the handoff path cannot forget to sign the cookie — the first
+     * version of this function had the ticket assembly twice.
+     */
+    function finish(
+      decision: GuestTurn["decision"],
+      reasonCode: string | null,
+      outbound: InsertedMessage & { body: string },
+    ): GuestTurn {
+      return {
+        property: propertyView(session.property, language),
+        conversationId: conversation.conversationId,
+        ticket: signGuestTicket(
+          {
+            identityId: identity.identityId,
+            conversationId: conversation.conversationId,
+            propertyId: session.context.propertyId,
+          },
+          deps.cookieSecret,
+        ),
+        messages: [
+          {
+            messageId: inbound.messageId,
+            direction: "inbound",
+            authorRole: "guest",
+            body: text,
+            createdAt: inbound.createdAt,
+          },
+          {
+            messageId: outbound.messageId,
+            direction: "outbound",
+            authorRole: "ai",
+            body: outbound.body,
+            createdAt: outbound.createdAt,
+          },
+        ],
+        decision,
+        reasonCode,
+        language,
+      };
+    }
   });
 }
 

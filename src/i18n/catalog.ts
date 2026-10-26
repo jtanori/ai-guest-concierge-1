@@ -10,6 +10,8 @@ export const en = {
   "guest.ai_disclosure":
     "I'm the hotel's virtual concierge. I can connect you with a person at any time.",
   "guest.talk_to_person": "Talk to a person",
+  "guest.staff_reply_pending":
+    "A member of our team has this conversation and will reply here shortly.",
   "guest.unavailable":
     "I can't answer right now, but I've passed this to the team — a person will reply here shortly.",
   "guest.fact_prefix": "According to our records: ",
@@ -60,6 +62,8 @@ export const es: Record<StringId, string> = {
   "guest.ai_disclosure":
     "Soy el conserje virtual del hotel. Puedo ponerlo en contacto con una persona en cualquier momento.",
   "guest.talk_to_person": "Hablar con una persona",
+  "guest.staff_reply_pending":
+    "Un miembro de nuestro equipo tiene esta conversación y le responderá por aquí en breve.",
   "guest.unavailable":
     "No puedo responder en este momento, pero ya lo pasé al equipo: una persona le responderá por aquí en breve.",
   "guest.fact_prefix": "Según nuestro registro: ",

@@ -808,3 +808,36 @@ $ npm run typecheck && npm run lint && npm run build   # clean
 The HTTP suite boots a real `http.createServer` around `handleGuestRequest`, posts two turns through `fetch`, keeps only the `Set-Cookie` value the browser would keep, and replays a four-message transcript from it — which is the closest thing to "a stranger holds a conversation" that can be executed here.
 
 **Not done, by charter:** the staff inbox (S08), the WhatsApp adapter (WA track), rate limiting and spend caps enforcement (S07-04 — `policyGate` consumes the counters but nothing produces them yet), and the S07-02 handoff *UI* (this item ships the route to a human as a classified message, which is what S07-02 will build on). Also recorded: `concierge_public` could in principle call `provision_user`, because SECURITY DEFINER functions still carry PostgreSQL's default `EXECUTE` to PUBLIC and only the function's owner may revoke it — that belongs in a dedicated hardening item, not in a silent ACL change here.
+
+## S06-02 - Conversation state machine (1.50d)
+
+**AC (verbatim):** Illegal transitions impossible at the database level.
+
+- **AC-1** A `BEFORE UPDATE` trigger rejects any state transition not in the allowed table.
+- **AC-2** `takeover` is atomic: AI cannot reply after a staff takeover (feeds S08-03).
+
+**Status: DONE (2026-10-25).** `db/migrations/0016_conversation_state.sql` (the column, the guard function, the trigger, the queue index), `src/conversation/state.ts` (the same matrix in TypeScript, `lockState`, `transition`, `takeover`, `assertModelMaySpeak`), and the guest turn in `src/guest/service.ts` now runs under the conversation's row lock.
+
+**The decisions that shaped the code:**
+
+- *The charter's migration number was wrong and was rebased.* It calculated `0014_conversation_state.sql`; 0014/0015 were taken by S05-03 and S06-01, so this is **0016**. The charter says to rebase; the header says what happened.
+- *A trigger, not a CHECK and not a service.* A CHECK cannot see OLD, and "which transitions are legal" is by definition a statement about a pair. A service cannot see raw SQL, a migration, a background job or a future caller that never read this file. The trigger is the authority; the TypeScript matrix exists so a caller gets a typed error before the round trip, and `tests/db/conversation-state.db.test.ts` walks **every pair of the 4×4 grid** through the trigger so the two copies cannot drift.
+- *`BEFORE UPDATE OF ai_state`, not `BEFORE UPDATE`.* The hot path on `conversations` is `last_activity_at`; a write that cannot change the state must not pay for, or risk, a trigger that is not about it. A same-state write is explicitly a no-op — other services will write the column back.
+- *`ai_state` is a second axis, not a replacement for `status`.* `status` is the thread being open or closed; `ai_state` is who is expected to speak next. Containment (the north star) is conversations with zero staff messages, and a takeover the model can talk over afterwards was never a takeover.
+- *Atomicity is the row lock, not a flag.* `takeover` and the model's writer both do `SELECT … FOR UPDATE` on the conversation row inside the transaction that does their other work. Either the takeover commits first and the turn's re-read sees `awaiting_staff` (so the model stays silent), or the turn commits first and the takeover applies to the next message. The test proves the wait: a takeover issued while another transaction holds the lock has not completed after 150 ms, and completes exactly when that transaction commits.
+- *The lock is held across the model call, and that cost is deliberate.* The turn takes the row lock before retrieving and keeps it until COMMIT, so a takeover that arrives mid-generation waits up to the provider timeout (8 s) instead of racing. The alternative — lock, generate, re-lock, re-check — leaves a window where the model answers after the human took over, which is the exact bug AC-2 exists to prevent. If the wait ever becomes a complaint, the fix is a shorter generation timeout, not a weaker lock.
+- *A model that is no longer allowed to speak still answers the guest.* When a turn arrives for an `awaiting_staff` conversation, the pipeline is skipped entirely (the provider is asserted to receive **zero** requests), the guest's message is recorded, and the reply is `guest.staff_reply_pending` — "a member of our team has this conversation and will reply here shortly". Silence would look like a broken bot; a model answer would be the exact bug AC-2 exists to prevent.
+- *A `resolved` conversation is not a dead end.* `resolved → awaiting_ai` is legal, so a guest who writes again reopens the thread instead of talking into a void. `resolved → idle` and `resolved → awaiting_staff` are not legal, because both would discard the fact that it was concluded without a human.
+- *The takeover writes its own record.* `handoff_reasons` (reason code + detail) and a `human_takeover` event are written in the same transaction as the state change, so there is no state where a conversation looks owned by a human and nothing says why. A second takeover of an already-owned conversation is idempotent: no second reason row, no second event.
+- *The trigger cannot leak across tenants.* It reads only OLD and NEW of the row being updated, and the service statements are scoped by `(org_id, property_id, conversation_id)`; the trigger runs with the caller's privileges, so RLS still applies to the row it can see.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector + pg_trgm):**
+```text
+$ npm test             # 28 files / 381 passed - incl. 7 state-matrix unit cases
+$ npm run db:test      # 23 files / 204 passed - incl. 9 conversation-state cases
+$ npm run web:build    # guest client compiles with the new `handoff` decision
+$ npm run typecheck && npm run lint && npm run build   # clean
+```
+The db suite walks 8 legal and 4 illegal edges (plus 4 no-ops) through raw SQL, asserts the row is unchanged after a refusal, and drives the guest path end-to-end after a takeover.
+
+**Not done, by charter:** the inbox UI that produces takeovers in practice (S08-01), the AI↔staff hand-back UI (S08-03), and the service-request status machine (S09-01). Recorded for S08: `takeover()` accepts no actor yet — there is no staff identity on the conversation path until S08-01 supplies one, so `handoff_reasons` records *why* but not *who*.

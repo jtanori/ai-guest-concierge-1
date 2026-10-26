@@ -1,4 +1,4 @@
-<!-- progress-snapshot: {"generatedAt":"2026-10-26 06:30","items":{"done":23,"partial":5,"todo":52,"total":80},"days":{"done":26.5,"partial":8.5,"todo":44,"total":79},"remainingDays":52.5,"perSprint":{"W00":{"doneItems":5,"items":20,"doneDays":2.25,"totalDays":8},"S01":{"doneItems":3,"items":3,"doneDays":5.75,"totalDays":5.75},"S02":{"doneItems":5,"items":5,"doneDays":5.5,"totalDays":5.5},"S03":{"doneItems":2,"items":3,"doneDays":3,"totalDays":5},"S04":{"doneItems":2,"items":3,"doneDays":3,"totalDays":5},"S05":{"doneItems":2,"items":3,"doneDays":3,"totalDays":5.5},"S06":{"doneItems":1,"items":3,"doneDays":1.5,"totalDays":5},"S07":{"doneItems":3,"items":6,"doneDays":2.5,"totalDays":4},"S08":{"doneItems":0,"items":4,"doneDays":0,"totalDays":5.5},"S09":{"doneItems":0,"items":5,"doneDays":0,"totalDays":4.5},"S10":{"doneItems":0,"items":3,"doneDays":0,"totalDays":4.5},"S11":{"doneItems":0,"items":5,"doneDays":0,"totalDays":5},"S12":{"doneItems":0,"items":4,"doneDays":0,"totalDays":4.5},"S13":{"doneItems":0,"items":3,"doneDays":0,"totalDays":2},"WA":{"doneItems":0,"items":8,"doneDays":0,"totalDays":7.75},"DEF":{"doneItems":0,"items":2,"doneDays":0,"totalDays":1.5}}} -->
+<!-- progress-snapshot: {"generatedAt":"2026-10-26 06:40","items":{"done":24,"partial":5,"todo":51,"total":80},"days":{"done":27,"partial":8.5,"todo":43.5,"total":79},"remainingDays":52,"perSprint":{"W00":{"doneItems":5,"items":20,"doneDays":2.25,"totalDays":8},"S01":{"doneItems":3,"items":3,"doneDays":5.75,"totalDays":5.75},"S02":{"doneItems":5,"items":5,"doneDays":5.5,"totalDays":5.5},"S03":{"doneItems":2,"items":3,"doneDays":3,"totalDays":5},"S04":{"doneItems":2,"items":3,"doneDays":3,"totalDays":5},"S05":{"doneItems":2,"items":3,"doneDays":3,"totalDays":5.5},"S06":{"doneItems":1,"items":3,"doneDays":1.5,"totalDays":5},"S07":{"doneItems":4,"items":6,"doneDays":3,"totalDays":4},"S08":{"doneItems":0,"items":4,"doneDays":0,"totalDays":5.5},"S09":{"doneItems":0,"items":5,"doneDays":0,"totalDays":4.5},"S10":{"doneItems":0,"items":3,"doneDays":0,"totalDays":4.5},"S11":{"doneItems":0,"items":5,"doneDays":0,"totalDays":5},"S12":{"doneItems":0,"items":4,"doneDays":0,"totalDays":4.5},"S13":{"doneItems":0,"items":3,"doneDays":0,"totalDays":2},"WA":{"doneItems":0,"items":8,"doneDays":0,"totalDays":7.75},"DEF":{"doneItems":0,"items":2,"doneDays":0,"totalDays":1.5}}} -->
 # Build progress
 
 <!-- GENERATED FILE — do not edit by hand.
@@ -6,21 +6,21 @@
      Source of truth for status: docs/07-master-backlog.xlsx, column K.
      Re-run this as part of every item's close-out (see the charter DoD). -->
 
-_Generated 2026-10-26 06:30 UTC from the master backlog._
+_Generated 2026-10-26 06:40 UTC from the master backlog._
 
 ## Overall
 
 | Measure | Done | Of total | % |
 | --- | --- | --- | --- |
-| Items | 23 | 80 | 28.75% |
-| Days | 26.5 | 79 | 33.54% |
+| Items | 24 | 80 | 30% |
+| Days | 27 | 79 | 34.18% |
 
 ```
-done            ████████░░░░░░░░░░░░░░░░  33.5%
-+ half of 🚧    █████████░░░░░░░░░░░░░░░  38.9%
+done            ████████░░░░░░░░░░░░░░░░  34.2%
++ half of 🚧    █████████░░░░░░░░░░░░░░░  39.6%
 ```
 
-**5 items in flight** (8.5 d), **52 not started** (44 d), **52.5 d remaining** in total.
+**5 items in flight** (8.5 d), **51 not started** (43.5 d), **52 d remaining** in total.
 
 > The second bar counts an in-flight item at half its days. It is a scheduling estimate, not a status: an item with an unmet acceptance criterion is not done, however much of its work exists.
 
@@ -35,7 +35,7 @@ done            ████████░░░░░░░░░░░░░�
 | S04 | 2/3 | 3 | 5 | `█████████████░░░` 80% |
 | S05 | 2/3 | 3 | 5.5 | `████████████░░░░` 77.27% |
 | S06 | 1/3 | 1.5 | 5 | `██████████░░░░░░` 65% |
-| S07 | 3/6 | 2.5 | 4 | `██████████░░░░░░` 62.5% |
+| S07 | 4/6 | 3 | 4 | `████████████░░░░` 75% |
 | S08 | 0/4 | 0 | 5.5 | `░░░░░░░░░░░░░░░░` 0% |
 | S09 | 0/5 | 0 | 4.5 | `░░░░░░░░░░░░░░░░` 0% |
 | S10 | 0/3 | 0 | 4.5 | `░░░░░░░░░░░░░░░░` 0% |
@@ -62,7 +62,7 @@ Every item whose cell starts with 🚧, with the reason recorded there.
 | Block | Remaining items | Remaining days | Days total |
 | --- | --- | --- | --- |
 | Foundation (W00) | 15/20 | 5.75 | 8 |
-| Answer surface (S01–S07) | 8/26 | 11.5 | 35.75 |
+| Answer surface (S01–S07) | 7/26 | 11 | 35.75 |
 | Staff + ops (S08–S10) | 12/12 | 14.5 | 14.5 |
 | Hardening + launch (S11–S13) | 12/12 | 11.5 | 11.5 |
 | WhatsApp track | 8/8 | 7.75 | 7.75 |
@@ -72,10 +72,10 @@ Every item whose cell starts with 🚧, with the reason recorded there.
 
 | Measure | Now | Change |
 | --- | --- | --- |
-| Items done | 23 | +1 |
-| Days done | 26.5 | +1 |
+| Items done | 24 | +1 |
+| Days done | 27 | +0.5 |
 | Items in flight | 5 | — |
-| Days remaining | 52.5 | -1 |
+| Days remaining | 52 | -0.5 |
 
 Previous report generated 2026-10-26 06:30.
 

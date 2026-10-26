@@ -35,6 +35,7 @@ import type { Channel, EventContext } from "../events/taxonomy.ts";
 import { emitEvent } from "../events/emit.ts";
 import { lockState, takeover, transition } from "../conversation/state.ts";
 import { captureRequest, type RequestTopic } from "../requests/capture.ts";
+import { recordOutage } from "../ai/answer.ts";
 import { checkRate, type RateVerdict } from "../security/ratelimit.ts";
 import { verifyBotCheck, type BotCheckConfig } from "../security/botcheck.ts";
 import { loadSpend, type SpendSnapshot } from "../ai/spend.ts";
@@ -471,9 +472,26 @@ async function askModel(
   } catch (error) {
     // `answerMessage` maps both-providers-failed to `unavailable`; this is the
     // belt-and-braces case (an adapter that throws outside the wrapper). The
-    // guest still gets an honest sentence instead of a 500.
+    // guest still gets an honest sentence instead of a 500 — and S07-05 makes
+    // this path record the outage too, because "the AI was down" must not
+    // depend on which of the two catches happened to see it.
     if (error instanceof AiUnavailableError) {
-      return { kind: "unavailable", detail: error.message };
+      const aiRunId = await recordOutage(
+        client,
+        context,
+        { conversationId: input.conversationId, messageId: input.messageId },
+        error,
+        {
+          orgId: context.orgId,
+          propertyId: context.propertyId,
+          conversationId: input.conversationId,
+          channel: input.channel,
+          language: input.language,
+          topic: null,
+          createdAt: input.at.toISOString(),
+        },
+      );
+      return { kind: "unavailable", detail: error.message, aiRunId };
     }
     throw error;
   }

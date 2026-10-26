@@ -20,8 +20,8 @@
  */
 import type pg from "pg";
 import { assertTenantShape, type TenantContext } from "../db/tenant.ts";
-import type { AiRunDecision } from "./contract.ts";
-import { AI_RUN_DECISIONS } from "./contract.ts";
+import type { AiRunDecision, AiRunReasonCode } from "./contract.ts";
+import { AI_RUN_DECISIONS, AI_RUN_REASON_CODES } from "./contract.ts";
 
 export interface AiRunInput {
   conversationId: string;
@@ -30,7 +30,12 @@ export interface AiRunInput {
   modelId: string;
   promptVersion: string;
   decision: AiRunDecision;
-  reasonCode: string | null;
+  /**
+   * S07-05: the closed vocabulary — the model's codes plus `provider_unavailable`.
+   * Typed rather than `string` so a typo is a compile error and an invented code
+   * is a runtime refusal, which is what makes `ai_runs.reason_code` queryable.
+   */
+  reasonCode: AiRunReasonCode | null;
   confidence: number | null;
   latencyMs: number | null;
   usage?: Record<string, unknown>;
@@ -55,6 +60,9 @@ export async function recordAiRun(
   if (input.promptVersion.trim() === "") throw new AiRunError("promptVersion is required");
   if (!(AI_RUN_DECISIONS as readonly string[]).includes(input.decision)) {
     throw new AiRunError(`decision must be one of ${AI_RUN_DECISIONS.join(" | ")}`);
+  }
+  if (input.reasonCode !== null && !(AI_RUN_REASON_CODES as readonly string[]).includes(input.reasonCode)) {
+    throw new AiRunError(`reasonCode must be one of ${AI_RUN_REASON_CODES.join(" | ")}`);
   }
   if (input.confidence !== null && (input.confidence < 0 || input.confidence > 1)) {
     throw new AiRunError("confidence must be within 0..1");

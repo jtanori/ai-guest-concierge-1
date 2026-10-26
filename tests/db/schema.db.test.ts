@@ -80,6 +80,8 @@ describe("schema (db)", () => {
       "0009_property_facts.sql",
       "0010_review_queue.sql",
       "0011_article_chunks.sql",
+      "0012_retrieval_indexes.sql",
+      "0013_retrieval_weights.sql",
     ]);
   });
 

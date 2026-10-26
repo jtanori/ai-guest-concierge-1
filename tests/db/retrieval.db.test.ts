@@ -5,6 +5,12 @@
  * query for text that exists ONLY in v1 must return zero rows, while v1 stays
  * selectable by id as history. The vector path is checked separately so the
  * filter is proven on both modes.
+ *
+ * S04-03 note: `hybrid` is now the DEFAULT mode, so every call below names its
+ * mode. This file pins the two S02-05 whole-body statements, which read
+ * `article_versions`; hybrid reads `article_chunks` and is pinned in
+ * `hybrid.db.test.ts`. Naming the mode is not a workaround — a default that
+ * silently changed what these eight assertions were testing would be worse.
  */
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -137,7 +143,7 @@ describe("is_current retrieval + reembed (db)", () => {
 
   it("returns the current v1 for a token unique to v1", async () => {
     const hits = await asApp(tenantA, (tx) =>
-      retrieveCurrentVersions(tx, tenantA, { text: OLD_TOKEN }),
+      retrieveCurrentVersions(tx, tenantA, { text: OLD_TOKEN, mode: "lexical" }),
     );
     expect(hits.map((hit) => hit.articleVersionId)).toEqual([v1]);
     expect(hits[0]).toMatchObject({
@@ -160,15 +166,18 @@ describe("is_current retrieval + reembed (db)", () => {
       }),
     );
     expect(published).toEqual({ articleVersionId: v2, versionNo: 2 });
-    expect(seen).toEqual([NEW_BODY]);
+    // S04-03: publishing on this route now also writes chunks, so the provider
+    // is called once for the body plus one text per chunk.
+    expect(seen[0]).toBe(NEW_BODY);
+    expect(seen.length).toBeGreaterThanOrEqual(1);
 
     const oldHits = await asApp(tenantA, (tx) =>
-      retrieveCurrentVersions(tx, tenantA, { text: OLD_TOKEN }),
+      retrieveCurrentVersions(tx, tenantA, { text: OLD_TOKEN, mode: "lexical" }),
     );
     expect(oldHits).toEqual([]);
 
     const newHits = await asApp(tenantA, (tx) =>
-      retrieveCurrentVersions(tx, tenantA, { text: NEW_TOKEN }),
+      retrieveCurrentVersions(tx, tenantA, { text: NEW_TOKEN, mode: "lexical" }),
     );
     expect(newHits.map((hit) => hit.articleVersionId)).toEqual([v2]);
     expect(newHits[0]!.body).toBe(NEW_BODY);
@@ -189,7 +198,7 @@ describe("is_current retrieval + reembed (db)", () => {
 
   it("filters is_current on the vector path too", async () => {
     const hits = await asApp(tenantA, (tx) =>
-      retrieveCurrentVersions(tx, tenantA, { text: "", embedding: oldEmbedding }),
+      retrieveCurrentVersions(tx, tenantA, { text: "", embedding: oldEmbedding, mode: "vector" }),
     );
     expect(hits.map((hit) => hit.articleVersionId)).toEqual([v2]);
     expect(hits.some((hit) => hit.articleVersionId === v1)).toBe(false);
@@ -197,18 +206,29 @@ describe("is_current retrieval + reembed (db)", () => {
 
   it("never returns a retired version even when it is the strongest lexical match", async () => {
     const hits = await asApp(tenantA, (tx) =>
-      retrieveCurrentVersions(tx, tenantA, { text: `${OLD_TOKEN} ${OLD_TOKEN} ${OLD_TOKEN}` }),
+      retrieveCurrentVersions(tx, tenantA, {
+        text: `${OLD_TOKEN} ${OLD_TOKEN} ${OLD_TOKEN}`,
+        mode: "lexical",
+      }),
     );
     expect(hits).toEqual([]);
   });
 
-  it("has no include-retired option and pins the literal filter in both SQL paths", () => {
-    const source = readFileSync(
-      new URL("../../src/knowledge/retrieval.ts", import.meta.url),
-      "utf8",
+  it("has no include-retired option and pins the literal filter in all five SQL paths", () => {
+    const sources = ["retrieval.ts", "hybrid.ts"].map((name) =>
+      readFileSync(new URL(`../../src/knowledge/${name}`, import.meta.url), "utf8"),
     );
-    expect(source.match(/AND av\.is_current\b/g) ?? []).toHaveLength(2);
-    expect(source).not.toMatch(/includeRetired|include_retired/);
+    // S02-05's two whole-body statements + S04-03's three chunk candidates.
+    // A literal count is the point: a parameterised or conditional filter would
+    // still be one string but could be turned off at runtime.
+    const literals = sources.flatMap((source) => source.match(/\bav\.is_current\b/g) ?? []);
+    expect(literals).toHaveLength(5);
+    for (const source of sources) {
+      expect(source).not.toMatch(/includeRetired|include_retired/);
+      // Never a bound value: a filter that takes a parameter can be turned off.
+      expect(source).not.toMatch(/is_current\s*(=|<>|!=|IS)\s*\$/i);
+      expect(source).not.toMatch(/is_current\s+(=|<>|!=)\s*(true|false)/i);
+    }
 
     // @ts-expect-error - the public input type deliberately has no escape hatch
     const forbidden: RetrievalInput = { text: "pool", includeRetired: true };

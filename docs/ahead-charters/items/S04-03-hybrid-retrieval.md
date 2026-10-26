@@ -9,9 +9,11 @@ priority: P0
 depends_on: [S04-02]
 labels: [sprint:S04, track:foundation, prio:P0]
 milestone: S04 - Retrieval and review
-status: draft
+status: done
 issue: https://github.com/jtanori/ai-guest-concierge-1/issues/72
 pickup: decision
+approved: 2026-10-25
+done: 2026-10-25
 ---
 
 # S04-03 — Hybrid retrieval
@@ -62,6 +64,12 @@ Every candidate query carries `org_id = $1 AND property_id = $2` (or the RLS-enf
 - `tests/knowledge/hybrid.test.ts`: RRF ordering with a fixed candidate list.
 - `tests/golden/validate.test.ts` (exists) for the v2 CSV shape.
 
+## 6b. Tests as delivered
+
+- `tests/db/retrieval.db.test.ts` — rewritten: every S02-05 assertion names its mode; the grep contract now covers `retrieval.ts` **and** `hybrid.ts` and requires five literal `av.is_current` predicates, no `includeRetired`, and no parameterised/boolean `is_current`.
+- `tests/db/hybrid.db.test.ts` — 10 cases: whole body + `matchedChunk`, fused ordering, typo via trigram and a zero weight disabling it, vector-only branch from an embedding, property over brand (both scoped), shadowing when the property's chunk does not score, retired chunks unreachable after v2, input validation, `resolve.ts` unit behaviour.
+- `tests/db/answer-source.db.test.ts` — 4 cases: fact answers before retrieval, fallback when no fact covers the key, wrong language does not cross-answer, not-yet-effective fact ignored.
+
 ## 7. Evidence to record in the runbook
 
 - ``npm run eval:retrieval` (recall %, misses)`
@@ -70,12 +78,21 @@ Every candidate query carries `org_id = $1 AND property_id = $2` (or the RLS-enf
 
 ## 8. Pickup status, blockers and decisions
 
-**NEEDS DECISION — see §8. Calculations are complete where possible; the named decision must close first.**
+**DELIVERED 2026-10-25 for AC-1 and AC-2; AC-3 is not proven and is not claimed** (it needs golden set v2, G1). Evidence and the reasoning behind every choice below are in `docs/runbook.md` § S04-03.
 
-Open decisions / blockers:
+Decisions taken during delivery:
+
+- **`retrieval_weights` is a REQUIRED settings key** (0013), not an optional one: `{lexical, vector, trigram}` defaulting to `1/1/1`. Optional would make "nobody chose" indistinguishable from "the operator chose the default", and a property could then be ranked differently than the operator saw. 0013 backfills existing non-`{}` settings, then re-binds the CHECK to a new validator — a rename-only upgrade cannot work, because a CHECK constraint binds the function OID it was parsed against.
+- **`rrf_k = 60` is a code constant, not a setting.** It changes every ranking and no hotel can reason about it; the tunable part is the three weights.
+- **`0012` was reduced to one index**, `article_versions (property_id) WHERE is_current`: 0011 already created the `tsv`, trigram and HNSW indexes on `article_chunks`, so recreating them would have been duplication wearing a different id.
+- **Brand/property coverage is content, not ranking** (`propertyCoveredTopics`): brand text is shadowed for a topic the property has published on even when the property's own chunk does not score. The alternative answers generic brand prose over a local correction.
+- **`hybrid` is the default mode**, so the eight S02-05 auto-detect assertions name their mode explicitly (`mode: "lexical"` / `"vector"`) and the hybrid behaviour is pinned in `tests/db/hybrid.db.test.ts` instead.
+- **`reembedAndPublish` now shares `writeChunks`**: it used to publish a version with zero chunks, which was invisible until retrieval started reading chunks and would have falsified S04-02's AC-1 on that route.
+
+Open blockers:
 
 - **G1 content dependency.** The engine is fully calculable now, but the **exit criterion cannot be proven** until the hotel supplies ≥25 approved articles and golden set v2 (≥40 questions). The gate says 'delay the pilot, not the build' — build now, prove at G1.
-- **PR #32 dependency.** `lookupFact`'s exact signature is in flight; the fact short-circuit is specified as a contract, not calculated line-by-line.
+- **Prerequisite cleared.** `lookupFact` landed in S03-03 with the signature this item assumed; the short-circuit is `src/knowledge/answer.ts::resolveAnswerSource`, which consults a verified fact before it ever ranks an article.
 
 ## 9. Definition of done
 

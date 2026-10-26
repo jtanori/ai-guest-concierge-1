@@ -63,41 +63,40 @@ interface VersionRow {
   promoted_at: Date | null;
 }
 
+/**
+ * S02-05's embed-then-publish, kept for the whole-body route.
+ *
+ * It now shares `writeChunks` with `chunkAndPublish` rather than duplicating the
+ * embed call, because of a hole S04-03 exposed: this route used to set the
+ * version's whole-body vector and promote, leaving the version with ZERO
+ * chunks. That was invisible while retrieval read `article_versions`, and
+ * became a real one the moment hybrid retrieval started reading chunks — a
+ * version published here would have been unfindable, and AC-1 ("every current
+ * version has >= 1 chunk") would have been false.
+ *
+ * Order is unchanged and still the point: read -> refuse -> chunk -> embed
+ * everything -> write -> promote -> retire the previous version's chunks. If
+ * promotion fails the caller's rollback removes the vectors and chunks with it.
+ */
 export async function reembedAndPublish(
   client: pg.Client | pg.PoolClient,
   context: TenantContext,
   articleVersionId: string,
   embed: Embedder,
+  options: ChunkOptions = {},
 ): Promise<{ articleVersionId: string; versionNo: number }> {
   assertTenantShape(context);
 
-  const found = await client.query<VersionRow>(
-    `SELECT article_id, version_no, body, is_current, promoted_at
-       FROM article_versions
-      WHERE article_version_id = $1`,
-    [articleVersionId],
-  );
-  const row = found.rows[0];
-  if (row === undefined) throw new VersionNotFoundError(articleVersionId);
+  const row = await readVersion(client, articleVersionId);
   if (row.is_current) throw new VersionAlreadyCurrentError(articleVersionId);
-  if (row.body === null) throw new UnembeddableVersionError(articleVersionId);
+  assertHasBody(row.body, articleVersionId);
 
-  const vector = await embed(row.body);
-  assertEmbeddingDimension(vector);
-
-  const updated = await client.query(
-    `UPDATE article_versions
-        SET embedding = $1::vector
-      WHERE article_version_id = $2`,
-    [toVectorLiteral(vector), articleVersionId],
-  );
-  if (updated.rowCount !== 1) throw new VersionNotFoundError(articleVersionId);
+  // One provider call for the body and its chunks: the batch adapts the
+  // single-text `Embedder` so both publish routes spend the same call shape.
+  const batch: BatchEmbedder = (texts) => Promise.all(texts.map((text) => embed(text)));
+  await writeChunks(client, context, articleVersionId, row.body!, batch, options);
 
   await client.query("SELECT promote_article_version($1)", [articleVersionId]);
-
-  // S04-02's invariant, kept on THIS path too: only the current version of an
-  // article keeps chunks. Publishing here (the whole-body route) must not
-  // leave the retired version's chunks retrievable.
   await deleteRetiredChunks(client, context, row.article_id, articleVersionId);
 
   return { articleVersionId, versionNo: row.version_no };

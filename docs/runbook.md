@@ -650,3 +650,39 @@ $ npm run typecheck && npm run lint && npm run build   # all clean
 
 **Seed note:** the fixture's 7 published versions are chunked with the same deterministic `stubEmbedding` the seed already uses for whole-body vectors, so a fresh demo database satisfies AC-1 without an embedding key. `--stub` on `embed:all` is the same idea and is for local/CI only: a stub vector is meaningless for real retrieval.
 
+## S04-03 - Hybrid retrieval (2.00d)
+
+**AC (verbatim):** Recall ≥90% on the golden set's target articles.
+
+**Status: DONE for AC-1 and AC-2; AC-3 NOT PROVEN (blocked on golden set v2, G1).** `db/migrations/0012_retrieval_indexes.sql` and `0013_retrieval_weights.sql` are the schema changes; `src/knowledge/hybrid.ts` is the fusion engine, `src/knowledge/resolve.ts` the brand/property rule, `src/knowledge/answer.ts` the fact short-circuit, and `npm run eval:retrieval` the measurement.
+
+**What "hybrid" means here.** Three candidate lists over `article_chunks` — lexical (`websearch_to_tsquery('simple')` + `ts_rank`), trigram (`word_similarity`), vector (`<=>` on the chunk embedding) — fused with weighted reciprocal-rank fusion, `Σ w_i / (60 + rank_i)`. RRF was chosen over summing scores because the three scales are not comparable (`ts_rank` is a small per-document float, `similarity` is 0..1, cosine distance 0..2): summing them lets whichever branch emits larger numbers win. RRF throws the magnitudes away and keeps only the order. `60` is a code constant, not a setting — it changes every ranking and no hotel can reason about it; the *weights* are the tunable part and they live in `properties.settings.retrieval_weights`.
+
+**The decisions that shaped the code:**
+
+- *`is_current` is a literal in all five statements.* Two whole-body statements (S02-05) and three chunk candidates. There is no `includeRetired`, no mode, no setting: `tests/db/retrieval.db.test.ts` greps both files for exactly five `av.is_current` occurrences and rejects any parameterised or boolean form. A caller cannot widen retrieval to retired history at runtime.
+- *Hybrid is the default, so the old auto-detect assertions had to be rewritten, not re-pointed.* `retrieveCurrentVersions` used to pick lexical vs vector by whether an embedding was supplied. Every S02-05 assertion now names `mode: "lexical"` / `mode: "vector"`, and the hybrid behaviour is pinned in `tests/db/hybrid.db.test.ts`. Leaving the old assertions on the default would have silently changed what they tested.
+- *Property over brand is a property of CONTENT, not of the ranking.* `preferProperty(hits, coverage)` receives the set of topics the property has published (one extra query, `propertyCoveredTopics`), because the case that matters is the one where the hotel's chunk does *not* score and the brand prose does. Falling back to brand there would answer "the spa closes at 20:00" over a local "19:00 on holidays". Returning nothing is the honest outcome, and S05 escalates on it. Brand content still fills every topic the property has never written.
+- *`retrieval_weights` is a required settings key* (0013), defaulting to `1/1/1`, with `DROP CONSTRAINT` + `ADD CONSTRAINT` re-binding `properties_settings_valid` to the new validator. A renames-only "upgrade" does not work: a CHECK constraint binds the function OID it was parsed against. All-zero weights are rejected (they would return nothing for every question, indistinguishable from "no knowledge"); a single non-zero weight is fine, so pure lexical remains a legitimate setup.
+- *Per-token trigram, not whole-string `similarity`.* A real chunk is 200-400 characters, so a perfect one-word match scores ~0.10 against the whole string and a long chunk can never win ("albcrca" vs a chunk containing "alberca"). `word_similarity(query, body)` fixes that only for a one-word query: with "alberca cierra" it demands the two words adjacent and returns ~0, so every real question would silently skip the branch. The branch therefore takes `max(word_similarity(token, body))` over the query's tokens. The explicit `>= 0.4` threshold is not index-eligible and therefore scans — accepted, and cheaper at pilot volume than a branch that silently returns nothing.
+- *The lexical branch ORs its tokens instead of ANDing them.* `websearch_to_tsquery` ANDs, which is right for a search box and wrong for a chunk: "alberca cierra" requires both words in the same paragraph, so an article saying "the pool opens at 07:00" in one paragraph and "closes at 21:00" in another scores zero. Tokens are quoted before `to_tsquery` — a guest's question is not a query language.
+- *Every published version has chunks on BOTH publish paths.* S02-05's `reembedAndPublish` used to set a whole-body vector and promote, leaving zero chunks — invisible while retrieval read `article_versions`, and a hole once retrieval reads chunks. It now calls the same `writeChunks` (one provider call for `[body, ...chunks]`), so AC-1 of S04-02 cannot be bypassed by choosing that route.
+- *The fact short-circuit comes before retrieval.* `resolveAnswerSource` looks up a structured key (`property_facts`, exact match, verified only) and only falls back to retrieval when there is no fact. Retrieval-first would let a stale body out-vote the value an operator just signed off.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector + pg_trgm on a real cluster):**
+```text
+$ npm run db:migrate                                  # 13 applied (0012, 0013 land)
+$ npm run db:seed                                     # {"...","article_chunks":26}
+$ npm run db:test                                     # 166 passed (166) - 18 files; +10 hybrid, +4 answer-source
+$ npm test                                            # 294 passed (294)
+$ npm run typecheck && npm run lint && npm run build   # all clean
+$ npm run eval:retrieval -- --org <uuid> --property <uuid> --stub
+   golden set: data/golden/golden-questions-v1.csv (13 scorable questions)
+   NOTE: golden-questions-v2.csv is absent; AC-3 targets v2 (>= 40 questions, hotel-supplied, G1).
+   recall@8 = 3/13 = 23.1% (target >= 90%)
+   UNPROVEN: 13 questions is below the 40 AC-3 needs (golden set v2, G1). This run cannot certify the gate.
+```
+
+**AC-3 is not met and is not claimed.** The repository has golden set **v1** (20 rows, 13 with a `target_topic`), and v1 asks about topics the demo corpus does not carry (`transport.airport`, `room.amenities`, `checkin.hours`, `policy.pets`, …) in English, while the fixture bodies are English prose filed under Spanish topic keys. The 23.1% above is a harness check, not a retrieval measurement: with `--stub` the only cross-lingual branch (vector) is switched off, and cross-lingual matching is precisely what a real embedding provides. The eval script says so in its own output and exits non-zero (`2`) rather than printing a green number over five questions. Closing AC-3 needs the hotel's ≥40-question v2 (G1) and a corpus that covers the target topics; `--stub` runs skip the vector branch entirely, because a hash-based fake vector ranks arbitrary chunks and would quietly depress two real branches.
+
+**Not done / next:** nothing in S04-03 itself. G1 content (golden v2 + ≥25 approved articles) is the gate for the recall number; S05-01 consumes `RetrievalHit.matchedChunk` for citation.

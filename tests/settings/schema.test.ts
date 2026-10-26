@@ -172,6 +172,59 @@ describe("property settings schema", () => {
     expectPath(empty, "enabled_topics[0]");
   });
 
+  it("requires the retrieval weights key and defaults all three to 1 (0013)", () => {
+    // REQUIRED, not optional: an unweighted property would silently get a
+    // different ranking than the one the operator saw, and a missing key can
+    // not be distinguished from "nobody chose".
+    expect(DEFAULT_SETTINGS.retrieval_weights).toEqual({ lexical: 1, vector: 1, trigram: 1 });
+
+    const missing = base();
+    delete missing["retrieval_weights"];
+    expectPath(missing, "retrieval_weights");
+
+    expectPath({ ...base(), retrieval_weights: [] }, "retrieval_weights");
+
+    // A missing key is named, not lumped under the object: the operator needs
+    // to know WHICH weight the write forgot.
+    const partial = base();
+    partial["retrieval_weights"] = { lexical: 1, vector: 1 };
+    expectPath(partial, "retrieval_weights.trigram");
+
+    const extra = base();
+    extra["retrieval_weights"] = { lexical: 1, vector: 1, trigram: 1, bm25: 1 };
+    expectPath(extra, "retrieval_weights.bm25");
+
+    // All zero would disable every branch and return nothing for every
+    // question, which is indistinguishable from "no knowledge".
+    const allZero = base();
+    allZero["retrieval_weights"] = { lexical: 0, vector: 0, trigram: 0 };
+    expectPath(allZero, "retrieval_weights");
+
+    for (const key of ["lexical", "vector", "trigram"] as const) {
+      const negative = base();
+      negative["retrieval_weights"] = { lexical: 1, vector: 1, trigram: 1, [key]: -0.5 };
+      expectPath(negative, `retrieval_weights.${key}`);
+
+      const notNumber = base();
+      notNumber["retrieval_weights"] = { lexical: 1, vector: 1, trigram: 1, [key]: "1" };
+      expectPath(notNumber, `retrieval_weights.${key}`);
+    }
+
+    // A single non-zero weight is legitimate: pure lexical is a real setup.
+    const lexicalOnly = base();
+    lexicalOnly["retrieval_weights"] = { lexical: 1, vector: 0, trigram: 0 };
+    expect(parsePropertySettings(lexicalOnly).retrieval_weights).toEqual({
+      lexical: 1,
+      vector: 0,
+      trigram: 0,
+    });
+
+    // Weights are relative, so they are not capped at 1.
+    const heavy = base();
+    heavy["retrieval_weights"] = { lexical: 4, vector: 2, trigram: 0.5 };
+    expect(parsePropertySettings(heavy).retrieval_weights.lexical).toBe(4);
+  });
+
   it("merges top-level keys and keeps siblings", () => {
     const current: PropertySettings = structuredClone(DEFAULT_SETTINGS);
     const merged = mergeSettings(current, { tone: "concise", retention_days: 30 });

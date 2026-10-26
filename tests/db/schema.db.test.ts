@@ -82,6 +82,7 @@ describe("schema (db)", () => {
       "0011_article_chunks.sql",
       "0012_retrieval_indexes.sql",
       "0013_retrieval_weights.sql",
+      "0014_ai_runs_indexes.sql",
     ]);
   });
 

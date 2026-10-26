@@ -9,9 +9,11 @@ priority: P0
 depends_on: [S05-01]
 labels: [sprint:S05, track:foundation, prio:P0]
 milestone: S05 - AI core and evaluation
-status: draft
+status: done
 issue: https://github.com/jtanori/ai-guest-concierge-1/issues/75
 pickup: ready
+approved: 2026-10-25
+done: 2026-10-25
 ---
 
 # S05-03 — ai_runs + citations logging
@@ -65,11 +67,15 @@ Make every historical answer reconstructable from the database (D5).
 
 ## 8. Pickup status, blockers and decisions
 
-**READY — changes calculated below; can be picked up once its charter is approved and its dependencies merge.**
+**DELIVERED 2026-10-25.** S05-01 merged first (contract, pipeline, `src/ai/runs.ts`), so this item's write side already existed; it added the read side and the indexes.
 
-Open decisions / blockers:
+Delivered:
 
-- READY — schema and modules exist. Depends only on S05-01's `AiOutput` type landing in the same sprint.
+- `db/migrations/0014_ai_runs_indexes.sql` — the charter's calculated number `0013` was taken by S04-03's `retrieval_weights`, so it was rebased to 0014 (the charter says to). Adds `ai_runs_property_time`, `citations_run`, and `CHECK (jsonb_typeof(usage) = 'object')`.
+- `src/ai/history.ts` — `reconstructAnswer`, joining `ai_runs → citations → article_versions`, plus the conversation's `handoff_reasons`. Foreign/unknown run → `AiRunNotFoundError`.
+- `tests/db/ai-history.db.test.ts` — 6 cases: full reconstruction, the cited body surviving an edit with `isCurrent: false` (AC-2), cross-tenant and unknown ids refused, handoff reasons carried, both indexes present, non-object `usage` rejected.
+
+Recorded gap: the model's verbatim `quote` is not in the schema (0001's `citations` has no column, and changing those tables is out of this item's scope). AC-1 asks for citations and cited version bodies, both of which are reconstructable.
 
 ## 9. Definition of done
 

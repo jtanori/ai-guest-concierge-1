@@ -105,12 +105,21 @@ jobs:
             exit 1
           fi
 
+      # `secrets` is NOT available in an `if:` expression — GitHub rejects the whole
+      # workflow file at parse time, which is a 0-second "failure" with no jobs and
+      # no logs. Availability is decided in the shell instead, where the masked value
+      # is readable and a missing secret produces a visible warning rather than a
+      # silently skipped step.
       - name: the real deployment matrix (needs both URLs as secrets)
-        if: ${{ secrets.STAGING_DATABASE_URL != '' && secrets.PROD_DATABASE_URL != '' }}
         env:
           STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
           PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
-        run: npm run check:env
+        run: |
+          if [ -z "${STAGING_DATABASE_URL}" ] || [ -z "${PROD_DATABASE_URL}" ]; then
+            echo "::warning::STAGING_DATABASE_URL / PROD_DATABASE_URL are not set — the real matrix was SKIPPED, which is not a pass."
+            exit 0
+          fi
+          npm run check:env
 
       - name: readiness contract for a complete staging file
         run: |

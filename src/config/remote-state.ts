@@ -180,8 +180,14 @@ export function ensureGithubEnvironment(
 /**
  * Write one value to GitHub.
  *
- * `--body` is passed as an argv element, never through a shell, so a value containing
- * `$(...)` or a quote is data. `gh` reads it from argv and sends it encrypted.
+ * The value travels on **stdin**, never in argv. `gh secret set NAME --body "$VALUE"`
+ * is the obvious spelling and it is wrong: the value becomes part of the process
+ * command line, which `/proc/<pid>/cmdline`, `ps aux` and any crash reporter on the
+ * machine can read while `gh` runs. `gh` reads stdin when `--body` is absent, so the
+ * value never leaves this process's pipes.
+ *
+ * Nothing is passed through a shell either, so a value containing `$(...)` or a quote
+ * is data rather than code.
  */
 export function writeGithub(
   row: { name: string; kind: "secret" | "variable"; target: string },
@@ -189,12 +195,12 @@ export function writeGithub(
   env: EnvName,
   runner: CommandRunner = defaultRunner,
 ): boolean {
-  const args = [row.kind === "secret" ? "secret" : "variable", "set", row.name, "--body", value];
+  const args = [row.kind === "secret" ? "secret" : "variable", "set", row.name];
   if (row.target.startsWith("environment:")) {
     args.push("--env", githubEnvironmentFor(env));
   }
   try {
-    runner("gh", args);
+    runner("gh", args, value);
     return true;
   } catch {
     return false;

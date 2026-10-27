@@ -245,6 +245,25 @@ export const VARIABLES: readonly VariableSpec[] = [
     why: "defaulted to the model that emits the 1536 dimensions D3 locked",
   },
   {
+    // A tuning knob with a working default. Listed so the template cannot document a
+    // name the code no longer reads — and so `secrets:sync` places it when a property
+    // genuinely wants a longer batch timeout.
+    name: "EMBEDDING_TIMEOUT_MS",
+    consumer: "api",
+    requiredIn: [],
+    secret: false,
+    store: "github-environment",
+    why: "per-request timeout for the embedding provider; 20000 by default",
+  },
+  {
+    name: "EMBEDDING_BATCH_SIZE",
+    consumer: "api",
+    requiredIn: [],
+    secret: false,
+    store: "github-environment",
+    why: "chunks per embedding request, 1..128; 16 by default",
+  },
+  {
     name: "EMBEDDING_BASE_URL",
     consumer: "api",
     requiredIn: [],
@@ -309,6 +328,24 @@ export const VARIABLES: readonly VariableSpec[] = [
     secret: false,
     store: "vercel",
     why: "the only address the staff screen calls, from the Next server, never the browser",
+  },
+  {
+    // S07-05's outage switch. Refusing it in prod is enforced in code, not here:
+    // this entry exists so the variable is documented and not required anywhere.
+    name: "AI_FAIL_MODE",
+    consumer: "api",
+    requiredIn: [],
+    secret: false,
+    store: "process",
+    why: "none | once | always — turns an AI outage into an input; refused when APP_ENV=prod",
+  },
+  {
+    name: "TURNSTILE_TIMEOUT_MS",
+    consumer: "api",
+    requiredIn: [],
+    secret: false,
+    store: "github-environment",
+    why: "how long the bot check waits before treating the check as unavailable; 3000 by default",
   },
   {
     name: "SENTRY_DSN",

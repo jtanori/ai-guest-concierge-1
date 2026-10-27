@@ -44,11 +44,13 @@ gh pr checks
 #    create TWO projects: "concierge-staging" and "concierge-prod".
 #    Copy each connection string.
 
-# 2. THE AC TEST (substitute real URLs; values never leave your shell):
-$env:STAGING_DATABASE_URL = "postgres://...staging..."
-$env:PROD_DATABASE_URL    = "postgres://...prod..."
-$env:LOCAL_DATABASE_URL   = "postgres://concierge:concierge@localhost:54329/concierge_local"
-npm run check:env
+# 2. one file per environment, then THE AC TEST. The files hold DATABASE_URL under
+#    the same name in each environment; there is no STAGING_/PROD_ prefixed variant.
+#    (APP_ENV must match the file: a .env.staging containing APP_ENV=prod is refused,
+#    because comparing prod to prod would report a confident "separate".)
+Copy-Item .env.example .env.staging       # then fill it in, APP_ENV=staging
+Copy-Item .env.example .env.production    # APP_ENV=prod
+npm run check:env -- --staging .env.staging --prod .env.production --local .env
 #   Expect: "OK — no shared databases:" with two masked URLs.
 #   If staging and prod share anything, it refuses instead.
 ```

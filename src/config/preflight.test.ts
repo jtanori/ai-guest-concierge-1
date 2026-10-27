@@ -215,6 +215,34 @@ describe("the manifest itself", () => {
     expect(undocumented).toEqual([]);
   });
 
+  it("documents NO variable the code has forgotten", () => {
+    // The other direction, and the one that actually bites: the template kept
+    // STAGING_DATABASE_URL / PROD_DATABASE_URL / LOCAL_DATABASE_URL long after the
+    // manifest dropped them. Someone copying the template then fills in values
+    // nothing reads, and the deploy fails on an empty DATABASE_URL while the file
+    // looks complete. Stale documentation is worse than missing documentation.
+    const example = readFileSync(new URL("../../.env.example", import.meta.url), "utf8");
+    const documented = [...example.matchAll(/^#?\s*([A-Z][A-Z0-9_]*)=/gm)]
+      .map((match) => match[1])
+      .filter((name): name is string => name !== undefined);
+    // Placeholders in prose (`<from the dashboard>`) are not assignments; the regex
+    // above only matches NAME=, so those are already excluded.
+    const known = new Set(VARIABLES.map((variable) => variable.name));
+    const stale = [...new Set(documented)].filter((name) => !known.has(name));
+    expect(stale).toEqual([]);
+  });
+
+  it("names no variable after its environment", () => {
+    // The owner's rule, enforced where it is cheap: the template is the first place
+    // a suffixed name would reappear.
+    const example = readFileSync(new URL("../../.env.example", import.meta.url), "utf8");
+    const suffixed = [...example.matchAll(/^#?\s*([A-Z][A-Z0-9_]*)=/gm)]
+      .map((match) => match[1])
+      .filter((name): name is string => name !== undefined)
+      .filter((name) => /^(STAGING|PROD|PRODUCTION)_|_(STAGING|PROD|PRODUCTION)$/.test(name));
+    expect(suffixed).toEqual([]);
+  });
+
   it("marks every secret as a secret in every consumer", () => {
     // A database URL, a provider key and a cookie secret are the four things whose
     // appearance in a CI log is a real incident.

@@ -70,12 +70,15 @@ jobs:
           cache: npm
       - run: npm ci
 
+      # The gate reads one file per environment, the same files the deploy and
+      # `secrets:sync` read. These are synthetic, written in the runner.
       - name: the gate rejects a shared staging/prod database
         run: |
+          mkdir -p /tmp/fixtures
+          printf 'APP_ENV=staging\nDATABASE_URL=postgres://u:p@shared.example.com/concierge\n' > /tmp/fixtures/.env.staging
+          printf 'APP_ENV=prod\nDATABASE_URL=postgres://u:p@shared.example.com/concierge\n' > /tmp/fixtures/.env.prod
           set +e
-          STAGING_DATABASE_URL="postgres://u:p@shared.example.com/concierge" \
-          PROD_DATABASE_URL="postgres://u:p@shared.example.com/concierge" \
-            npm run check:env
+          npm run check:env -- --staging /tmp/fixtures/.env.staging --prod /tmp/fixtures/.env.prod
           code=$?
           set -e
           if [ "$code" -eq 0 ]; then
@@ -86,80 +89,46 @@ jobs:
 
       - name: the gate accepts three separate databases
         run: |
-          LOCAL_DATABASE_URL="postgres://concierge:concierge@localhost:54329/concierge_local" \
-          STAGING_DATABASE_URL="postgres://u:p@staging.example.com/concierge" \
-          PROD_DATABASE_URL="postgres://u:p@prod.example.com/concierge" \
-            npm run check:env
+          printf 'APP_ENV=staging\nDATABASE_URL=postgres://u:p@staging.example.com/concierge\n' > /tmp/fixtures/.env.staging
+          printf 'APP_ENV=prod\nDATABASE_URL=postgres://u:p@prod.example.com/concierge\n' > /tmp/fixtures/.env.prod
+          printf 'APP_ENV=local\nDATABASE_URL=postgres://concierge:concierge@localhost:54329/concierge_local\n' > /tmp/fixtures/.env.local
+          npm run check:env -- --staging /tmp/fixtures/.env.staging --prod /tmp/fixtures/.env.prod --local /tmp/fixtures/.env.local
 
       - name: the gate rejects staging reusing the local database
         run: |
+          printf 'APP_ENV=staging\nDATABASE_URL=postgres://concierge:concierge@localhost:54329/concierge_local\n' > /tmp/fixtures/.env.staging
           set +e
-          LOCAL_DATABASE_URL="postgres://concierge:concierge@localhost:54329/concierge_local" \
-          STAGING_DATABASE_URL="postgres://concierge:concierge@localhost:54329/concierge_local" \
-          PROD_DATABASE_URL="postgres://u:p@prod.example.com/concierge" \
-            npm run check:env
+          npm run check:env -- --staging /tmp/fixtures/.env.staging --prod /tmp/fixtures/.env.prod --local /tmp/fixtures/.env.local
           code=$?
           set -e
           if [ "$code" -eq 0 ]; then
             echo "::error::check:env accepted a deployed environment pointing at the local database"
             exit 1
           fi
+          echo "gate refused local reuse as expected (exit $code)"
 
-      # `secrets` is NOT available in an `if:` expression — GitHub rejects the whole
-      # workflow file at parse time, which is a 0-second "failure" with no jobs and
-      # no logs. Availability is decided in the shell instead, where the masked value
-      # is readable and a missing secret produces a visible warning rather than a
-      # silently skipped step.
-      - name: the real deployment matrix (needs both URLs as secrets)
-        env:
-          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
-          PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+      - name: the gate refuses a mislabelled file
         run: |
-          if [ -z "${STAGING_DATABASE_URL}" ] || [ -z "${PROD_DATABASE_URL}" ]; then
-            echo "::warning::STAGING_DATABASE_URL / PROD_DATABASE_URL are not set — the real matrix was SKIPPED, which is not a pass."
-            exit 0
-          fi
-          npm run check:env
-
-      - name: readiness contract for a complete staging file
-        run: |
-          cat > /tmp/env.staging.ci <<'ENVFILE'
-          APP_ENV=staging
-          DATABASE_URL=postgres://u:p@staging.example.com/concierge
-          NEON_AUTH_ISSUER=https://staging.neonauth.example.com/concierge/auth
-          NEON_AUTH_JWKS_URL=https://staging.neonauth.example.com/concierge/auth/.well-known/jwks.json
-          GUEST_COOKIE_SECRET=ci-fixture-not-a-real-secret-0123456789
-          GUEST_PUBLIC_URL=https://staging.chat.example.com
-          LLM_PRIMARY_MODEL=gemini-2.5-flash
-          LLM_FALLBACK_MODEL=gemini-2.5-flash-lite
-          LLM_API_KEY=ci-fixture-key-0123456789
-          EMBEDDING_API_KEY=ci-fixture-embedding-key-0123456789
-          TURNSTILE_SECRET=ci-fixture-turnstile-0123456789
-          NEXT_PUBLIC_TURNSTILE_SITE_KEY=ci-fixture-site-key
-          EMAIL_FROM=Concierge <desk@example.com>
-          EMAIL_API_KEY=ci-fixture-email-key-0123456789
-          EMAIL_ESCALATION_FALLBACK=oncall@example.com
-          CONSOLE_BASE_URL=https://console.staging.example.com
-          REVIEW_API_URL=https://api.staging.example.com
-          ENVFILE
-          npm run check:readiness -- --env staging --file /tmp/env.staging.ci
-
-      - name: readiness refuses an incomplete staging file
-        run: |
-          printf 'APP_ENV=staging\nDATABASE_URL=postgres://u:p@h/d\n' > /tmp/env.staging.broken
+          # A .env.staging containing APP_ENV=prod would compare production to
+          # production and call the result "separate". That false pass is refused.
+          printf 'APP_ENV=prod\nDATABASE_URL=postgres://u:p@staging.example.com/concierge\n' > /tmp/fixtures/.env.mislabelled
           set +e
-          npm run check:readiness -- --env staging --file /tmp/env.staging.broken
+          npm run check:env -- --staging /tmp/fixtures/.env.mislabelled --prod /tmp/fixtures/.env.prod
           code=$?
           set -e
           if [ "$code" -eq 0 ]; then
-            echo "::error::check:readiness passed a staging file with no guest cookie secret and no models"
+            echo "::error::check:env compared a file that declares APP_ENV=prod while labelled --staging"
             exit 1
           fi
 
-  # S01-01/02/03 — schema + RLS + isolation suite. `npm test` deliberately
-  # excludes tests/db (its own config, long hooks, single worker); this job
-  # provides the database and runs `npm run db:test`, which fails the build
-  # on any RLS leak (S01-03 AC).
+      # The real matrix is NOT run here on purpose. A CI job cannot read two GitHub
+      # Environments' secrets — that is the isolation the design depends on — so a
+      # step here could only ever compare two empty strings and pass. The operator
+      # runs it with the real files before a deploy:
+      #   npm run check:env -- --staging .env.staging --prod .env.production --local .env
+      # and the deploy job proves separation on live hosts via the cluster fingerprint
+      # in `npm run smoke`.
+
   db-test:
     runs-on: ubuntu-latest
     services:

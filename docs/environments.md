@@ -32,11 +32,11 @@ cp .env.example .env.staging
 npm run check:readiness -- --env staging --file .env.staging
 
 # 3. ask whether the values exist where the pipeline will look for them
-npm run check:secrets -- --env staging --file .env.staging --inventory github,vercel
+npm run check:secrets -- --env staging --file .env.staging
 
-# 4. the matrix, with a local leg so reusing the dev database is caught too
-LOCAL_DATABASE_URL=postgres://concierge:concierge@localhost:54329/concierge_local \
-STAGING_DATABASE_URL=... PROD_DATABASE_URL=... npm run check:env
+# 4. the matrix, from the same files the deploys use. `--local` is optional, but
+#    without it reusing the development database is not caught — and it says so.
+npm run check:env -- --staging .env.staging --prod .env.production --local .env
 ```
 
 `check:readiness` prints **every** gap in one pass, not the first, and never prints a
@@ -147,9 +147,9 @@ an old schema, which fails in the request path rather than in the pipeline.
 
 ### The smoke step can be skipped, and it says so
 
-`STAGING_API_URL` / `PROD_API_URL` are GitHub **variables**. When they are absent the
-smoke step prints a warning, writes "Smoke skipped" to the job summary, and does not
-fail the build. That is a visible gap, never a pass.
+`API_URL` is a GitHub **variable** on each environment — one name, two values. When it
+is absent the smoke step prints a warning, writes "Smoke skipped" to the job summary,
+and does not fail the build. That is a visible gap, never a pass.
 
 ### What this workflow does not deploy yet
 

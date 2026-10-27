@@ -1858,3 +1858,52 @@ $ npm run db:test      # 40 files / 427 passed (+1 file, +12 tests: clock-agreem
 $ npm test             # 49 files / 638 passed
 $ npx tsc --noEmit && npx tsc --noEmit -p web/tsconfig.json && npm run lint && npm run web:build   # clean
 ```
+
+## S10-02 — Daily rollups (1.00d)
+
+**AC (verbatim):** A historical date can be recomputed without drift.
+
+- **AC-1** `npm run rollup -- --date YYYY-MM-DD` is idempotent (same numbers on re-run).
+- **AC-2** Rollup values equal a direct `SELECT count(*) ... FROM events` for that date.
+
+**Status: ✅ — both ACs verified against independent SQL, no schema migration.** `rollups` already existed at `0001:379` with the exact `UNIQUE (property_id, metric, window_start, granularity)` the upsert needs, RLS already covered it (`0002:47`), and the read index `events_property_type_time` was added in 0029 for precisely this query. **No 0030 was added** — the migration count stays 29.
+
+**What was built.** `src/analytics/rollups.ts` (the twelve metric statements + `runRollups`), `scripts/rollup.ts` (`npm run rollup`), `tests/db/rollups.db.test.ts`, `tests/analytics/rollups.test.ts`. Each metric owns exactly one exported statement, and S10-03 renders that same string in its "show query" disclosure, so the tile and the rollup cannot drift apart.
+
+**The twelve metrics, and where each number comes from.** Nine are counts of one event type over `events` (`conversations_started`, `messages_received`, `ai_answers_sent`, `escalations`, `no_answers`, `requests_created`, `requests_acknowledged`, `knowledge_gaps_opened`, `knowledge_gaps_closed`) — those are the ones AC-2 pins to `SELECT count(*) … FROM events`. Three are not counts and say so in the registry: `containment` (conversations started that day with no `staff_message_sent`, stored as a 0..1 ratio because Appendix D states the target as ≥55%), `first_response_p95_seconds` (first inbound guest message → first outbound of any author, per conversation), and `ack_median_seconds` (from `service_requests.acknowledged_at − created_at`). The charter said "all computed from events"; that is true for every count, but a **duration lives on the business row**, and restating it as an event would be a second copy of one number. The tile shows the SQL, so the source is visible rather than asserted.
+
+**Days are the property's days.** Every boundary is `((created_at AT TIME ZONE p.time_zone)::date)` — the idiom 0020 established after S03-03 shipped `CURRENT_DATE`. Pinned by a case that writes `2026-10-26T02:00:00Z` on a `America/Hermosillo` property (UTC−7) and asserts it rolls into **2026-10-25**, not the 26th. The charter's "timezone boundary" unit test lives in the **db** suite on purpose: the rule is implemented once, in SQL, and a JS second implementation tested against itself would prove only that two copies agree.
+
+**Zero is a fact; a p95 of zero is a fabrication.** Count metrics LEFT JOIN a `generate_series` of days, so an empty day rolls up to an explicit `0` — which is exactly what `SELECT count(*)` returns. The two percentile metrics deliberately produce **no row** for a day with no data, because `0` would render as "answered instantly". Their stale rows inside the recomputed window are deleted first (`omitEmptyDays`): a p95 that outlives the requests that produced it is the drift this item exists to prevent. Asserted by a case that adds an acknowledged request, recomputes 600s, deletes the request, recomputes, and requires the row to be **gone**.
+
+**Tenancy.** Every statement writes both `org_id` and `property_id`, and the writer runs under `withTenant` so on a non-superuser deployment the FORCE-RLS policy is what authorises the write. `tests/db/rollups.db.test.ts` runs its rollups through a `concierge_app` session (a superuser would bypass RLS and prove nothing), asserts a second property **in the same org** gets its own rows, and asserts a foreign property's rows are invisible from context A. `rollups` was already in `tests/db/isolation.db.test.ts`'s table list since S01.
+
+**DEC-1 (owner, 2026-10-26) — scheduling is DEFERRED, and this governs S11-03 and S11-05 too.** Three of the four items in this batch want a nightly run. The owner chose **build the scripts now, schedule later** (option d), running against an **ephemeral Postgres in CI** rather than any cloud database (option b). Reasons, recorded because they will be asked again:
+
+- The only staging database on record is the Neon branch `br-red-recipe-b42k56zk` (`docs/runbook.md` → "Neon staging branch"), and `neon.ts:20–22` gives every non-default branch **`ttl: "7d"`**. Provisioned 2026-10-22, so it expires around **2026-10-29** — a cron pointed at it would start failing in a way that looks like "the job broke" rather than "the environment expired". `.env.staging` is gitignored and is not in this checkout.
+- **W00-13 is still `NOT DONE` on the board** (`docs/runbook.md` → W00-13): the founder has not recorded the `check:env` run against all three real URLs. Two environments that have never been proven distinct are not a place to point a writer.
+- **`retention` DELETES rows.** It must never run against production without the owner's explicit approval, and it defaults to a dry run (see S11-03).
+- Nothing in this repo schedules anything today. `eval.yml` *has* a `cron: "0 9 * * *"`, but its only job is gated `if: github.event_name == 'pull_request'`, so that schedule fires and does nothing — a live example of how easy a dead cron is to miss.
+
+So the scripts are fully tested, runnable by hand, and the command lines below are the evidence. Adding the schedule is a two-line change to a workflow once S11-01's worker loop or W00-13's durable environments exist; until then "nightly" is a runbook instruction, not a promise. The CI half of the decision is honoured where it can be: every one of these scripts is exercised against the `pgvector/pgvector:pg17` service container that `npm run db:test` already starts, so the code path is proven on the same Postgres major CI uses.
+
+**The CLI takes `--org`, which is one selector more than the charter's command.** `properties` is FORCE-RLS and org-scoped, so enumerating every tenant would mean reading across RLS as the application role — the one power the schema refuses to hand out (the same reason `embed:all` has no all-tenant mode). With `--org` the script reads that org's properties under `org_id = current_org_id()` and recomputes all of them; without it, `embed:all`-style per-property arguments would have made the nightly backfill N invocations instead of one. `--property` narrows it.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector 0.6.2 + pg_trgm 1.6, Node 22):**
+```text
+$ npm run db:migrate                      # 29 applied from an EMPTY database (unchanged)
+$ npm run db:seed                         # 1 property, 7 articles, 26 chunks
+$ npm run rollup -- --date 2026-10-25 --org <uuid> --dry-run
+demo (America/Mexico_City) · 2026-10-25..2026-10-25 · DRY RUN, nothing written
+2026-10-25  conversations_started                0
+2026-10-25  containment                       0.0%
+...
+rollup: 1 property · 2026-10-25..2026-10-25 · dry run
+$ npm run rollup -- --date 2026-10-25 --org <uuid>    # twice
+rollup: 1 property · 2026-10-25..2026-10-25 · 10 rows written
+$ psql -c "select metric, window_start, value from rollups order by 1" > run1; <rerun>; diff run1 run2
+IDENTICAL                                                     # AC-1 at the CLI
+$ npm run db:test                         # 41 files / 437 passed (rollups: 10)
+$ npm test                                # 50 files / 647 passed (rollups pure:  9)
+```
+AC-2 is asserted per metric against `SELECT count(*) FROM events` bounded by the property's local day (`(date::timestamp AT TIME ZONE tz)`), not against the rollup's own output.

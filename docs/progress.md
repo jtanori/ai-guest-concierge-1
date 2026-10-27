@@ -1,4 +1,4 @@
-<!-- progress-snapshot: {"generatedAt":"2026-10-27 02:19","items":{"done":44,"partial":5,"todo":33,"total":82},"days":{"done":47.25,"partial":8.75,"todo":23.75,"total":79.75},"remainingDays":32.5,"perSprint":{"W00":{"doneItems":6,"items":20,"doneDays":2.75,"totalDays":8},"S01":{"doneItems":3,"items":3,"doneDays":5.75,"totalDays":5.75},"S02":{"doneItems":5,"items":5,"doneDays":5.5,"totalDays":5.5},"S03":{"doneItems":3,"items":3,"doneDays":5,"totalDays":5},"S04":{"doneItems":2,"items":3,"doneDays":3,"totalDays":5},"S05":{"doneItems":2,"items":3,"doneDays":3,"totalDays":5.5},"S06":{"doneItems":1,"items":3,"doneDays":1.5,"totalDays":5},"S07":{"doneItems":6,"items":6,"doneDays":4,"totalDays":4},"S08":{"doneItems":4,"items":4,"doneDays":5.5,"totalDays":5.5},"S09":{"doneItems":5,"items":5,"doneDays":4.5,"totalDays":4.5},"S10":{"doneItems":5,"items":5,"doneDays":5.25,"totalDays":5.25},"S11":{"doneItems":2,"items":5,"doneDays":1.5,"totalDays":5},"S12":{"doneItems":0,"items":4,"doneDays":0,"totalDays":4.5},"S13":{"doneItems":0,"items":3,"doneDays":0,"totalDays":2},"WA":{"doneItems":0,"items":8,"doneDays":0,"totalDays":7.75},"DEF":{"doneItems":0,"items":2,"doneDays":0,"totalDays":1.5}}} -->
+<!-- progress-snapshot: {"generatedAt":"2026-10-27 02:46","items":{"done":44,"partial":5,"todo":33,"total":82},"days":{"done":47.25,"partial":8.75,"todo":23.75,"total":79.75},"remainingDays":32.5,"perSprint":{"W00":{"doneItems":6,"items":20,"doneDays":2.75,"totalDays":8},"S01":{"doneItems":3,"items":3,"doneDays":5.75,"totalDays":5.75},"S02":{"doneItems":5,"items":5,"doneDays":5.5,"totalDays":5.5},"S03":{"doneItems":3,"items":3,"doneDays":5,"totalDays":5},"S04":{"doneItems":2,"items":3,"doneDays":3,"totalDays":5},"S05":{"doneItems":2,"items":3,"doneDays":3,"totalDays":5.5},"S06":{"doneItems":1,"items":3,"doneDays":1.5,"totalDays":5},"S07":{"doneItems":6,"items":6,"doneDays":4,"totalDays":4},"S08":{"doneItems":4,"items":4,"doneDays":5.5,"totalDays":5.5},"S09":{"doneItems":5,"items":5,"doneDays":4.5,"totalDays":4.5},"S10":{"doneItems":5,"items":5,"doneDays":5.25,"totalDays":5.25},"S11":{"doneItems":2,"items":5,"doneDays":1.5,"totalDays":5},"S12":{"doneItems":0,"items":4,"doneDays":0,"totalDays":4.5},"S13":{"doneItems":0,"items":3,"doneDays":0,"totalDays":2},"WA":{"doneItems":0,"items":8,"doneDays":0,"totalDays":7.75},"DEF":{"doneItems":0,"items":2,"doneDays":0,"totalDays":1.5}}} -->
 # Build progress
 
 <!-- GENERATED FILE — do not edit by hand.
@@ -6,7 +6,7 @@
      Source of truth for status: docs/07-master-backlog.xlsx, column K.
      Re-run this as part of every item's close-out (see the charter DoD). -->
 
-_Generated 2026-10-27 02:19 UTC from the master backlog._
+_Generated 2026-10-27 02:46 UTC from the master backlog._
 
 ## Overall
 
@@ -51,7 +51,7 @@ Every item whose cell starts with 🚧, with the reason recorded there.
 
 | ID | Sprint | Item | Days | Status note |
 | --- | --- | --- | --- | --- |
-| W00-13 | W00 | Three environments: local, staging, prod | 0.75 | Engineering done (2026-10-26) — AC's 'three separate databases' still needs two cloud DBs, which only the owner can create. Built: src/config/manifest.ts (31 vars: envs, secrecy, home), preflight through the real loaders, scripts/check-readiness.ts (--file .env, every gap in one pass, secrets masked), check-secrets.ts (GitHub/Vercel/local), resolveBootMode (staging+prod REFUSE to boot half-configured; prod refuses ALLOW_DEGRADED_BOOT), hashed cluster fingerprint on /healthz/postgres (Neon names every branch neondb, so names cannot prove separation), scripts/smoke.ts (--target staging=… --target prod=…), deploy.yml (readiness → check:env → MIGRATE → deploy → smoke) and a CI env-check job that proves the gate rejects shared and accepts distinct. Local: strict staging boot exits 1 naming 13 gaps; local boots tolerant; smoke passes. 56 files/710 · 45/462. PENDING (owner): two Neon projects + STAGING/PROD_DATABASE_URL secrets, then npm run check:env. No host yet for src/server.ts — see docs/environments.md. |
+| W00-13 | W00 | Three environments: local, staging, prod | 0.75 | Engineering done (2026-10-26, round 2) — AC's 'three separate databases' still needs the owner to run the sync against the real DBs. ONE SOURCE OF TRUTH: secrets:sync reads .env.<env> and writes each value to the store the manifest names — GitHub Environment secrets/variables (gh secret set --env), repo-level VERCEL_* creds, Vercel project vars (preview for staging, production for prod). ONE NAME, ONE ENVIRONMENT: no PROD_*/STAGING_* anywhere; the job's environment: binding selects the value (this corrected deploy.yml, which had PROD_LLM_API_KEY). Honest diffing: variables are compared by value; GitHub secrets are write-only so a present one is 'skip-present' (NOT 'skip-equal') and rotation needs --force; an unreadable store is 'blocked', never a silent skip. Refuses to push .env.staging into production. Also: check:readiness (--file .env), check:secrets, resolveBootMode (staging/prod refuse to boot half-configured), hashed cluster fingerprint on /healthz/postgres, smoke --target staging=… --target prod=…, deploy.yml (readiness → MIGRATE → deploy → smoke). 57 files/727 · 45/462 tiles green. PENDING (owner): two Neon projects + one .env per env, then npm run check:env. No host yet for src/server.ts. |
 | S04-03 | S04 | Hybrid retrieval | 2 | AC-1/AC-2 done; AC-3 blocked on golden v2 (G1) |
 | S05-02 | S05 | Guardrail layer | 2.5 | AC-1/AC-2 done (citation+quote verification, banned content, sensitive/policy gate, reason codes; 356 unit + 184 db green). AC-3 (G2 ≤2% false answers) UNPROVEN — needs G1 golden set v2 + S06-03 harness. |
 | S06-01 | S06 | Public property-scoped web chat | 2 | AC-1/AC-2/AC-3 met as a working surface (real HTTP round trip, signed cookie, slug-only tenant, disclosure + handoff-as-message; 374 unit + 195 db green, web:build green). AC-1's 'on staging' half UNVERIFIED here — deploy is the operator step. |
@@ -74,10 +74,10 @@ Every item whose cell starts with 🚧, with the reason recorded there.
 | --- | --- | --- |
 | Items done | 44 | — |
 | Days done | 47.25 | — |
-| Items in flight | 5 | +1 |
+| Items in flight | 5 | — |
 | Days remaining | 32.5 | — |
 
-Previous report generated 2026-10-27 01:51.
+Previous report generated 2026-10-27 02:19.
 
 ## How to read this
 

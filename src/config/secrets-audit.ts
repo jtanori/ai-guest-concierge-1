@@ -4,31 +4,31 @@
  * `check:readiness` answers "is this environment complete?" given a set of values.
  * This answers the different, easily-confused question: "will the pipeline actually
  * have them?" The two fail independently. A repository can hold a perfect staging
- * `.env` while the GitHub secret the deploy reads was never created, and the deploy
- * then fails at the migrate step — or worse, succeeds with an empty value that
- * Postgres rejects on the first guest message.
+ * `.env` while the secret the deploy job reads was never created, and the deploy then
+ * fails at the migrate step — or worse, succeeds with an empty value.
  *
  * ## Unknown is not absent, and neither is present
  *
  * A token that cannot list secrets (`gh` unauthenticated, Vercel unreachable) makes
- * the answer **unknown**, never "fine". This is the whole reason the module returns
- * three states instead of a boolean: a secrets check that reports green because it
- * could not look is the single most misleading thing an audit can do.
+ * the answer **unknown**, never "fine". This is why the module returns four states
+ * instead of a boolean: a secrets check that reports green because it could not look
+ * is the single most misleading thing an audit can do.
  *
  * ## Values never appear
  *
- * No function here receives a secret's value. The inputs are *lists of names* —
- * that is all `gh api .../actions/secrets` and Vercel's env endpoint return, and
- * it is all this audit needs.
+ * No function here receives a secret's value. The inputs are lists of names (plus
+ * values for the stores that return them) — that is all the GitHub and Vercel APIs
+ * give, and it is all this audit needs.
  */
 import type { EnvName } from "./env.ts";
-import { VARIABLES, type Home, type VariableSpec } from "./manifest.ts";
+import { VARIABLES, type Store, type VariableSpec } from "./manifest.ts";
+import type { RemoteState } from "./secrets-sync.ts";
 
 export type PresenceStatus = "present" | "missing" | "unknown" | "not-applicable";
 
 export interface PresenceRow {
   name: string;
-  home: Home;
+  store: Store;
   status: PresenceStatus;
   detail?: string;
 }
@@ -42,18 +42,6 @@ export interface AuditResult {
   unknown: string[];
 }
 
-export interface Inventories {
-  /** Names of repository Actions secrets, or `null` when they could not be listed. */
-  github: ReadonlySet<string> | null;
-  /**
-   * Vercel environment variables by target (`production`, `preview`,
-   * `development`), or `null` when they could not be listed.
-   */
-  vercel: ReadonlyMap<string, ReadonlySet<string>> | null;
-  /** Names present in a local `.env` file, or `null` when none was given. */
-  local: ReadonlySet<string> | null;
-}
-
 /** Which Vercel target an environment deploys to. Staging is Vercel's "preview". */
 export function vercelTargetFor(env: EnvName): string {
   return env === "prod" ? "production" : "preview";
@@ -62,87 +50,105 @@ export function vercelTargetFor(env: EnvName): string {
 function auditOne(
   variable: VariableSpec,
   env: EnvName,
-  inventories: Inventories,
+  remote: RemoteState,
+  localNames: ReadonlySet<string> | null,
 ): PresenceRow {
-  const home = variable.home;
+  const store = variable.store ?? "process";
 
-  // No home means the platform injects it (the database URL the host is given) or
-  // it is defaulted. Nothing to audit from here, and saying "present" would be a lie.
-  if (home === undefined) {
-    return { name: variable.name, home: "process-env", status: "not-applicable" };
-  }
-
-  if (home === "github-secret") {
-    if (inventories.github === null) {
+  if (store === "process") {
+    // Supplied by the host, or defaulted. A local `.env` is the only way to see it
+    // before deploy, and only when one was supplied.
+    if (localNames === null) {
       return {
         name: variable.name,
-        home,
-        status: "unknown",
-        detail: "repository secrets could not be listed (no gh auth in this context)",
+        store,
+        status: "not-applicable",
+        detail: "supplied by the platform at runtime",
       };
     }
     return {
       name: variable.name,
-      home,
-      status: inventories.github.has(variable.name) ? "present" : "missing",
+      store,
+      status: localNames.has(variable.name) ? "present" : "missing",
+      detail: "from the local .env file",
     };
   }
 
-  if (home === "vercel-env") {
-    if (inventories.vercel === null) {
+  if (store === "github-environment" || store === "github-repo") {
+    if (remote.github === null) {
       return {
         name: variable.name,
-        home,
+        store,
         status: "unknown",
-        detail: "Vercel environment variables could not be listed (no token)",
+        detail: "GitHub could not be read (no gh auth in this context)",
       };
     }
-    const target = vercelTargetFor(env);
-    const names = inventories.vercel.get(target) ?? new Set<string>();
+    const present =
+      store === "github-environment"
+        ? variable.secret
+          ? remote.github.envSecrets.has(variable.name)
+          : remote.github.envVariables.has(variable.name)
+        : variable.secret
+          ? remote.github.repoSecrets.has(variable.name)
+          : remote.github.repoVariables.has(variable.name);
     return {
       name: variable.name,
-      home,
-      status: names.has(variable.name) ? "present" : "missing",
-      detail: `target ${target}`,
+      store,
+      status: present ? "present" : "missing",
+      detail:
+        store === "github-environment"
+          ? variable.secret
+            ? "environment secret"
+            : "environment variable"
+          : "repository-level",
     };
   }
 
-  // `process-env`: the value arrives from the deployment platform, not from a store
-  // this script can read. A local `.env` is the one way to see it before deploy.
-  if (inventories.local === null) {
+  // vercel
+  if (remote.vercel !== null && remote.vercel.target !== vercelTargetFor(env)) {
+    // A state read for one target cannot answer for another. Reporting "present"
+    // here would let a preview-only variable satisfy a production audit.
     return {
       name: variable.name,
-      home,
-      status: "not-applicable",
-      detail: "supplied by the platform at runtime",
+      store,
+      status: "unknown",
+      detail: `state was read for target "${remote.vercel.target}", not "${vercelTargetFor(env)}"`,
+    };
+  }
+  if (remote.vercel === null) {
+    return {
+      name: variable.name,
+      store,
+      status: "unknown",
+      detail: "Vercel environment variables could not be listed (no token)",
     };
   }
   return {
     name: variable.name,
-    home,
-    status: inventories.local.has(variable.name) ? "present" : "missing",
-    detail: "from the local .env file",
+    store,
+    status: remote.vercel.entries.has(variable.name) ? "present" : "missing",
+    detail: `target ${remote.vercel.target}`,
   };
 }
 
 /**
- * Audit every variable the environment requires.
- *
- * Only `requiredIn` variables are audited: chasing the recommended ones produces a
- * list of things nobody is going to do, which is how the important line gets lost.
+ * Audit every variable the environment requires. Only `requiredIn` variables are
+ * audited: chasing the recommended ones produces a list of things nobody is going to
+ * do, which is how the important line gets lost.
  */
 export function auditSecrets(
   env: EnvName,
-  inventories: Inventories,
+  remote: RemoteState,
+  localNames: ReadonlySet<string> | null = null,
 ): AuditResult {
   const required = VARIABLES.filter(
     (variable) => variable.requiredIn.includes(env) && !variable.planned,
   );
-  const rows = required.map((variable) => auditOne(variable, env, inventories));
+  const rows = required.map((variable) => auditOne(variable, env, remote, localNames));
 
   // Either/or pairs are satisfied by ONE member. Reporting `NEON_AUTH_BASE_URL` as
-  // missing while `NEON_AUTH_ISSUER` is present would be a false gap — and a check
-  // that cries wolf on its first run is a check that gets an `|| true` appended.
+  // missing while `NEON_AUTH_ISSUER` is present is a false gap, and a check that
+  // cries wolf on its first run gets an `|| true` appended.
   const groups = new Map<string, VariableSpec[]>();
   for (const variable of required) {
     if (!variable.oneOf) continue;
@@ -160,13 +166,12 @@ export function auditSecrets(
       continue;
     }
     // Only claim a gap when every member is definitively absent. "unknown" (a store
-    // we could not read) and "not-applicable" (the platform injects it) are both
-    // "cannot tell", and inventing a missing value from those is the false alarm
-    // that teaches people to ignore the check.
+    // we could not read) and "not-applicable" (the platform injects it) both mean
+    // "cannot tell", and inventing a missing value from those is the false alarm that
+    // teaches people to ignore the check.
     if (memberRows.some((row) => row.status === "unknown" || row.status === "not-applicable")) {
       continue;
     }
-    // Nobody in the group is there: one row speaks for the group, and it says so.
     for (const [index, row] of memberRows.entries()) {
       if (index === 0) {
         row.status = "missing";
@@ -188,19 +193,4 @@ export function auditSecrets(
     missing,
     unknown,
   };
-}
-
-/**
- * The variables that live in more than one place for the same environment.
- *
- * `DATABASE_URL` is the case that matters: the deploy workflow needs it as a GitHub
- * secret to run migrations, and the runtime needs it as the platform's env var to
- * serve. They must be the same database — and since the values are secrets, the
- * only checkable form of that claim is the W00-13 gate comparing them at deploy time
- * (`check:env`), which the deploy workflow runs before migrating.
- */
-export function dualHomed(env: EnvName): VariableSpec[] {
-  return VARIABLES.filter(
-    (variable) => variable.requiredIn.includes(env) && variable.home === "github-secret",
-  );
 }

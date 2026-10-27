@@ -58,19 +58,72 @@ strict. **`prod` refuses the flag outright**, the same way it refuses `AI_FAIL_M
 a production host that can skip its own configuration check by one variable is a host
 where one copied file is an outage.
 
-## Where each value must live
+## Where each value must live — one name, one environment
 
 | Store | Holds | Read by |
 |---|---|---|
-| GitHub Actions secrets | database URLs, provider keys, cookie secret | `.github/workflows/deploy.yml` |
-| GitHub Actions **variables** | non-secret config: model ids, public URLs, `*_API_URL` | the same workflow |
-| Vercel env (**preview**) | staging's `REVIEW_API_URL`, `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | the Next.js tier |
-| Vercel env (**production**) | the same keys, production values | the Next.js tier |
-| Platform process env | the runtime `DATABASE_URL` the host injects | the API process |
+| GitHub Environment **`staging`** — secrets | `DATABASE_URL`, `LLM_API_KEY`, `EMAIL_API_KEY`, `GUEST_COOKIE_SECRET`, … | the staging deploy job |
+| GitHub Environment **`staging`** — variables | model ids, public URLs, `API_URL` | the same job |
+| GitHub Environment **`production`** — the same names | production values | the production deploy job |
+| GitHub **repo** secrets/variables | `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` | both jobs — one Vercel project serves every environment |
+| Vercel env **preview** | `REVIEW_API_URL`, `NEXT_PUBLIC_TURNSTILE_SITE_KEY` (staging values) | the Next.js tier |
+| Vercel env **production** | the same keys, production values | the Next.js tier |
+
+**There is no `PROD_LLM_API_KEY`.** The name is `LLM_API_KEY` in both environments,
+and a job's `environment: production` is the only thing that makes it resolve to
+production's value. Suffixed names double the contract: every new variable would need
+two entries, and the workflow would need to remember which suffix belongs to which
+job. The manifest enforces the rule by having exactly one entry per variable.
 
 Staging deploys to Vercel's **preview** target and prod to **production**; that
 mapping is `vercelTargetFor()` and it is asserted by a test, because getting it
 backwards puts staging's console URL in production's emails.
+
+## `secrets:sync` — one file, every store
+
+```bash
+npm run secrets:sync -- --env-file=.env.staging --env=staging            # write
+npm run secrets:sync -- --env-file=.env.staging --env=staging --dry-run  # plan only
+npm run secrets:sync -- --env-file=.env.production --env=prod --force    # rotate secrets
+```
+
+It reads one file, and **where each value goes is decided by the manifest, not by the
+script** — there is no second opinion to drift.
+
+| Action | Meaning |
+|---|---|
+| `+ create` | absent remotely, will be written |
+| `~ update` | present with a different value (variables), or `--force` (secrets) |
+| `=` | variables only: compared and identical |
+| `· skip-present` | **present, not compared** — see below |
+| `? blocked` | the store could not be read; nothing was decided |
+| ` ` runtime | the host injects it; not a sync target |
+
+### Why secrets say "present, unverified" and not "unchanged"
+
+A GitHub Actions secret is **write-only**. The API returns names and `updated_at`,
+never a value — by design. So a secret that already exists is skipped and reported as
+`skip-present`, which is a different claim from `skip-equal`. Variables *are* compared
+by value; secrets can only be observed.
+
+The practical consequence: **rotating a key upstream and re-running sync will not push
+it unless you pass `--force`.** That is the price of write-only storage, and it is
+cheaper than the alternative — a script that rewrites forty secrets every run and burns
+the only history GitHub keeps.
+
+Vercel returns values for plain variables and omits sensitive ones; the same rule
+applies per variable.
+
+### What it refuses to do
+
+- Push `.env.staging` into the `production` environment: if the file's `APP_ENV` does
+  not match `--env`, it exits 2 without writing anything.
+- Invent a value for a required variable that is missing from the file — those are
+  listed as `absent` instead.
+- Print, log, or serialise a secret value. `--json` emits names and actions only.
+
+`--only=LLM_API_KEY,EMAIL_API_KEY` narrows a run; `--no-github` / `--no-vercel`
+restrict destinations.
 
 ## What the deploy workflow does, in order
 
@@ -117,31 +170,29 @@ npm run smoke -- \
   --target prod=https://api.example.com
 ```
 
-## Secrets that must exist before the first real deploy
+## Seeding a new environment
 
-These are the ones the workflow reads; `check:secrets` tells you which are missing.
+```bash
+# 1. write the file from the contract, then check it is complete
+cp .env.example .env.staging
+npm run check:readiness -- --env staging --file .env.staging
 
-```text
-GITHUB SECRETS                          GITHUB VARIABLES
-STAGING_DATABASE_URL                    REVIEW_API_URL
-PROD_DATABASE_URL                       LLM_PRIMARY_MODEL / LLM_FALLBACK_MODEL
-GUEST_COOKIE_SECRET                     NEON_AUTH_ISSUER / NEON_AUTH_JWKS_URL
-LLM_API_KEY                             GUEST_PUBLIC_URL
-EMBEDDING_API_KEY                       EMAIL_FROM / EMAIL_ESCALATION_FALLBACK
-TURNSTILE_SECRET                        CONSOLE_BASE_URL
-EMAIL_API_KEY                           STAGING_API_URL / PROD_API_URL
-NEXT_PUBLIC_TURNSTILE_SITE_KEY          (smoke target — optional, visibly skipped)
-VERCEL_TOKEN / VERCEL_ORG_ID / VERCEL_PROJECT_ID
+# 2. place every value in the store the manifest assigns it to
+npm run secrets:sync -- --env-file=.env.staging --env=staging --dry-run
+npm run secrets:sync -- --env-file=.env.staging --env=staging
 
-PRODUCTION OVERRIDES (never reuse staging's)
-PROD_GUEST_COOKIE_SECRET, PROD_LLM_API_KEY, PROD_EMBEDDING_API_KEY,
-PROD_TURNSTILE_SECRET, PROD_EMAIL_API_KEY
+# 3. verify from the other side: ask the stores, not the file
+npm run check:secrets -- --env staging
 ```
 
-Production uses `PROD_`-prefixed keys for every provider credential. Reusing a
-staging key in production means revoking it in staging breaks production — and means
-a staging row and a production row are billed to the same account with no way to tell
-them apart.
+Prerequisites for step 2: `gh auth login` with admin on the repository (creating the
+GitHub Environment needs it), and `VERCEL_TOKEN` + `VERCEL_PROJECT_ID` in the file or
+the shell. Without them the affected rows are `blocked` — never silently skipped.
+
+`secrets:sync` creates the GitHub Environment (`staging` / `production`) when it does
+not exist. Protection rules — required reviewers on `production`, for instance — are
+configured in Settings → Environments, not by this script: a script that can loosen its
+own gate is not a gate.
 
 ## Things that are still not done
 

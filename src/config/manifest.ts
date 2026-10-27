@@ -15,10 +15,20 @@
  *  - **`recommendedIn`** — missing here is a warning, never a failure. Used for
  *    `local`, where a developer without a Turnstile key should still be able to run
  *    the suite. A warning that blocks work is a warning people learn to bypass.
- *  - **`home`** — WHERE the value has to exist for a deployed environment (GitHub
- *    Actions secrets, Vercel environment variables, or the process environment the
- *    platform injects). A variable can be correct in the repo and absent in the
- *    place that actually deploys it; that is the gap `check-secrets.ts` looks for.
+ *  - **`store`** — WHERE the value has to exist for a deployed environment. A
+ *    variable can be correct in the repo and absent in the place that actually
+ *    deploys it; that is the gap `check-secrets.ts` reports and `secrets:sync`
+ *    closes.
+ *
+ * ## One name, one environment — never a suffix per environment
+ *
+ * `LLM_API_KEY` exists exactly once as a name, with one value on the `staging`
+ * GitHub Environment and another on `production`. It is NOT `STAGING_LLM_API_KEY`
+ * and `PROD_LLM_API_KEY`: suffixed names double the contract, and the day somebody
+ * adds `LLM_TIMEOUT_MS` they must remember to add two entries, pick the right one in
+ * the workflow, and keep both in step. A job that declares `environment: staging`
+ * resolves `secrets.LLM_API_KEY` to staging's value. That is the whole mechanism,
+ * and the workflow never mentions the environment in a variable name.
  *
  * ## What is NOT in here
  *
@@ -36,8 +46,22 @@ import type { EnvName } from "./env.ts";
  */
 export type Consumer = "api" | "web" | "ci" | "deploy";
 
-/** Where the value must live for a deployed environment. */
-export type Home = "github-secret" | "vercel-env" | "process-env";
+/**
+ * Where a value lives.
+ *
+ *  - `github-environment` — a secret or variable attached to a GitHub Environment
+ *    (`staging` / `production`). The same name in both; the job's `environment:`
+ *    decides which value it sees. The default for anything that differs between
+ *    deployments.
+ *  - `github-repo` — repository-level, identical for every environment. Only for
+ *    credentials that deploy the pipeline itself (the Vercel token), which are not
+ *    per-environment facts.
+ *  - `vercel` — a Vercel project environment variable on the target this environment
+ *    deploys to (`preview` for staging, `production` for prod).
+ *  - `process` — injected by the host at runtime; not synced, and reported as such
+ *    rather than silently ignored.
+ */
+export type Store = "github-environment" | "github-repo" | "vercel" | "process";
 
 export interface VariableSpec {
   name: string;
@@ -53,7 +77,7 @@ export interface VariableSpec {
    * `NEON_AUTH_BASE_URL`). One member of a group present is enough.
    */
   oneOf?: string;
-  home?: Home;
+  store?: Store;
   /** Why it exists, in the terms of the thing that breaks without it. */
   why: string;
   /**
@@ -73,7 +97,7 @@ export const VARIABLES: readonly VariableSpec[] = [
     requiredIn: DEPLOYED,
     recommendedIn: ["local"],
     secret: false,
-    home: "process-env",
+    store: "process",
     why: "selects the whole config matrix; an unset value defaults to local, which is the one environment that tolerates everything else being missing",
   },
   {
@@ -81,15 +105,15 @@ export const VARIABLES: readonly VariableSpec[] = [
     consumer: "api",
     requiredIn: ALL,
     secret: true,
-    home: "process-env",
-    why: "every environment points at its own database; nothing boots without one",
+    store: "github-environment",
+    why: "every environment points at its own database; the deploy job runs migrations with the value from its own GitHub Environment",
   },
   {
     name: "LOG_LEVEL",
     consumer: "api",
     requiredIn: [],
     secret: false,
-    home: "process-env",
+    store: "process",
     why: "defaults to debug locally and info elsewhere; set it to quiet a noisy host",
   },
   {
@@ -97,6 +121,7 @@ export const VARIABLES: readonly VariableSpec[] = [
     consumer: "api",
     requiredIn: [],
     secret: false,
+    store: "process",
     why: "defaulted; only set it to distinguish two deployments in one log sink",
   },
   {
@@ -105,7 +130,7 @@ export const VARIABLES: readonly VariableSpec[] = [
     requiredIn: DEPLOYED,
     recommendedIn: ["local"],
     secret: false,
-    home: "process-env",
+    store: "github-environment",
     why: "staff tokens cannot be verified without it, so every staff route answers 503",
   },
   {
@@ -115,7 +140,7 @@ export const VARIABLES: readonly VariableSpec[] = [
     recommendedIn: ["local"],
     secret: false,
     oneOf: "auth-issuer",
-    home: "process-env",
+    store: "github-environment",
     why: "token issuer check; falls back to NEON_AUTH_BASE_URL",
   },
   {
@@ -125,7 +150,7 @@ export const VARIABLES: readonly VariableSpec[] = [
     recommendedIn: ["local"],
     secret: false,
     oneOf: "auth-issuer",
-    home: "process-env",
+    store: "github-environment",
     why: "doubles as the issuer when NEON_AUTH_ISSUER is unset",
   },
   {
@@ -133,6 +158,7 @@ export const VARIABLES: readonly VariableSpec[] = [
     consumer: "api",
     requiredIn: [],
     secret: false,
+    store: "github-environment",
     why: "defaulted to the issuer; override only if the branch's tokens carry a different audience",
   },
   {
@@ -141,7 +167,7 @@ export const VARIABLES: readonly VariableSpec[] = [
     requiredIn: DEPLOYED,
     recommendedIn: ["local"],
     secret: true,
-    home: "github-secret",
+    store: "github-environment",
     why: "signs the anonymous guest identity cookie; a default would be a published signing key",
   },
   {
@@ -149,7 +175,7 @@ export const VARIABLES: readonly VariableSpec[] = [
     consumer: "api",
     requiredIn: DEPLOYED,
     secret: false,
-    home: "process-env",
+    store: "github-environment",
     why: "the bare origin a QR code encodes; unset, a printed card points at an internal hostname",
   },
   {
@@ -157,6 +183,7 @@ export const VARIABLES: readonly VariableSpec[] = [
     consumer: "api",
     requiredIn: ALL,
     secret: false,
+    store: "github-environment",
     why: "the pinned model id; never defaulted, because a floating alias is a different model in six months",
   },
   {
@@ -164,6 +191,7 @@ export const VARIABLES: readonly VariableSpec[] = [
     consumer: "api",
     requiredIn: ALL,
     secret: false,
+    store: "github-environment",
     why: "the second pinned model; the same id twice is the same failure twice",
   },
   {
@@ -172,7 +200,7 @@ export const VARIABLES: readonly VariableSpec[] = [
     requiredIn: DEPLOYED,
     recommendedIn: ["local"],
     secret: true,
-    home: "github-secret",
+    store: "github-environment",
     why: "without it the host cannot answer a single guest message",
   },
   {
@@ -180,6 +208,7 @@ export const VARIABLES: readonly VariableSpec[] = [
     consumer: "api",
     requiredIn: [],
     secret: false,
+    store: "github-environment",
     why: "defaulted to the Gemini endpoint",
   },
   {
@@ -187,6 +216,7 @@ export const VARIABLES: readonly VariableSpec[] = [
     consumer: "api",
     requiredIn: [],
     secret: false,
+    store: "github-environment",
     why: "defaulted to 8s; bounded by the guest's patience, not by a vendor's SLA",
   },
   {
@@ -194,6 +224,7 @@ export const VARIABLES: readonly VariableSpec[] = [
     consumer: "api",
     requiredIn: [],
     secret: false,
+    store: "github-environment",
     why: "defaulted to two; the ceiling is four because the guest is the one waiting",
   },
   {
@@ -202,7 +233,7 @@ export const VARIABLES: readonly VariableSpec[] = [
     requiredIn: DEPLOYED,
     recommendedIn: ["local"],
     secret: true,
-    home: "github-secret",
+    store: "github-environment",
     why: "the vector branch of retrieval; without it the product answers from lexical + trigram only",
   },
   {
@@ -210,6 +241,7 @@ export const VARIABLES: readonly VariableSpec[] = [
     consumer: "api",
     requiredIn: [],
     secret: false,
+    store: "github-environment",
     why: "defaulted to the model that emits the 1536 dimensions D3 locked",
   },
   {
@@ -217,6 +249,7 @@ export const VARIABLES: readonly VariableSpec[] = [
     consumer: "api",
     requiredIn: [],
     secret: false,
+    store: "github-environment",
     why: "defaulted to the OpenAI endpoint",
   },
   {
@@ -224,7 +257,7 @@ export const VARIABLES: readonly VariableSpec[] = [
     consumer: "api",
     requiredIn: DEPLOYED,
     secret: true,
-    home: "github-secret",
+    store: "github-environment",
     why: "the bot check on the first guest message; a control that is on only if someone remembered is off",
   },
   {
@@ -232,7 +265,7 @@ export const VARIABLES: readonly VariableSpec[] = [
     consumer: "web",
     requiredIn: DEPLOYED,
     secret: false,
-    home: "vercel-env",
+    store: "vercel",
     why: "without the site key no widget renders, so the server's bot check has no token to verify",
   },
   {
@@ -240,7 +273,7 @@ export const VARIABLES: readonly VariableSpec[] = [
     consumer: "api",
     requiredIn: ALL,
     secret: false,
-    home: "process-env",
+    store: "github-environment",
     why: "the escalation sender; a default would be a published address every deployment shares",
   },
   {
@@ -249,15 +282,15 @@ export const VARIABLES: readonly VariableSpec[] = [
     requiredIn: DEPLOYED,
     recommendedIn: ["local"],
     secret: true,
-    home: "github-secret",
-    why: "resend's key; without it a queued escalation is a row nobody sends",
+    store: "github-environment",
+    why: "the provider key; without it a queued escalation is a row nobody sends",
   },
   {
     name: "EMAIL_ESCALATION_FALLBACK",
     consumer: "api",
     requiredIn: DEPLOYED,
     secret: false,
-    home: "process-env",
+    store: "github-environment",
     why: "where a request goes when the property configured no contacts; no default exists on purpose",
   },
   {
@@ -265,7 +298,7 @@ export const VARIABLES: readonly VariableSpec[] = [
     consumer: "api",
     requiredIn: DEPLOYED,
     secret: false,
-    home: "process-env",
+    store: "github-environment",
     why: "builds the link in every escalation email; the local default points recipients at their own machine",
   },
   {
@@ -274,7 +307,7 @@ export const VARIABLES: readonly VariableSpec[] = [
     requiredIn: DEPLOYED,
     recommendedIn: ["local"],
     secret: false,
-    home: "vercel-env",
+    store: "vercel",
     why: "the only address the staff screen calls, from the Next server, never the browser",
   },
   {
@@ -282,7 +315,7 @@ export const VARIABLES: readonly VariableSpec[] = [
     consumer: "api",
     requiredIn: [],
     secret: true,
-    home: "process-env",
+    store: "github-environment",
     planned: true,
     why: "W00-14 error tracking — listed so the gap is visible, not enforced until a reporter is wired",
   },
@@ -291,31 +324,46 @@ export const VARIABLES: readonly VariableSpec[] = [
     consumer: "api",
     requiredIn: [],
     secret: false,
-    home: "process-env",
+    store: "process",
     why: "staging-only escape hatch for preview hosts; refused outright in prod (see resolveBootMode)",
   },
   {
-    name: "STAGING_DATABASE_URL",
-    consumer: "deploy",
-    requiredIn: [],
-    secret: true,
-    home: "github-secret",
-    why: "the W00-13 gate compares it to prod; the deploy workflow migrates it before deploying",
-  },
-  {
-    name: "PROD_DATABASE_URL",
-    consumer: "deploy",
-    requiredIn: [],
-    secret: true,
-    home: "github-secret",
-    why: "the W00-13 gate compares it to staging; the deploy workflow migrates it before deploying",
-  },
-  {
-    name: "LOCAL_DATABASE_URL",
-    consumer: "deploy",
+    // The deploy workflow's smoke target. An environment variable rather than a
+    // secret because a public origin is public, and CI-only rather than a product
+    // requirement because nothing boots differently without it.
+    name: "API_URL",
+    consumer: "ci",
     requiredIn: [],
     secret: false,
-    why: "the third leg of the gate: neither deployed environment may reuse it",
+    store: "github-environment",
+    why: "the origin `smoke` probes after deploying; absent, the smoke step skips visibly instead of pretending",
+  },
+  {
+    // Deployment plumbing for the pipeline itself, not for the product. Repo-level
+    // because the same Vercel project deploys every environment; putting it on an
+    // environment would mean three copies of one credential.
+    name: "VERCEL_TOKEN",
+    consumer: "ci",
+    requiredIn: [],
+    secret: true,
+    store: "github-repo",
+    why: "deploys the Vercel surface; one token for one project, so it is repo-level and not per-environment",
+  },
+  {
+    name: "VERCEL_ORG_ID",
+    consumer: "ci",
+    requiredIn: [],
+    secret: false,
+    store: "github-repo",
+    why: "identifies the Vercel team; identical across environments",
+  },
+  {
+    name: "VERCEL_PROJECT_ID",
+    consumer: "ci",
+    requiredIn: [],
+    secret: false,
+    store: "github-repo",
+    why: "identifies the Vercel project; identical across environments",
   },
 ];
 
@@ -360,4 +408,29 @@ export function requirementGroups(env: EnvName): Map<string, VariableSpec[]> {
     groups.set(variable.oneOf, members);
   }
   return groups;
+}
+
+/**
+ * What `secrets:sync` will push for one environment.
+ *
+ * Only variables that are *required or recommended* in this environment and that
+ * appear in the env file are candidates: syncing an optional variable the operator
+ * happened to leave in their file would push a staging-only default into production.
+ */
+export function syncableVariables(env: EnvName): VariableSpec[] {
+  return VARIABLES.filter(
+    (variable) =>
+      !variable.planned &&
+      (variable.requiredIn.includes(env) ||
+        (variable.recommendedIn ?? []).includes(env) ||
+        // Pipeline plumbing (the Vercel token, the smoke target) is not something the
+        // app needs to boot, so it must not fail `check:readiness` — but if it is in
+        // the file it is exactly what `secrets:sync` exists to place.
+        variable.consumer === "ci"),
+  );
+}
+
+/** The GitHub Environment a deployment binds to. `prod` is named `production`. */
+export function githubEnvironmentFor(env: EnvName): string {
+  return env === "prod" ? "production" : env;
 }

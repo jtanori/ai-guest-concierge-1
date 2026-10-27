@@ -168,14 +168,34 @@ OK — no shared databases                                           exit 0
 - **The smoke step is skipped until `STAGING_API_URL` / `PROD_API_URL` exist** as GitHub variables — visibly, with a warning and a job-summary line, never silently green.
 - **`SENTRY_DSN` is documented but not enforced** (W00-14 has no reporter yet).
 
+### `secrets:sync` — and the naming correction that came with it
+
+Owner's direction (2026-10-26): *"we should use environments to store environment specific variables … instead of setting a single name and have them saved in environments the better."*
+
+That caught a real mistake in the first version of this work: `deploy.yml` read `PROD_GUEST_COOKIE_SECRET`, `PROD_LLM_API_KEY`, `PROD_EMAIL_API_KEY` — the exact anti-pattern. **Corrected**: every name is now identical in both jobs (`GUEST_COOKIE_SECRET`, `LLM_API_KEY`, …) and the job's `environment:` binding is the only thing that selects the value. `PROD_*` and `STAGING_*` no longer appear anywhere in the workflow.
+
+Consequence worth knowing: a job bound to one GitHub Environment **cannot read the other environment's secrets**, so the cross-environment `check:env` cannot run inside a deploy job. That is not a regression — it is the guarantee the user asked for. Separation is proven instead by `smoke --target staging=… --target prod=…`, which compares the hashed cluster fingerprints of the two running deployments (stronger evidence than comparing two strings from one file), and `check:env` remains the operator's pre-deploy tool with all three URLs in one shell.
+
+`npm run secrets:sync -- --env-file=.env.staging --env=staging` reads one file and writes to the store each variable's manifest entry names:
+
+- GitHub Environment secrets/variables (`gh secret set --env`, `gh variable set --env`)
+- repo-level secrets for the three `VERCEL_*` deployment credentials
+- Vercel project variables on the target (`preview` for staging, `production` for prod)
+
+**What "only if changed" honestly means.** GitHub variables are read back and compared by value. **GitHub secrets are write-only** — the API returns names, never values — so a present secret is reported `skip-present`, explicitly *not* `skip-equal`, and rotating a key requires `--force`. Vercel returns plain variables and withholds sensitive ones; same rule per variable. A store that cannot be read produces `blocked`, never a silent skip: this environment could not reach GitHub or Vercel, and the dry run said so rather than printing a clean sheet.
+
+The script refuses to push `.env.staging` into the `production` environment when the file's `APP_ENV` disagrees with `--env`, and never prints a value — `--json` carries names and actions only.
+
 ### What the owner runs to close the AC
 
 ```powershell
 # 1. two Neon projects: "concierge-staging" and "concierge-prod" (separate projects,
 #    not two branches of one — a branch shares the parent's cluster)
-# 2. put the URLs where the pipeline reads them
-gh secret set STAGING_DATABASE_URL
-gh secret set PROD_DATABASE_URL
+# 2. put every value where the pipeline reads it, one file per environment
+#    (this creates the GitHub Environments and fills repo-level Vercel creds)
+npm run secrets:sync -- --env-file=.env.staging --env=staging --dry-run
+npm run secrets:sync -- --env-file=.env.staging --env=staging
+npm run secrets:sync -- --env-file=.env.production --env=prod
 # 3. the AC test — refuses if they are the same database
 npm run check:env
 # 4. prove it from the running services once a host exists

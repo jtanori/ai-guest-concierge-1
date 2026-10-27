@@ -218,7 +218,7 @@ describe("the manifest itself", () => {
   it("marks every secret as a secret in every consumer", () => {
     // A database URL, a provider key and a cookie secret are the four things whose
     // appearance in a CI log is a real incident.
-    for (const name of ["DATABASE_URL", "LLM_API_KEY", "GUEST_COOKIE_SECRET", "STAGING_DATABASE_URL"]) {
+    for (const name of ["DATABASE_URL", "LLM_API_KEY", "GUEST_COOKIE_SECRET", "VERCEL_TOKEN"]) {
       expect(VARIABLES.find((v) => v.name === name)?.secret, name).toBe(true);
     }
   });

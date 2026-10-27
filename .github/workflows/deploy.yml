@@ -22,8 +22,8 @@
 #   - migrates the environment's database (real, and the part that must never be
 #     reordered),
 #   - deploys the Vercel surface to that environment's target,
-#   - runs `smoke` against `STAGING_API_URL` / `PROD_API_URL` **when those are
-#     configured**, and says out loud when they are not.
+#   - runs `smoke` against the `API_URL` **variable of that GitHub Environment** when
+#     it is configured, and says out loud when it is not.
 #
 # The smoke step SKIPPING is visible in the job summary. It is never a pass.
 #
@@ -65,9 +65,12 @@ jobs:
     environment: staging
     env:
       APP_ENV: staging
-      DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
-      STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
-      PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+      # ONE NAME, TWO VALUES. This job declares `environment: staging`, so
+      # `secrets.DATABASE_URL` resolves to staging's value. The production job below
+      # declares `environment: production` and reads the same names. There is no
+      # STAGING_DATABASE_URL and no PROD_DATABASE_URL: a suffixed name doubles the
+      # contract and is the thing this design exists to avoid.
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
       NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ secrets.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
       REVIEW_API_URL: ${{ vars.REVIEW_API_URL }}
       GUEST_COOKIE_SECRET: ${{ secrets.GUEST_COOKIE_SECRET }}
@@ -97,8 +100,11 @@ jobs:
       - name: readiness gate (before anything is touched)
         run: npm run check:readiness -- --env staging
 
-      - name: the environment matrix must still be three separate databases
-        run: npm run check:env
+      # The cross-environment matrix (`check:env`) needs BOTH database URLs, and a
+      # job bound to one GitHub Environment can only see its own secrets — which is
+      # the point. Separation is proven where both environments are observable: the
+      # smoke step below compares each deployment's hashed cluster fingerprint. Run
+      # `npm run check:env` locally with all three URLs before the first deploy.
 
       - name: where each secret must live
         run: npm run check:secrets -- --env staging --inventory github,vercel --allow-unknown
@@ -115,15 +121,16 @@ jobs:
 
       - name: smoke
         run: |
-          if [ -z "${STAGING_API_URL}" ]; then
-            echo "::warning::STAGING_API_URL is not configured — the smoke step was SKIPPED, which is not a pass."
+          if [ -z "${API_URL}" ]; then
+            echo "::warning::the API_URL variable is not set on the staging environment — the smoke step was SKIPPED, which is not a pass."
             echo "### Smoke skipped" >> "$GITHUB_STEP_SUMMARY"
-            echo "No \`STAGING_API_URL\` variable is set for this environment, so nothing could be probed." >> "$GITHUB_STEP_SUMMARY"
+            echo "No \`API_URL\` variable is set on this GitHub Environment, so nothing could be probed." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          npm run smoke -- --target "staging=${STAGING_API_URL}"
+          npm run smoke -- --target "staging=${API_URL}"
         env:
-          STAGING_API_URL: ${{ vars.STAGING_API_URL }}
+          # Same name in every environment; the job's `environment:` decides the value.
+          API_URL: ${{ vars.API_URL }}
 
   production:
     if: >-
@@ -135,22 +142,23 @@ jobs:
     environment: production
     env:
       APP_ENV: prod
-      DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
-      STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
-      PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+      # Identical names to the staging job. `environment: production` above is the
+      # only thing that differs, and it is what makes these resolve to production's
+      # values. Never `PROD_LLM_API_KEY`: see the manifest's header comment.
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
       NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ secrets.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
       REVIEW_API_URL: ${{ vars.REVIEW_API_URL }}
-      GUEST_COOKIE_SECRET: ${{ secrets.PROD_GUEST_COOKIE_SECRET }}
-      LLM_API_KEY: ${{ secrets.PROD_LLM_API_KEY }}
+      GUEST_COOKIE_SECRET: ${{ secrets.GUEST_COOKIE_SECRET }}
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
       LLM_PRIMARY_MODEL: ${{ vars.LLM_PRIMARY_MODEL }}
       LLM_FALLBACK_MODEL: ${{ vars.LLM_FALLBACK_MODEL }}
-      EMBEDDING_API_KEY: ${{ secrets.PROD_EMBEDDING_API_KEY }}
-      TURNSTILE_SECRET: ${{ secrets.PROD_TURNSTILE_SECRET }}
+      EMBEDDING_API_KEY: ${{ secrets.EMBEDDING_API_KEY }}
+      TURNSTILE_SECRET: ${{ secrets.TURNSTILE_SECRET }}
       NEON_AUTH_JWKS_URL: ${{ vars.NEON_AUTH_JWKS_URL }}
       NEON_AUTH_ISSUER: ${{ vars.NEON_AUTH_ISSUER }}
       GUEST_PUBLIC_URL: ${{ vars.GUEST_PUBLIC_URL }}
       EMAIL_FROM: ${{ vars.EMAIL_FROM }}
-      EMAIL_API_KEY: ${{ secrets.PROD_EMAIL_API_KEY }}
+      EMAIL_API_KEY: ${{ secrets.EMAIL_API_KEY }}
       EMAIL_ESCALATION_FALLBACK: ${{ vars.EMAIL_ESCALATION_FALLBACK }}
       CONSOLE_BASE_URL: ${{ vars.CONSOLE_BASE_URL }}
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
@@ -167,8 +175,11 @@ jobs:
       - name: readiness gate (before anything is touched)
         run: npm run check:readiness -- --env prod
 
-      - name: the environment matrix must still be three separate databases
-        run: npm run check:env
+      # The cross-environment matrix (`check:env`) needs BOTH database URLs, and a
+      # job bound to one GitHub Environment can only see its own secrets — which is
+      # the point. Separation is proven where both environments are observable: the
+      # smoke step below compares each deployment's hashed cluster fingerprint. Run
+      # `npm run check:env` locally with all three URLs before the first deploy.
 
       - name: where each secret must live
         run: npm run check:secrets -- --env prod --inventory github,vercel --allow-unknown
@@ -185,12 +196,12 @@ jobs:
 
       - name: smoke
         run: |
-          if [ -z "${PROD_API_URL}" ]; then
-            echo "::warning::PROD_API_URL is not configured — the smoke step was SKIPPED, which is not a pass."
+          if [ -z "${API_URL}" ]; then
+            echo "::warning::the API_URL variable is not set on the production environment — the smoke step was SKIPPED, which is not a pass."
             echo "### Smoke skipped" >> "$GITHUB_STEP_SUMMARY"
-            echo "No \`PROD_API_URL\` variable is set for this environment, so nothing could be probed." >> "$GITHUB_STEP_SUMMARY"
+            echo "No \`API_URL\` variable is set on this GitHub Environment, so nothing could be probed." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          npm run smoke -- --target "prod=${PROD_API_URL}"
+          npm run smoke -- --target "prod=${API_URL}"
         env:
-          PROD_API_URL: ${{ vars.PROD_API_URL }}
+          API_URL: ${{ vars.API_URL }}

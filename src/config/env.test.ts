@@ -4,6 +4,7 @@ import {
   isEnvName,
   loadConfig,
   loadLlmConfig,
+  resolveBootMode,
   resolveDeploymentEnvironments,
 } from "./env.ts";
 
@@ -138,5 +139,49 @@ describe("loadLlmConfig (S05-01 / DEC-2)", () => {
     expect(() => loadLlmConfig({ ...base, LLM_RETRIES: "5" }, "local")).toThrow(/LLM_RETRIES/);
     expect(() => loadLlmConfig({ ...base, LLM_RETRIES: "-1" }, "local")).toThrow(/LLM_RETRIES/);
     expect(() => loadLlmConfig({ ...base, LLM_RETRIES: "two" }, "local")).toThrow(/LLM_RETRIES/);
+  });
+});
+
+describe("resolveBootMode — fail fast outside local (W00-13)", () => {
+  it("lets local be tolerant: a developer's shell is not a deployment", () => {
+    expect(resolveBootMode({}).mode).toBe("tolerant");
+    expect(resolveBootMode({ APP_ENV: "local" }).mode).toBe("tolerant");
+  });
+
+  it("is strict in staging and prod by default", () => {
+    expect(resolveBootMode({ APP_ENV: "staging" }).mode).toBe("strict");
+    expect(resolveBootMode({ APP_ENV: "prod" }).mode).toBe("strict");
+  });
+
+  it("allows an explicit opt-out on staging, for preview hosts", () => {
+    const decision = resolveBootMode({ APP_ENV: "staging", ALLOW_DEGRADED_BOOT: "1" });
+    expect(decision.mode).toBe("tolerant");
+    // The reason is logged verbatim, so it has to say that this is not a real
+    // staging deployment.
+    expect(decision.reason).toMatch(/must never be mistaken/);
+  });
+
+  it("REFUSES the opt-out in prod — one copied file must not be an outage", () => {
+    expect(() => resolveBootMode({ APP_ENV: "prod", ALLOW_DEGRADED_BOOT: "1" })).toThrow(
+      /refused when APP_ENV=prod/,
+    );
+    // And `true` is the same request, not a different one.
+    expect(() => resolveBootMode({ APP_ENV: "prod", ALLOW_DEGRADED_BOOT: "true" })).toThrow(
+      ConfigError,
+    );
+  });
+
+  it("refuses an unknown APP_ENV rather than defaulting to tolerant", () => {
+    expect(() => resolveBootMode({ APP_ENV: "production" })).toThrow(/APP_ENV must be one of/);
+  });
+
+  it("treats a near-miss flag value as not set", () => {
+    // "yes", "0", "on" are not "1"/"true": guessing intent here turns a typo into a
+    // degraded production-looking host.
+    for (const flag of ["0", "yes", "on", "false"]) {
+      expect(resolveBootMode({ APP_ENV: "staging", ALLOW_DEGRADED_BOOT: flag }).mode, flag).toBe(
+        "strict",
+      );
+    }
   });
 });

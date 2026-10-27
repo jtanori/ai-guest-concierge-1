@@ -16,7 +16,14 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type pg from "pg";
 import { createLogger, isLogLevel, type LogLevel } from "./logging/index.ts";
-import { loadConfig, type AppConfig } from "./config/env.ts";
+import {
+  loadConfig,
+  resolveBootMode,
+  type AppConfig,
+  type BootDecision,
+  type EnvName,
+} from "./config/env.ts";
+import { checkReadiness } from "./config/preflight.ts";
 import { postgresStatus, closePool, getPool } from "./neon/postgres.ts";
 import { loadAuthConfig, verifyIdentityToken } from "./auth/session.ts";
 import {
@@ -60,6 +67,58 @@ const configuredLevel = cfg?.logLevel ?? "info";
 const log = createLogger((isLogLevel(configuredLevel) ? configuredLevel : "info") as LogLevel);
 const startedAt = new Date().toISOString();
 
+/**
+ * W00-13 — refuse to serve from a half-configured staging or production process.
+ *
+ * This runs at import time, before the listener exists, because the alternative is
+ * the failure mode this whole module exists to prevent: a host that answers 200 on
+ * `/healthz`, accepts traffic, and returns 503 to every guest. A container that
+ * exits is a deploy that visibly fails; a container that degrades is a deploy that
+ * looks successful until somebody opens the chat.
+ *
+ * `local` is tolerant, and staging may opt into tolerance with
+ * `ALLOW_DEGRADED_BOOT=1` (preview hosts). Production may not — `resolveBootMode`
+ * throws there.
+ */
+function bootDecision(source: NodeJS.ProcessEnv): BootDecision {
+  try {
+    return resolveBootMode(source);
+  } catch (error) {
+    process.stderr.write(`boot refused: ${(error as Error).message}\n`);
+    process.exit(1);
+  }
+}
+
+const boot = bootDecision(process.env);
+
+function enforceBootContract(source: NodeJS.ProcessEnv, decision: BootDecision): void {
+  if (decision.mode === "tolerant") {
+    if (decision.reason.includes("ALLOW_DEGRADED_BOOT")) {
+      // Loud on purpose. A degraded host in a log stream must be findable by grep.
+      log.warn({ env: source["APP_ENV"] }, `BOOTING DEGRADED — ${decision.reason}`);
+    }
+    return;
+  }
+
+  const env = (source["APP_ENV"] ?? "staging") as EnvName;
+  const report = checkReadiness(source, env, { consumer: "api" });
+  if (report.ok) return;
+
+  process.stderr.write(
+    `boot refused: ${decision.reason}\n` +
+      `  ${report.errors.length} configuration error${report.errors.length === 1 ? "" : "s"}:\n`,
+  );
+  for (const finding of report.errors) {
+    process.stderr.write(`  ✗ ${finding.variable}: ${finding.message}\n`);
+  }
+  process.stderr.write(
+    "  run `npm run check:readiness -- --env " + env + "` for the full report\n",
+  );
+  process.exit(1);
+}
+
+enforceBootContract(process.env, boot);
+
 // S07-06 AC-3: counters are silent by default (tests and scripts import the same
 // modules); the server is the one place a metric becomes a log line an alert can
 // parse. `metrics.counter` lines carry org_id/property_id/model and never prompt
@@ -83,6 +142,9 @@ const routes: Record<string, Handler> = {
     status: "ok",
     env: cfg?.env ?? "unknown",
     config: cfgError ? `degraded: ${cfgError}` : "resolved",
+    // A strict host cannot reach this route degraded — `enforceBootContract` would
+    // have exited. Seeing `tolerant` here on staging is a deliberate, greppable fact.
+    boot: boot.mode,
     startedAt,
   }),
   "/healthz/postgres": withConfig(async () => {
@@ -92,6 +154,9 @@ const routes: Record<string, Handler> = {
       status: "ok",
       database: status.currentDatabase,
       server: version,
+      // W00-13: hashed cluster identity, so two environments can prove they are not
+      // the same cluster without either of them publishing its hostname.
+      cluster: status.clusterFingerprint,
       availableExtensions: status.availableExtensions,
     };
   }),
@@ -252,6 +317,7 @@ server.listen(port, host, () => {
     {
       env: cfg?.env ?? "unknown",
       config: cfgError ? "degraded" : "resolved",
+      boot: boot.mode,
       routes: Object.keys(routes),
       addr: `http://${host}:${port}`,
     },

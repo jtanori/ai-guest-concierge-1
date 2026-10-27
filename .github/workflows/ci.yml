@@ -47,6 +47,106 @@ jobs:
       - run: npm ci
       - run: npm test
 
+  # W00-13 — the environment gate, on every PR. The charter's DoD is "CI
+  # `check:env` step green", and a gate that is only exercised by hand is a gate
+  # nobody has run since the day it was written. Three invocations, deliberately:
+  #
+  #   1. the gate REJECTS a shared staging/prod database (the failure the AC is
+  #      about) — asserted by expecting a non-zero exit,
+  #   2. the gate ACCEPTS three separate databases,
+  #   3. when the repository actually has the two URLs as secrets, the real matrix
+  #      runs too. Absent secrets, step 3 is skipped and says so; it is never
+  #      silently green.
+  #
+  # Placeholder URLs are used for 1 and 2 and never printed: `check:env` masks what
+  # it reports.
+  env-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+
+      - name: the gate rejects a shared staging/prod database
+        run: |
+          set +e
+          STAGING_DATABASE_URL="postgres://u:p@shared.example.com/concierge" \
+          PROD_DATABASE_URL="postgres://u:p@shared.example.com/concierge" \
+            npm run check:env
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then
+            echo "::error::check:env ACCEPTED a shared staging/prod database; the W00-13 gate is not working"
+            exit 1
+          fi
+          echo "gate refused the shared database as expected (exit $code)"
+
+      - name: the gate accepts three separate databases
+        run: |
+          LOCAL_DATABASE_URL="postgres://concierge:concierge@localhost:54329/concierge_local" \
+          STAGING_DATABASE_URL="postgres://u:p@staging.example.com/concierge" \
+          PROD_DATABASE_URL="postgres://u:p@prod.example.com/concierge" \
+            npm run check:env
+
+      - name: the gate rejects staging reusing the local database
+        run: |
+          set +e
+          LOCAL_DATABASE_URL="postgres://concierge:concierge@localhost:54329/concierge_local" \
+          STAGING_DATABASE_URL="postgres://concierge:concierge@localhost:54329/concierge_local" \
+          PROD_DATABASE_URL="postgres://u:p@prod.example.com/concierge" \
+            npm run check:env
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then
+            echo "::error::check:env accepted a deployed environment pointing at the local database"
+            exit 1
+          fi
+
+      - name: the real deployment matrix (needs both URLs as secrets)
+        if: ${{ secrets.STAGING_DATABASE_URL != '' && secrets.PROD_DATABASE_URL != '' }}
+        env:
+          STAGING_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+        run: npm run check:env
+
+      - name: readiness contract for a complete staging file
+        run: |
+          cat > /tmp/env.staging.ci <<'ENVFILE'
+          APP_ENV=staging
+          DATABASE_URL=postgres://u:p@staging.example.com/concierge
+          NEON_AUTH_ISSUER=https://staging.neonauth.example.com/concierge/auth
+          NEON_AUTH_JWKS_URL=https://staging.neonauth.example.com/concierge/auth/.well-known/jwks.json
+          GUEST_COOKIE_SECRET=ci-fixture-not-a-real-secret-0123456789
+          GUEST_PUBLIC_URL=https://staging.chat.example.com
+          LLM_PRIMARY_MODEL=gemini-2.5-flash
+          LLM_FALLBACK_MODEL=gemini-2.5-flash-lite
+          LLM_API_KEY=ci-fixture-key-0123456789
+          EMBEDDING_API_KEY=ci-fixture-embedding-key-0123456789
+          TURNSTILE_SECRET=ci-fixture-turnstile-0123456789
+          NEXT_PUBLIC_TURNSTILE_SITE_KEY=ci-fixture-site-key
+          EMAIL_FROM=Concierge <desk@example.com>
+          EMAIL_API_KEY=ci-fixture-email-key-0123456789
+          EMAIL_ESCALATION_FALLBACK=oncall@example.com
+          CONSOLE_BASE_URL=https://console.staging.example.com
+          REVIEW_API_URL=https://api.staging.example.com
+          ENVFILE
+          npm run check:readiness -- --env staging --file /tmp/env.staging.ci
+
+      - name: readiness refuses an incomplete staging file
+        run: |
+          printf 'APP_ENV=staging\nDATABASE_URL=postgres://u:p@h/d\n' > /tmp/env.staging.broken
+          set +e
+          npm run check:readiness -- --env staging --file /tmp/env.staging.broken
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then
+            echo "::error::check:readiness passed a staging file with no guest cookie secret and no models"
+            exit 1
+          fi
+
   # S01-01/02/03 — schema + RLS + isolation suite. `npm test` deliberately
   # excludes tests/db (its own config, long hooks, single worker); this job
   # provides the database and runs `npm run db:test`, which fails the build

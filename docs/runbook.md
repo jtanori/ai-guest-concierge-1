@@ -13,7 +13,7 @@ functions** via `neon init` + `neon deploy` (`neon.ts` is the policy of record).
 - **Proof:** `npm run smoke:neon` → `PASS postgres v18.6 · pg_trgm + vector available · neon_auth schema present`, `PASS auth · JWKS keys 1`, `PASS storage · put→get identical → delete`, `PASS functions · HTTP 200 "Hello from Neon Functions"`.
 - **App server:** `npm start` (pino JSON logs, tenant-context logger reused) serves `/healthz/{,postgres,auth,storage,function}` — all HTTP 200 with `ok` statuses; unknown paths 404.
 - **Env:** `.env.local` (gitignored) holds 10 Neon variables; `.env.example` documents them.
-- **Branch policy in neon.ts:** new non-default branches auto-expire (7d TTL) — staging/preview branches are therefore disposable by design; W00-13's "staging ≠ prod" closes via two branches with distinct credentials, checked by `npm run check:env`.
+- **Branch policy in neon.ts:** new non-default branches auto-expire (7d TTL) — staging/preview branches are therefore disposable by design. **Correction (W00-13, 2026-10-26): two branches of one Neon project are NOT two databases for the purposes of this AC.** They share the parent's cluster (they are copy-on-write forks of it), which is exactly the shared-infrastructure case the gate exists to refuse, and a 7-day TTL is not an environment. Staging and prod are two separate Neon projects, each verified by its own `cluster` fingerprint — see the W00-13 section below.
 
 ## Neon staging branch + two-environment gate (beyond-board infra) — wired and verified
 
@@ -107,30 +107,82 @@ $ npm test            # 3 passed (3)
 
 ## W00-13 — Three environments: local, staging, prod (0.75d)
 
-**AC (verbatim):** Staging and prod point at different databases.
+**AC (verbatim):** Three separate databases; no shared DB; CI proves staging and prod differ.
 
-**Status: NOT DONE — staging/prod cloud DBs pending (Phase B). Guard verified locally.**
+**Status: 🚧 ENGINEERING DONE (2026-10-26) — the AC's literal claim still needs two cloud databases, which only the owner can create.** Everything that can be built and proven without a cloud account is built and proven below. What is missing is not code: it is a Neon (or equivalent) project for staging and one for prod, and the secrets that hold their URLs.
 
-- [x] `src/config/env.ts` — `loadConfig` refuses to boot without `APP_ENV ∈ {local, staging, prod}` and a Postgres `DATABASE_URL`.
-- [x] `resolveDeploymentEnvironments` — the gate as a pure function: staging ≠ prod, and neither may reuse the local DB. Fail-fast, not a lint warning.
-- [x] `scripts/check-env.ts` (`npm run check:env`) — runs the gate with real URLs (Phase B) and exits non-zero on violation; masks secrets in output.
-- [x] `compose.yml` — local Postgres 17 **with pgvector** (D2/D3: embeddings populated from day one), host port 54329, named volume, healthcheck. Local only — staging/prod are cloud instances by definition.
-- [x] `.env.example` — template naming all three contexts; real env files gitignored.
-- [ ] **YOU (Phase B):** create two managed Postgres instances (Neon recommended — serverless, branching; or Supabase), separate regions/projects.
-- [ ] **YOU (Phase B):** run `LOCAL_DATABASE_URL=... STAGING_DATABASE_URL=... PROD_DATABASE_URL=... npm run check:env` → must print `OK — no shared databases`.
-- [ ] **Evidence (AC test):** the success run of `check:env` against the real staging/prod URLs. Also exercised locally with placeholder URLs (below) and 12 unit tests refusing every bad matrix.
+**Decision (owner, 2026-10-26):** scope = pipelines + environment contract; **fail fast outside local**; and the four operational requirements the owner named — a readiness script driven by a local `.env`, a secrets-where-they-are-needed check, smoke tests runnable against multiple environments, and migrations before deployment.
 
-**Evidence (local):**
+### What now exists
+
+| Piece | File | What it decides |
+|---|---|---|
+| The contract | `src/config/manifest.ts` | every variable's environments, secrecy, and home; 31 entries |
+| Readiness | `src/config/preflight.ts`, `scripts/check-readiness.ts` | is this environment complete, in one pass, secrets masked |
+| `.env` reader | `src/config/dotenv.ts` | reads `.env.<env>` without a dependency; malformed lines are errors |
+| Secret audit | `src/config/secrets-audit.ts`, `scripts/check-secrets.ts` | is each value in the store the pipeline reads |
+| Boot gate | `src/config/env.ts::resolveBootMode`, `src/server.ts` | staging/prod refuse to start half-configured |
+| Cluster identity | `src/server.ts` `/healthz/postgres` → `cluster` | Hashed `system_identifier`; proves two environments are not one database |
+| Smoke | `scripts/smoke.ts` | the same checks against one or many environments |
+| Pipeline | `.github/workflows/deploy.yml` | readiness → matrix → **migrate** → deploy → smoke |
+| CI gate | `.github/workflows/ci.yml` `env-check` | the gate is exercised on every PR, in both directions |
+
+### The bug that only a real boot found
+
+`checkReadiness` with a consumer filter emptied the error list and pushed back only the findings that belonged to the *other* consumer — so a strict staging process with a single `DATABASE_URL` booted happily, serving 503s. The unit tests passed: they asserted against the unfiltered report. Starting the server with `APP_ENV=staging` is what caught it, and `src/config/preflight.test.ts` now pins both directions (the API's errors stay fatal for `api`, the Next.js errors do not).
+
+That is the argument for the boot gate existing at all: the readiness report and the process that boots must be the same code path, or the check is a second opinion nobody consults.
+
+### Evidence (local, verified)
+
 ```text
-$ npm run check:env            # no URLs set → fails fast: "STAGING_DATABASE_URL missing or not Postgres"
-$ STAGING_DATABASE_URL=postgres://demo@staging.example.com/db `
-  PROD_DATABASE_URL=postgres://demo@prod.example.com/db npm run check:env
-OK — no shared databases:
-  staging -> postgres://staging.example.com/db
-  prod    -> postgres://prod.example.com/db
+$ APP_ENV=staging DATABASE_URL=postgres://… PORT=8898 node src/server.ts
+boot refused: APP_ENV=staging requires a complete configuration before it serves a guest
+  13 configuration errors:
+  ✗ NEON_AUTH_JWKS_URL: required in staging and absent — staff tokens cannot be verified …
+  ✗ GUEST_COOKIE_SECRET: … (exit 1, no listener)
+
+$ APP_ENV=local … node src/server.ts
+{"env":"local","config":"resolved","boot":"tolerant",…,"msg":"health server listening"}
+$ curl /healthz            → {"status":"ok","env":"local","boot":"tolerant"}
+$ curl /healthz/postgres   → {"database":"concierge_local","cluster":"3a04008a6800d732"}
+
+$ npm run check:readiness -- --env staging --file .env.staging   # complete file
+verdict: READY (0 errors, 0 warnings)                            exit 0
+$ npm run check:readiness -- --env staging --file .env.staging.bad
+verdict: NOT READY (11 errors) — every gap in one pass, no secret printed   exit 1
+
+$ npm run smoke -- --target local=http://127.0.0.1:8899
+PASS healthz · PASS env-matches-target · PASS postgres             exit 0
+
+$ npm run check:env   # shared staging/prod URL
+check:env FAILED: staging and prod must NOT share a database (W00-13 exit criterion)
+$ npm run check:env   # three distinct
+OK — no shared databases                                           exit 0
 ```
 
-Note: Docker Desktop was not running; `compose up -d` verification pending — retry before S01 (the local DB is not needed for the W00-13 AC itself).
+### What is NOT done, precisely
+
+- **The two cloud databases do not exist.** Until they do, the AC's first clause ("three separate databases") is unproven. This is why the item is 🚧 and not ✅.
+- **`src/server.ts` has no host.** The deploy workflow migrates the environment's database and deploys the Vercel surface (`api/**`), and says so in its own comments; it does not serve the product. Picking that host is an infrastructure decision for the owner.
+- **The smoke step is skipped until `STAGING_API_URL` / `PROD_API_URL` exist** as GitHub variables — visibly, with a warning and a job-summary line, never silently green.
+- **`SENTRY_DSN` is documented but not enforced** (W00-14 has no reporter yet).
+
+### What the owner runs to close the AC
+
+```powershell
+# 1. two Neon projects: "concierge-staging" and "concierge-prod" (separate projects,
+#    not two branches of one — a branch shares the parent's cluster)
+# 2. put the URLs where the pipeline reads them
+gh secret set STAGING_DATABASE_URL
+gh secret set PROD_DATABASE_URL
+# 3. the AC test — refuses if they are the same database
+npm run check:env
+# 4. prove it from the running services once a host exists
+npm run smoke -- --target staging=<url> --target prod=<url>   # compares `cluster`
+```
+
+`docs/environments.md` is the full operator guide: the contract, the four commands, the store matrix, and what the deploy workflow does in order.
 
 ## W00-14 — Error tracking + structured logging (0.50d)
 

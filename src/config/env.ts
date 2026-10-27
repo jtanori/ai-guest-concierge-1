@@ -251,3 +251,63 @@ export function loadLlmConfig(
     retries,
   };
 }
+
+/**
+ * W00-13 / DECISION (owner, 2026-10-26) — fail fast outside local.
+ *
+ * The server has always booted DEGRADED: a missing variable produced a healthy
+ * process whose routes answer 503 with a reason. That is right for a preview host and
+ * for a developer's shell, and wrong for staging and production, where it converts a
+ * configuration mistake into a running service that looks deployed. The failure is
+ * then discovered by the first guest, not by the deploy.
+ *
+ * So the rule is: `local` is tolerant, `staging` and `prod` are strict, and a host
+ * that genuinely needs to run degraded (a Vercel preview with no secrets) says so
+ * explicitly with `ALLOW_DEGRADED_BOOT=1`. Explicit beats inferred: a preview that
+ * degrades silently is indistinguishable from a staging deploy that is broken.
+ *
+ * **`prod` refuses the flag outright**, for the same reason `AI_FAIL_MODE` is
+ * refused there — a production host that can be made to skip its own configuration
+ * check by one environment variable is a host where a copied `.env` is an outage.
+ */
+export type BootMode = "strict" | "tolerant";
+
+export interface BootDecision {
+  mode: BootMode;
+  /** Why, in the words the boot log uses. */
+  reason: string;
+}
+
+export function resolveBootMode(
+  source: Record<string, string | undefined>,
+): BootDecision {
+  const raw = source["APP_ENV"] ?? "local";
+  if (!isEnvName(raw)) {
+    throw new ConfigError(`APP_ENV must be one of ${ENV_NAMES.join(" | ")}, got "${raw}"`);
+  }
+  if (raw === "local") {
+    return { mode: "tolerant", reason: "APP_ENV=local tolerates missing config by design" };
+  }
+
+  const flag = (source["ALLOW_DEGRADED_BOOT"] ?? "").trim().toLowerCase();
+  const wantsDegraded = flag === "1" || flag === "true";
+  if (!wantsDegraded) {
+    return {
+      mode: "strict",
+      reason: `APP_ENV=${raw} requires a complete configuration before it serves a guest`,
+    };
+  }
+  if (raw === "prod") {
+    throw new ConfigError(
+      "ALLOW_DEGRADED_BOOT is refused when APP_ENV=prod: production never skips its " +
+        "own configuration check. A host that can be made to boot half-configured by " +
+        "one copied variable is a host where that copy is an outage.",
+    );
+  }
+  return {
+    mode: "tolerant",
+    reason:
+      "ALLOW_DEGRADED_BOOT=1 on staging — this host answers 503 for unconfigured " +
+      "surfaces and must never be mistaken for a real staging deployment",
+  };
+}

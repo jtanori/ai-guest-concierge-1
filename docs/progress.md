@@ -1,4 +1,4 @@
-<!-- progress-snapshot: {"generatedAt":"2026-10-27 01:51","items":{"done":44,"partial":4,"todo":34,"total":82},"days":{"done":47.25,"partial":8,"todo":24.5,"total":79.75},"remainingDays":32.5,"perSprint":{"W00":{"doneItems":6,"items":20,"doneDays":2.75,"totalDays":8},"S01":{"doneItems":3,"items":3,"doneDays":5.75,"totalDays":5.75},"S02":{"doneItems":5,"items":5,"doneDays":5.5,"totalDays":5.5},"S03":{"doneItems":3,"items":3,"doneDays":5,"totalDays":5},"S04":{"doneItems":2,"items":3,"doneDays":3,"totalDays":5},"S05":{"doneItems":2,"items":3,"doneDays":3,"totalDays":5.5},"S06":{"doneItems":1,"items":3,"doneDays":1.5,"totalDays":5},"S07":{"doneItems":6,"items":6,"doneDays":4,"totalDays":4},"S08":{"doneItems":4,"items":4,"doneDays":5.5,"totalDays":5.5},"S09":{"doneItems":5,"items":5,"doneDays":4.5,"totalDays":4.5},"S10":{"doneItems":5,"items":5,"doneDays":5.25,"totalDays":5.25},"S11":{"doneItems":2,"items":5,"doneDays":1.5,"totalDays":5},"S12":{"doneItems":0,"items":4,"doneDays":0,"totalDays":4.5},"S13":{"doneItems":0,"items":3,"doneDays":0,"totalDays":2},"WA":{"doneItems":0,"items":8,"doneDays":0,"totalDays":7.75},"DEF":{"doneItems":0,"items":2,"doneDays":0,"totalDays":1.5}}} -->
+<!-- progress-snapshot: {"generatedAt":"2026-10-27 02:19","items":{"done":44,"partial":5,"todo":33,"total":82},"days":{"done":47.25,"partial":8.75,"todo":23.75,"total":79.75},"remainingDays":32.5,"perSprint":{"W00":{"doneItems":6,"items":20,"doneDays":2.75,"totalDays":8},"S01":{"doneItems":3,"items":3,"doneDays":5.75,"totalDays":5.75},"S02":{"doneItems":5,"items":5,"doneDays":5.5,"totalDays":5.5},"S03":{"doneItems":3,"items":3,"doneDays":5,"totalDays":5},"S04":{"doneItems":2,"items":3,"doneDays":3,"totalDays":5},"S05":{"doneItems":2,"items":3,"doneDays":3,"totalDays":5.5},"S06":{"doneItems":1,"items":3,"doneDays":1.5,"totalDays":5},"S07":{"doneItems":6,"items":6,"doneDays":4,"totalDays":4},"S08":{"doneItems":4,"items":4,"doneDays":5.5,"totalDays":5.5},"S09":{"doneItems":5,"items":5,"doneDays":4.5,"totalDays":4.5},"S10":{"doneItems":5,"items":5,"doneDays":5.25,"totalDays":5.25},"S11":{"doneItems":2,"items":5,"doneDays":1.5,"totalDays":5},"S12":{"doneItems":0,"items":4,"doneDays":0,"totalDays":4.5},"S13":{"doneItems":0,"items":3,"doneDays":0,"totalDays":2},"WA":{"doneItems":0,"items":8,"doneDays":0,"totalDays":7.75},"DEF":{"doneItems":0,"items":2,"doneDays":0,"totalDays":1.5}}} -->
 # Build progress
 
 <!-- GENERATED FILE — do not edit by hand.
@@ -6,7 +6,7 @@
      Source of truth for status: docs/07-master-backlog.xlsx, column K.
      Re-run this as part of every item's close-out (see the charter DoD). -->
 
-_Generated 2026-10-27 01:51 UTC from the master backlog._
+_Generated 2026-10-27 02:19 UTC from the master backlog._
 
 ## Overall
 
@@ -17,10 +17,10 @@ _Generated 2026-10-27 01:51 UTC from the master backlog._
 
 ```
 done            ██████████████░░░░░░░░░░  59.2%
-+ half of 🚧    ███████████████░░░░░░░░░  64.3%
++ half of 🚧    ████████████████░░░░░░░░  64.7%
 ```
 
-**4 items in flight** (8 d), **34 not started** (24.5 d), **32.5 d remaining** in total.
+**5 items in flight** (8.75 d), **33 not started** (23.75 d), **32.5 d remaining** in total.
 
 > The second bar counts an in-flight item at half its days. It is a scheduling estimate, not a status: an item with an unmet acceptance criterion is not done, however much of its work exists.
 
@@ -28,7 +28,7 @@ done            ██████████████░░░░░░░�
 
 | Sprint | Items done | Days done | Days total | Progress |
 | --- | --- | --- | --- | --- |
-| W00 | 6/20 | 2.75 | 8 | `██████░░░░░░░░░░` 34.38% |
+| W00 | 6/20 | 2.75 | 8 | `██████░░░░░░░░░░` 39.06% |
 | S01 | 3/3 | 5.75 | 5.75 | `████████████████` 100% |
 | S02 | 5/5 | 5.5 | 5.5 | `████████████████` 100% |
 | S03 | 3/3 | 5 | 5 | `████████████████` 100% |
@@ -51,6 +51,7 @@ Every item whose cell starts with 🚧, with the reason recorded there.
 
 | ID | Sprint | Item | Days | Status note |
 | --- | --- | --- | --- | --- |
+| W00-13 | W00 | Three environments: local, staging, prod | 0.75 | Engineering done (2026-10-26) — AC's 'three separate databases' still needs two cloud DBs, which only the owner can create. Built: src/config/manifest.ts (31 vars: envs, secrecy, home), preflight through the real loaders, scripts/check-readiness.ts (--file .env, every gap in one pass, secrets masked), check-secrets.ts (GitHub/Vercel/local), resolveBootMode (staging+prod REFUSE to boot half-configured; prod refuses ALLOW_DEGRADED_BOOT), hashed cluster fingerprint on /healthz/postgres (Neon names every branch neondb, so names cannot prove separation), scripts/smoke.ts (--target staging=… --target prod=…), deploy.yml (readiness → check:env → MIGRATE → deploy → smoke) and a CI env-check job that proves the gate rejects shared and accepts distinct. Local: strict staging boot exits 1 naming 13 gaps; local boots tolerant; smoke passes. 56 files/710 · 45/462. PENDING (owner): two Neon projects + STAGING/PROD_DATABASE_URL secrets, then npm run check:env. No host yet for src/server.ts — see docs/environments.md. |
 | S04-03 | S04 | Hybrid retrieval | 2 | AC-1/AC-2 done; AC-3 blocked on golden v2 (G1) |
 | S05-02 | S05 | Guardrail layer | 2.5 | AC-1/AC-2 done (citation+quote verification, banned content, sensitive/policy gate, reason codes; 356 unit + 184 db green). AC-3 (G2 ≤2% false answers) UNPROVEN — needs G1 golden set v2 + S06-03 harness. |
 | S06-01 | S06 | Public property-scoped web chat | 2 | AC-1/AC-2/AC-3 met as a working surface (real HTTP round trip, signed cookie, slug-only tenant, disclosure + handoff-as-message; 374 unit + 195 db green, web:build green). AC-1's 'on staging' half UNVERIFIED here — deploy is the operator step. |
@@ -71,12 +72,12 @@ Every item whose cell starts with 🚧, with the reason recorded there.
 
 | Measure | Now | Change |
 | --- | --- | --- |
-| Items done | 44 | +1 |
-| Days done | 47.25 | +0.5 |
-| Items in flight | 4 | — |
-| Days remaining | 32.5 | -0.5 |
+| Items done | 44 | — |
+| Days done | 47.25 | — |
+| Items in flight | 5 | +1 |
+| Days remaining | 32.5 | — |
 
-Previous report generated 2026-10-27 01:47.
+Previous report generated 2026-10-27 01:51.
 
 ## How to read this
 

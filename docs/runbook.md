@@ -1948,3 +1948,41 @@ $ npm run lint && npm run typecheck && npx tsc --noEmit -p web/tsconfig.json   #
 $ npm run web:build # ƒ /analytics emitted, 143 B / 103 kB
 ```
 **Owed:** a screenshot of the rendered screen. It cannot be taken from this environment — `/api/analytics` needs a verified Neon JWT and there is no JWKS here, so a browser would only ever show the sign-in redirect or the error state. It joins the other outstanding physical-evidence items (S07-01 QR scan, S08-01 stopwatch, S08-02 sources screenshot, S06-01 staging deploy). The ACs themselves do not depend on it: the values, the traceability and both languages are asserted in the suites above.
+
+## S11-03 — PII redaction + log hygiene (1.00d)
+
+**AC (verbatim):** A synthetic card number never reaches logs.
+
+- **AC-1** Luhn-valid card-like input is detected, refused in chat and never logged.
+- **AC-2** 90-day default retention for `messages.body` with a documented deletion path.
+- **AC-3** Log/test fixtures contain no real PII.
+
+**Status: ✅ — all three ACs verified. Migration 0030 (the repo's first since 0029).**
+
+**DEC-2 (owner, 2026-10-26) — hard-refuse the turn.** Of the five shapes offered, only the one that refuses the turn before anything is written satisfies AC-1 **as written**, and the AC is marked verbatim. Redact-in-place, redact-and-warn and tokenise all satisfy "never logged" while turning "refused" into "sanitized", which would have required amending the AC; outbound-only redaction was already shipped (`banned.ts` → `policy_block` on the model's answer) and does not touch the guest's inbound message, which is what the AC is about.
+
+The check is the **first statement** in `postGuestMessage`, above `withGuestSession`. That position is the point: a refusal that happens after a property lookup and an identity row is "we read it, then refused to store it", and it is not what the AC says. `tests/db/pii-block.db.test.ts` proves it by passing a **bogus slug** — a refusal that preceded slug resolution throws `CardNumberRefusedError`, not `UnknownPropertyError` — and by counting `conversations`, `messages` and `events` before and after (unchanged). A non-Luhn 12-digit run (`habitación 1234 5678 9012`) is **allowed through**: the false-positive half matters, and asserting `.rejects` there would have been testing the wrong thing (it resolves).
+
+**S11-03-1 (OPEN, needs the owner) — blocked turns are not an event.** The sensible event is `message_blocked`, but Appendix C's list is verbatim and `taxonomy.ts` implements it as a closed set (S10-01 pinned the same rule for the two deferred DF events). Adding a nineteenth name is a backlog amendment, not an implementation detail, so this landed as the **counter** `pii_blocked_total` instead of an event. Consequence to be honest about: a refused turn is **invisible to S10-02's rollups** — the counter is in-process, per replica, and resets on deploy; it is an alert signal, not a system of record. If the owner wants blocked turns in the dashboard, the amendment is one line in the plan and one in `taxonomy.ts` + 0001's CHECK.
+
+**AC-1's "never logged" is enforced at the writer.** `src/logging/redact.ts` installs a pino `hooks.logMethod` inside `createLogger`, so **every** line this process writes is deep-walked and every string masked by `maskPii` — including lines from code that has never heard of it. It is installed after the caller's options, so it cannot be opted out of by a call site. `reportError` masks twice: the log line, and the `Error` object handed to the reporter (Sentry in Phase B is a second sink with its own retention).
+
+**A bug the tests caught, worth keeping.** The first phone pattern turned `11111111-1111-5111-a111-111111111111` into `[phone]-a[phone]` — i.e. it would have masked `org_id`, `property_id` and `conversation_id`, the three fields W00-14 exists to guarantee, on every line. UUIDs are now lifted out before masking and restored after, and a test asserts a UUID survives. The false-negative direction is unchanged and deliberate: over-masking a room number is cheaper than under-masking a card.
+
+**AC-2 — retention, dry run by default.** `npm run retention -- --org <uuid>` **counts and changes nothing**; `--apply` redacts. The text is deleted and the **row survives** (`body = ''`, `body_redacted_at = now()`): deleting rows would rewrite every historical count that reads `messages` — conversation totals, the inbound/outbound reconciliation, S10-02's rollups for old days — and retention is about the guest's words, not the hotel's numbers. The window comes from `settings.retention_days` (default 90 in `DEFAULT_SETTINGS`, so **no settings migration**); `--days` overrides one run without persisting. Dry run and apply share one predicate (`RETENTION_PREDICATE`), because a dry run that reports a different number than the delete would be a safety feature nobody can use. The staff conversation view now says the text was deleted rather than showing a blank bubble.
+
+**Retention must never run against production without the owner's explicit approval**, and nothing schedules it (see S10-02's DEC-1). Its target: local fixtures and, once W00-13 is genuinely closed, a **durable** staging database — not the 7-day-expiring Neon branch.
+
+**0030 — two changes.** `messages.body_redacted_at` + a **partial** index `messages_retention_scan (property_id, created_at) WHERE body_redacted_at IS NULL` (a redacted row is never revisited, so a full index would grow for rows the job can only skip). And `events_payload_no_message_text`, a CHECK refusing the keys `body`, `card`, `card_number`, `message_text` in `events.payload` — the writer already refuses a non-object payload, so this constrains the path *around* it. **`question` is deliberately absent**: `knowledge_gap_created` carries the guest's question by design (S09-02's queue is built from those sentences), and forbidding it would have broken the product's own writer while pretending events were text-free. `tests/db/retention.db.test.ts` asserts all four refused keys.
+
+**AC-3 — fixtures carry only synthetic PII.** The suite's card is `4242 4242 4242 4242` (Luhn-valid, globally famous, not a real account); emails are `example.com`; phones are in the 555-style range. The logging suite asserts a *synthetic* card, email and phone are masked in every log shape and that the raw digit run never appears in the serialized line.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector 0.6.2 + pg_trgm 1.6, Node 22):**
+```text
+$ npm run db:migrate                # 30 applied from an EMPTY database (0030 lands)
+$ npm run retention -- --org <uuid> # dry run: "would redact 0 messages"
+$ npm run db:test                   # 44 files / 455 passed (retention: 6, pii-block: 5)
+$ npm test                          # 52 files / 663 passed (redaction: 10)
+$ npm run lint && npm run typecheck && npx tsc --noEmit -p web/tsconfig.json && npm run web:build   # clean
+```
+`tests/db/non-superuser.db.test.ts` and `tests/db/schema.db.test.ts` were bumped 29 → 30 on purpose: both are drift guards that make a new migration announce itself.

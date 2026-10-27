@@ -114,6 +114,8 @@ export interface DetailMessageWire {
   direction: "inbound" | "outbound";
   authorRole: "guest" | "ai" | "staff";
   body: string;
+  /** S11-03: set when the retention job removed the text (kept, not deleted). */
+  bodyRedactedAt: string | null;
   createdAt: string;
   aiRun: DetailAiRunWire | null;
 }

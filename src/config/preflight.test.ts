@@ -1,7 +1,9 @@
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { checkReadiness, maskSecret, scrubSecrets } from "./preflight.ts";
 import { VARIABLES, requirementsFor } from "./manifest.ts";
+import { loadEnvFile } from "./dotenv.ts";
 
 /**
  * W00-13 — the readiness report is what stands between a misconfigured host and a
@@ -246,6 +248,28 @@ describe("the manifest itself", () => {
       .filter((name): name is string => name !== undefined)
       .filter((name) => /^(STAGING|PROD|PRODUCTION)_|_(STAGING|PROD|PRODUCTION)$/.test(name));
     expect(suffixed).toEqual([]);
+  });
+
+  it("ships a template that actually works as a local file", () => {
+    // The claim `.env.example` makes in its first line — "cp this and run" — is
+    // testable, so it is tested. A template that needs editing before the app will
+    // start is a template people edit wrongly.
+    const example = loadEnvFile(fileURLToPath(new URL("../../.env.example", import.meta.url)));
+    const report = checkReadiness(example.values, "local");
+    expect(report.errors.map((entry) => `${entry.variable}: ${entry.message}`)).toEqual([]);
+    expect(example.values["APP_ENV"]).toBe("local");
+    expect(example.values["DATABASE_URL"]).toContain("localhost");
+  });
+
+  it("has a setup guide that names every variable", () => {
+    // docs/env-setup.md is where a value is obtained from a vendor. A variable that
+    // exists in the contract but not the guide is one the operator has to reverse
+    // engineer from the source at the worst possible moment.
+    const guide = readFileSync(new URL("../../docs/env-setup.md", import.meta.url), "utf8");
+    const undocumented = VARIABLES.filter(
+      (variable) => !new RegExp(`\\b${variable.name}\\b`).test(guide),
+    ).map((variable) => variable.name);
+    expect(undocumented).toEqual([]);
   });
 
   it("marks every secret as a secret in every consumer", () => {

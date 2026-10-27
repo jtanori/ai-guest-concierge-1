@@ -188,6 +188,9 @@ The script refuses to push `.env.staging` into the `production` environment when
 
 ### What the owner runs to close the AC
 
+Getting every value in the two files — a link and the exact clicks per provider — is
+[`docs/env-setup.md`](env-setup.md). The short version, once the files are written:
+
 ```powershell
 # 1. two Neon projects: "concierge-staging" and "concierge-prod" (separate projects,
 #    not two branches of one — a branch shares the parent's cluster)

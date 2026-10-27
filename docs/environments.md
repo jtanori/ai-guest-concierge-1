@@ -3,6 +3,10 @@
 W00-13. The contract is code (`src/config/manifest.ts`), the checks are scripts, and
 this page is how you use them.
 
+**Filling in the `.env` files for the first time? Read
+[`docs/env-setup.md`](env-setup.md) instead** — it has a link for every value and the
+exact clicks to get it. This page is what happens after the files exist.
+
 ## The contract, in one sentence
 
 Every variable declares **which environments require it**, whether it is a **secret**,
@@ -25,7 +29,8 @@ deploy reports green forever without ever having verified anything.
 ## Before you deploy
 
 ```bash
-# 1. write the file (never commit it — .env* is gitignored except .env.example)
+# 1. write the file (never commit it — .env* is gitignored except .env.example).
+#    Where each value comes from: docs/env-setup.md
 cp .env.example .env.staging
 
 # 2. complete it, then ask whether it is enough
@@ -176,6 +181,9 @@ npm run smoke -- \
 ```
 
 ## Seeding a new environment
+
+Getting the values themselves — a link and a set of clicks per provider — is
+[`docs/env-setup.md`](env-setup.md). The commands below assume the file exists.
 
 ```bash
 # 1. write the file from the contract, then check it is complete

@@ -4,6 +4,7 @@ import type { StaffSession, TenantContext } from "../auth/context.ts";
 import { assertTenantShape } from "../db/tenant.ts";
 import { writeAudit } from "../audit/write.ts";
 import { emitEvent } from "../events/emit.ts";
+import { CREATED_AT_ISO_SQL, TX_NOW_ISO_SQL, type CreatedAtIsoRow } from "../events/clock.ts";
 import { enqueueEmail } from "../notifications/email.ts";
 
 export const REQUEST_STATUSES = ["new", "acknowledged", "assigned", "resolved", "cancelled"] as const;
@@ -51,6 +52,11 @@ export async function transitionRequest(
   if (to === "new") throw new RequestLifecycleError("cannot reopen request");
   // Canonical request events require a conversation; never silently omit one.
   if (!row.conversation_id) throw new RequestLifecycleError("request has no conversation");
+  // Issue #147 option 3 — the stamp for the event this transition emits. `assignments`
+  // is one of the eight reconciled pairs, so on the assigned edge the event takes the
+  // assignment row's own created_at; every other edge has no paired business row to
+  // reconcile against and takes the transaction clock instead of a JS reading.
+  let assignedAtIso: string | null = null;
   if (to === "assigned") {
     const assignee = assigneeUserId ?? session.userUuid;
     const member = await client.query(
@@ -58,19 +64,24 @@ export async function transitionRequest(
       [context.propertyId, assignee],
     );
     if (!member.rowCount) throw new RequestLifecycleError("assignee is not a property member");
-    await client.query(
+    const assignment = await client.query<CreatedAtIsoRow>(
       `INSERT INTO assignments (org_id, property_id, request_id, assigned_to)
        VALUES ($1, $2, $3, $4)
-       ON CONFLICT (org_id, property_id, request_id, assigned_to) DO NOTHING`,
+       ON CONFLICT (org_id, property_id, request_id, assigned_to) DO NOTHING
+       RETURNING ${CREATED_AT_ISO_SQL}`,
       [context.orgId, context.propertyId, requestId, assignee],
     );
+    // DO NOTHING on a duplicate yields no row and therefore no stamp; the transition is
+    // still real and still emits, so it falls back to the transaction clock below.
+    if (assignment.rowCount === 1) assignedAtIso = assignment.rows[0]!.created_at_iso;
   }
-  await client.query(
+  const updated = await client.query<CreatedAtIsoRow>(
     `UPDATE service_requests SET status = $4,
        acknowledged_at = CASE WHEN $4 = 'acknowledged' THEN now() ELSE acknowledged_at END,
        acknowledged_by = CASE WHEN $4 = 'acknowledged' THEN $5::uuid ELSE acknowledged_by END,
        resolved_at = CASE WHEN $4 = 'resolved' THEN now() ELSE resolved_at END
-     WHERE org_id = $1 AND property_id = $2 AND request_id = $3`,
+     WHERE org_id = $1 AND property_id = $2 AND request_id = $3
+     RETURNING ${TX_NOW_ISO_SQL}`,
     [context.orgId, context.propertyId, requestId, to, session.userUuid],
   );
   await writeAudit(client, {
@@ -106,7 +117,8 @@ export async function transitionRequest(
     // Only legal non-identity transitions reach here: 'new' is not a target.
     await emitEvent(client, context, `request_${to}`, {
       ...context, conversationId: row.conversation_id, channel: "web",
-      language: null, topic: null, createdAt: new Date().toISOString(),
+      language: null, topic: null,
+      createdAt: assignedAtIso ?? updated.rows[0]!.created_at_iso,
     }, { request_id: requestId, actor_user_id: session.userUuid,
       ...(to === "assigned" ? { assigned_to: assigneeUserId ?? session.userUuid } : {}) });
   }

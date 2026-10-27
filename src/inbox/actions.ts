@@ -41,6 +41,7 @@ import { assertTenantShape, type TenantContext } from "../db/tenant.ts";
 import type { StaffSession } from "../auth/context.ts";
 import { writeAudit } from "../audit/write.ts";
 import { emitEvent } from "../events/emit.ts";
+import { CREATED_AT_ISO_SQL, type CreatedAtIsoRow } from "../events/clock.ts";
 import type { EventContext } from "../events/taxonomy.ts";
 import { LANGUAGES, type Lang } from "../i18n/catalog.ts";
 import { takeover, transition, type AiState } from "../conversation/state.ts";
@@ -129,10 +130,10 @@ async function insertStaffMessage(
   // `created_at` is taken from the database clock, like every other message: a
   // staff phone with a skewed clock must not appear to answer before the guest
   // asked.
-  const inserted = await client.query<{ message_id: string; created_at: Date }>(
+  const inserted = await client.query<{ message_id: string; created_at: Date } & CreatedAtIsoRow>(
     `INSERT INTO messages (org_id, property_id, conversation_id, direction, author_role, body, language)
      VALUES ($1, $2, $3, 'outbound', 'staff', $4, $5)
-     RETURNING message_id, created_at`,
+     RETURNING message_id, created_at, ${CREATED_AT_ISO_SQL}`,
     [context.orgId, context.propertyId, input.conversationId, input.body, input.language],
   );
   const row = inserted.rows[0]!;
@@ -140,14 +141,24 @@ async function insertStaffMessage(
     "UPDATE conversations SET last_activity_at = $4::timestamptz WHERE org_id = $1 AND property_id = $2 AND conversation_id = $3",
     [context.orgId, context.propertyId, input.conversationId, row.created_at],
   );
-  return { messageId: row.message_id, createdAt: row.created_at.toISOString() };
+  // The exact text, not row.created_at.toISOString(): a JS Date holds milliseconds
+  // while Postgres wrote microseconds, and the truncated value would place the event
+  // up to 999us before the row it describes (issue #147).
+  return { messageId: row.message_id, createdAt: row.created_at_iso };
 }
 
+/**
+ * `createdAtIso` is the business row's own created_at, read back from its INSERT — not
+ * a fresh JS clock reading. Issue #147 option 3: `messages_outbound_staff` and
+ * `assignments` are two of the eight reconciled pairs, so an event stamped from
+ * `new Date()` could sit on the far side of a reconcile window boundary from the row it
+ * describes and report a delta that looks like missing instrumentation.
+ */
 function eventContext(
   context: TenantContext,
   conversationId: string,
   language: Lang | null,
-  at: Date,
+  createdAtIso: string,
 ): EventContext {
   return {
     orgId: context.orgId,
@@ -156,7 +167,7 @@ function eventContext(
     channel: "web",
     language,
     topic: null,
-    createdAt: at.toISOString(),
+    createdAt: createdAtIso,
   };
 }
 
@@ -280,7 +291,7 @@ export async function replyToConversation(
     entityId: message.messageId,
     detail: { conversation_id: input.conversationId, characters: body.length },
   });
-  await emitEvent(client, context, "staff_message_sent", eventContext(context, input.conversationId, head.language, at), {
+  await emitEvent(client, context, "staff_message_sent", eventContext(context, input.conversationId, head.language, message.createdAt), {
     message_id: message.messageId,
     characters: body.length,
   });
@@ -342,16 +353,16 @@ export async function assignRequest(
     return { requestId, assignedTo: assignee, created: true };
   }
   // Additional assignees remain append-only; retries produce no event or audit.
-  const inserted = await client.query<{ assignment_id: string }>(
+  const inserted = await client.query<{ assignment_id: string } & CreatedAtIsoRow>(
     `INSERT INTO assignments (org_id, property_id, request_id, assigned_to)
      VALUES ($1, $2, $3, $4)
      ON CONFLICT (org_id, property_id, request_id, assigned_to) DO NOTHING
-     RETURNING assignment_id`,
+     RETURNING assignment_id, ${CREATED_AT_ISO_SQL}`,
     [context.orgId, context.propertyId, requestId, assignee],
   );
   const created = inserted.rowCount === 1;
   if (created) {
-    await emitEvent(client, context, "request_assigned", eventContext(context, input.conversationId, head.language, new Date()), {
+    await emitEvent(client, context, "request_assigned", eventContext(context, input.conversationId, head.language, inserted.rows[0]!.created_at_iso), {
       request_id: requestId, assigned_to: assignee, assignment_id: inserted.rows[0]!.assignment_id,
     });
     await writeAudit(client, { ...context, actorUserId: session.userUuid,

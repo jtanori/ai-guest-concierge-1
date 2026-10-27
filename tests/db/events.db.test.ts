@@ -471,20 +471,24 @@ describe("S10-01 — reconcile()", () => {
     ).rejects.toThrow(/earlier than/);
   });
 
-  it("PINS the clock skew of issue #147: a windowed delta of -1 that is not drift", async () => {
-    // The case above passes the SAME timestamp to the business row and its event,
-    // which is the right way to test the window predicate in isolation and the reason
-    // the suite could not see #147. Production does not do that: `conversations`
-    // takes its created_at from DEFAULT now() (the Postgres transaction clock) while
-    // the event takes a JS-side `new Date()`, so the two are independently derived
-    // and differ by whatever elapsed between them.
+  it("PINS what a window does when two stamps disagree (issue #147, now fixed at source)", async () => {
+    // HISTORICAL: this case used to reproduce a live bug. Production no longer does
+    // this — every producer now reads its own row's created_at back from the INSERT and
+    // stamps the event with it (src/events/clock.ts), so a row and its event carry one
+    // identical value and no boundary can fall between them. That is asserted against
+    // the real producers in tests/db/clock-agreement.db.test.ts.
     //
-    // Here the gap is exaggerated to ten seconds to make the boundary deterministic.
-    // A window cut between the two readings excludes the business row and includes
-    // its event, and the metric reports delta -1 with nothing missing: the exact
-    // false alarm a reconciliation must not page anyone for. This asserts the
-    // artifact exists so that no future caller can discover it as a surprise, and so
-    // that removing it (issue #147's option 3) fails a test and gets recorded.
+    // What remains here is the WINDOW's behaviour, characterised rather than assumed:
+    // given two stamps that do disagree, a cut between them excludes the row and
+    // includes its event, and the metric reports delta -1 with nothing missing. Keeping
+    // it is deliberate. It is the reason the original suite could not see #147 — the
+    // case above passes the SAME timestamp to both sides, and a test that constructs
+    // agreement cannot detect a disagreement. This one constructs the disagreement on
+    // purpose, so if a future producer ever reintroduces a second clock, the shape of
+    // the resulting false alarm is already on the record instead of being discovered by
+    // whoever is paged by it.
+    //
+    // The gap is exaggerated to ten seconds to make the boundary deterministic.
     const graph = await seedGraph();
     const businessAt = new Date(Date.now() - 60 * 60 * 1000);
     const eventAt = new Date(businessAt.getTime() + 10 * 1000);

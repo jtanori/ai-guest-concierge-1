@@ -35,6 +35,7 @@ import type pg from "pg";
 import { assertTenantShape, type TenantContext } from "../db/tenant.ts";
 import type { StaffSession } from "../auth/context.ts";
 import { emitEvent } from "../events/emit.ts";
+import { CREATED_AT_ISO_SQL, type CreatedAtIsoRow } from "../events/clock.ts";
 import { writeAudit } from "../audit/write.ts";
 import type { Lang } from "../i18n/catalog.ts";
 
@@ -96,17 +97,20 @@ export async function flagAnswer(
   const target = run.rows[0];
   if (target === undefined) throw new FlagNotFoundError(`no such answer: ${input.aiRunId}`);
 
-  const inserted = await client.query<{ flag_id: string }>(
+  const inserted = await client.query<{ flag_id: string } & CreatedAtIsoRow>(
     `INSERT INTO answer_flags (org_id, property_id, ai_run_id, flagged_by, note)
      VALUES ($1, $2, $3, $4, $5)
      ON CONFLICT (org_id, property_id, ai_run_id, flagged_by) DO NOTHING
-     RETURNING flag_id`,
+     RETURNING flag_id, ${CREATED_AT_ISO_SQL}`,
     [context.orgId, context.propertyId, input.aiRunId, session.userUuid, note],
   );
   if (inserted.rowCount !== 1) return { flagId: null, created: false };
 
   const flagId = inserted.rows[0]!.flag_id;
-  const at = new Date();
+  // Issue #147 option 3 — the flag row's own created_at, not a fresh JS reading.
+  // `answer_flags` is one of the eight reconciled pairs, so a window boundary
+  // between the row and its event used to read as a missing instrumentation.
+  const at = inserted.rows[0]!.created_at_iso;
 
   await emitEvent(
     client,
@@ -119,7 +123,7 @@ export async function flagAnswer(
       channel: "web",
       language: input.language ?? null,
       topic: null,
-      createdAt: at.toISOString(),
+      createdAt: at,
     },
     {
       ai_run_id: input.aiRunId,

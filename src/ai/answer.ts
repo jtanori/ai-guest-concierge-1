@@ -223,7 +223,7 @@ export async function recordOutage(
     org_id: context.orgId,
     property_id: context.propertyId,
   });
-  const aiRunId = await recordAiRun(client, context, {
+  const { aiRunId, createdAtIso: runAt } = await recordAiRun(client, context, {
     conversationId: input.conversationId,
     messageId: input.messageId,
     modelId: "none",
@@ -234,7 +234,7 @@ export async function recordOutage(
     latencyMs: null,
     usage: { attempts: outage.attempts, models: [...outage.modelIds], outage: true },
   });
-  await emitEvent(client, context, "message_failed", eventBase, {
+  await emitEvent(client, context, "message_failed", { ...eventBase, createdAt: runAt }, {
     reason_code: "provider_unavailable",
     attempts: outage.attempts,
     models: [...outage.modelIds],
@@ -489,7 +489,7 @@ export async function answerMessage(
     });
     // Never sent. The call still happened, so it still gets a row — that row is
     // how the parse-failure rate (S07-06's alert) is computed.
-    const aiRunId = await recordAiRun(client, context, {
+    const { aiRunId, createdAtIso: runAt } = await recordAiRun(client, context, {
       ...baseRun,
       decision: "escalate",
       reasonCode: "policy_block",
@@ -501,7 +501,7 @@ export async function answerMessage(
         violations: error.violations.slice(0, 5),
       },
     });
-    await emitEvent(client, context, "ai_escalated", eventBase, {
+    await emitEvent(client, context, "ai_escalated", { ...eventBase, createdAt: runAt }, {
       reason_code: "policy_block",
       detail: "contract_violation",
       ai_run_id: aiRunId,
@@ -521,14 +521,14 @@ export async function answerMessage(
     ...(deps.minConfidence === undefined ? {} : { minConfidence: deps.minConfidence }),
   });
   if (!guarded.ok) {
-    const aiRunId = await recordAiRun(client, context, {
+    const { aiRunId, createdAtIso: runAt } = await recordAiRun(client, context, {
       ...baseRun,
       decision: "escalate",
       reasonCode: guarded.reasonCode,
       confidence: output.confidence,
       usage: { ...baseRun.usage, guard: guarded.detail, violations: guarded.violations.slice(0, 5) },
     });
-    await emitEvent(client, context, "ai_escalated", eventBase, {
+    await emitEvent(client, context, "ai_escalated", { ...eventBase, createdAt: runAt }, {
       reason_code: guarded.reasonCode,
       detail: guarded.detail,
       ai_run_id: aiRunId,
@@ -544,13 +544,13 @@ export async function answerMessage(
   }
 
   // ---- 6. persist + emit ----------------------------------------------
-  const aiRunId = await recordAiRun(client, context, {
+  const { aiRunId, createdAtIso: runAt } = await recordAiRun(client, context, {
     ...baseRun,
     decision: toRunDecision(output.decision),
     reasonCode: output.reasonCode,
     confidence: output.confidence,
   });
-  await emitEvent(client, context, "ai_run_completed", eventBase, {
+  await emitEvent(client, context, "ai_run_completed", { ...eventBase, createdAt: runAt }, {
     ai_run_id: aiRunId,
     model_id: generated.modelId,
     prompt_version: promptVersion,
@@ -570,7 +570,7 @@ export async function answerMessage(
         quote: citation.quote,
       })),
     );
-    await emitEvent(client, context, "ai_answer_sent", eventBase, {
+    await emitEvent(client, context, "ai_answer_sent", { ...eventBase, createdAt: runAt }, {
       ai_run_id: aiRunId,
       citations: cited,
       source: "retrieval",
@@ -586,7 +586,7 @@ export async function answerMessage(
   }
 
   if (output.decision === "needs_human") {
-    await emitEvent(client, context, "ai_escalated", eventBase, {
+    await emitEvent(client, context, "ai_escalated", { ...eventBase, createdAt: runAt }, {
       ai_run_id: aiRunId,
       reason_code: output.reasonCode,
     });
@@ -599,7 +599,7 @@ export async function answerMessage(
     };
   }
 
-  await emitEvent(client, context, "no_answer_emitted", eventBase, {
+  await emitEvent(client, context, "no_answer_emitted", { ...eventBase, createdAt: runAt }, {
     ai_run_id: aiRunId,
     reason_code: output.reasonCode ?? "low_retrieval",
   });

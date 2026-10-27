@@ -1827,3 +1827,34 @@ $ npm test             # 49 files / 638 passed (+1 file, +9 tests: emission-cove
 $ npx tsc --noEmit && npx tsc --noEmit -p web/tsconfig.json && npm run lint && npm run web:build   # clean
 ```
 0029 re-verified by catalog inspection from empty after adding the locking note: `concierge_app` holds exactly `INSERT, SELECT` on `events`; `events_payload_object` present; `events_property_type_time` present as `(property_id, event_type, created_at DESC)`.
+
+## S10-01-1 — one clock for events and their business rows (issue #147, option 3)
+
+Follow-up to the S10-01 review. The owner chose **option 3** of #147: rather than tolerate or document the skew, remove its cause. Every producer now reads its own row's `created_at` back out of its INSERT and hands that exact value to `emitEvent`, so a business row and the event describing it carry one identical stamp and no reconcile window boundary can fall between them.
+
+**The mechanism is SQL, not JS, and that is the whole subtlety.** node-pg parses `timestamptz` into a JS `Date`, which holds **milliseconds**; Postgres stores **microseconds**. So `new Date(row.created_at).toISOString()` turns `23:11:39.871571` into `23:11:39.871Z` and the event lands up to 999us *before* the row it describes — a smaller copy of the exact bug being fixed, and the kind that survives review for months because the suite stays green. `src/events/clock.ts` therefore renders the timestamp to text inside Postgres (`to_char(created_at AT TIME ZONE 'UTC', …US…)`) and it never passes through a JS `Date`. Verified: the rendered string re-parses to the identical `timestamptz`.
+
+**The obvious shortcut was measured and rejected.** `now()` is the transaction timestamp and does not advance within a transaction — two readings 300ms apart returned the identical value, and an event inserted after that delay still equalled its business row exactly. So for the seven reconciled tables using `DEFAULT now()`, simply omitting the timestamp and letting `events.created_at` default would have aligned both sides for free. Two measurements killed it:
+
+- An event emitted in a **separate** transaction drifted **52ms**. Nothing in the types or the schema enforces that emits stay co-located with their business write, so correctness would have rested on an invariant no test asserts and a future refactor could break silently.
+- `messages` does not use the column default. `insertMessage` stamps `clock_timestamp()` on purpose, so the inbound and outbound rows of one turn do not tie and `ORDER BY created_at` has something to order. Measured against a default-stamped event the message row landed **1ms ahead** — the one table that most needs ordering is the one the shortcut cannot serve.
+
+**What changed:** `captureRequest` (which lost `CaptureRequestInput.at` entirely — it moved *only* the event's timestamp, so it was the knob that widened the skew arbitrarily), `recordGap` (whose `eventBase` is now `Omit<EventContext, "createdAt">`, so the compiler rejects a caller supplying one), `insertMessage` and `insertStaffMessage` (both were already returning a timestamp, but truncated through a JS `Date`), `resolveConversation`, `insertStaffMessage`'s `assignments` sibling in `assignRequest`, `transitionRequest`, `flagAnswer`, and `recordAiRun` — whose return type changed from `string` to `{ aiRunId, createdAtIso }` so the seven `ai_run_id`-bearing emits in `answer.ts` can share the run row's stamp.
+
+**A second, unrelated bug fell out of writing the tests.** The `ai_runs` metric counted `DISTINCT payload->>'ai_run_id'` over *every* event. But `answer_flagged_wrong` names a run and is written when a person reviews the answer — possibly days later, correctly stamped from its own `answer_flags` row. A window holding the flag but not the run counted one distinct run against zero rows: `delta -1`, phantom drift on a database with nothing missing. Same failure class as #147, reached by a different route — not two clocks disagreeing about one moment, but two moments being counted as one. Fixed by `AI_RUN_TERMINAL_EVENT_TYPES` in `src/events/reconcile.ts`, with a drift guard that fails if an unclassified event type is ever found carrying `ai_run_id`.
+
+**Test design, because the obvious version proves nothing.** `tests/db/clock-agreement.db.test.ts` drives the real producers (`postGuestMessage`, `replyToConversation`, `assignRequest`, `flagAnswer`, `recordGap`) rather than inserting a row and an event by hand — a hand-built pair only tests the fixture's own consistency, which is exactly how the original window test missed #147, by giving both sides the same timestamp and so *constructing* agreement instead of observing it. Three guards matter:
+
+- Every comparison happens **in SQL**. Comparing in JS would round both sides to milliseconds and pass with the rows 999us apart.
+- Every assertion counts how many rows the join **matched** and fails at zero. A mismatch count of 0 is what a vacuous test looks like: rename a payload key, or stop emitting the event, and the join matches nothing while reporting perfect agreement.
+- `deps.now` is injected as a date **three decades wrong**, and a case asserts no event anywhere carries it — so a producer this suite forgot to drive still fails loudly.
+
+Two authoring failures worth keeping: a `no_answer` stub with a numeric `confidence` is a contract violation, so the guardrail gate returned before the gap was recorded and metric 7 matched zero rows; and with no seeded corpus the pipeline short-circuits *before* the model is called, emitting `no_answer_emitted` with no `ai_run_id` at all, which would have left metric 8 passing on nothing.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector 0.6.2 + pg_trgm 1.6):**
+```text
+$ npm run db:migrate   # 29 applied from an EMPTY database
+$ npm run db:test      # 40 files / 427 passed (+1 file, +12 tests: clock-agreement)
+$ npm test             # 49 files / 638 passed
+$ npx tsc --noEmit && npx tsc --noEmit -p web/tsconfig.json && npm run lint && npm run web:build   # clean
+```

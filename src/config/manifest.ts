@@ -8,17 +8,42 @@
  * watching. The list below is the answer, in one place, and every entry names the
  * loader that enforces it.
  *
- * ## Three ideas, deliberately kept separate
+ * ## Two contracts, deliberately separate
  *
- *  - **`requiredIn`** — missing here fails the readiness check and, outside `local`,
- *    fails the boot (see `resolveBootMode`). This is the hard contract.
- *  - **`recommendedIn`** — missing here is a warning, never a failure. Used for
- *    `local`, where a developer without a Turnstile key should still be able to run
- *    the suite. A warning that blocks work is a warning people learn to bypass.
- *  - **`store`** — WHERE the value has to exist for a deployed environment. A
- *    variable can be correct in the repo and absent in the place that actually
- *    deploys it; that is the gap `check-secrets.ts` reports and `secrets:sync`
- *    closes.
+ * The contract has exactly two halves, and conflating them is how a variable's
+ * *type* and a stage's *requirements* drift apart:
+ *
+ *  - **`CORE` — what a variable IS.** Its name, its type (secret or plain), where it
+ *    lives (`store`), who reads it (`consumer`), the either/or group it belongs to,
+ *    and why it exists. Environment-independent: a credential does not become a
+ *    different kind of thing between staging and production.
+ *  - **`STAGES` — what one environment REQUIRES.** The per-stage sub-contract: two
+ *    lists of names drawn from `CORE`, `required` (missing fails readiness and, the
+ *    deployed boot) and `recommended` (missing warns). This is the only place that
+ *    knows staging differs from local.
+ *
+ * A stage sub-contract can only name variables the core contract declares — the
+ * module refuses to load otherwise, so a gate can never require a variable that
+ * does not exist (the `GEMINI_API_KEY` failure: a gate in `scripts/` and a workflow
+ * referenced a name no contract had ever heard of, because nothing connected code
+ * reads back to this file). `contract-coverage.test.ts` closes the same hole from
+ * the other direction: every env name read in `src/`, `scripts/`, `web/` or any
+ * workflow must be declared here.
+ *
+ * ## Three ideas, kept in their halves
+ *
+ *  - **required / recommended** live in `STAGES`. Missing from `required` fails the
+ *    readiness check and, outside `local`, the boot (see `resolveBootMode`). Missing
+ *    from `recommended` is a warning, never a failure — a warning that blocks work is
+ *    a warning people learn to bypass.
+ *  - **`store`** lives in `CORE` — WHERE the value has to exist for a deployed
+ *    environment. A variable can be correct in the repo and absent in the place that
+ *    actually deploys it; that is the gap `check-secrets.ts` reports and
+ *    `secrets:sync` closes.
+ *  - **`secret`** lives in `CORE` — the variable's type. `secrets:sync` writes
+ *    `secret: true` with `gh secret set` and `secret: false` with `gh variable set`;
+ *    the workflow guards assert every `${{ secrets.X }}` in a workflow is declared
+ *    secret and every `${{ vars.X }}` is not.
  *
  * ## One name, one environment — never a suffix per environment
  *
@@ -32,9 +57,11 @@
  *
  * ## What is NOT in here
  *
- * `SENTRY_DSN` is listed but never enforced: W00-14 has no reporter wired yet, so
+ * `SENTRY_DSN` is declared but never enforced: W00-14 has no reporter wired yet, so
  * requiring it would fail a production deploy over a feature that does not exist.
  * A manifest that demands things it cannot use trains people to ignore it.
+ * `TEST_DATABASE_URL` is absent on purpose: it is test-runner plumbing, not a value
+ * any environment or pipeline reads.
  */
 import type { EnvName } from "./env.ts";
 
@@ -63,14 +90,16 @@ export type Consumer = "api" | "web" | "ci" | "deploy";
  */
 export type Store = "github-environment" | "github-repo" | "vercel" | "process";
 
-export interface VariableSpec {
+/**
+ * The core contract: what one variable IS, in every environment.
+ *
+ * No `required`/`recommended` here on purpose — those are the stage's business
+ * (`STAGES` below). Everything here is a property of the name itself.
+ */
+export interface CoreVariable {
   name: string;
   consumer: Consumer;
-  /** Missing → failure. */
-  requiredIn: readonly EnvName[];
-  /** Missing → warning. */
-  recommendedIn?: readonly EnvName[];
-  /** Never printed, never logged, never in a report. */
+  /** Never printed, never logged, never in a report — and synced with `gh secret set`. */
   secret: boolean;
   /**
    * Variables that satisfy each other (an issuer is `NEON_AUTH_ISSUER` **or**
@@ -82,20 +111,38 @@ export interface VariableSpec {
   why: string;
   /**
    * True when the variable is documented but not yet enforced. Shown as
-   * "not enforced" rather than silently counted as optional.
+   * "not enforced" rather than silently counted as optional, and the module
+   * refuses to put a planned variable in any stage's `required` list.
    */
   planned?: boolean;
 }
 
-const ALL: readonly EnvName[] = ["local", "staging", "prod"];
-const DEPLOYED: readonly EnvName[] = ["staging", "prod"];
+/**
+ * One environment's sub-contract: which core variables this stage needs, and how
+ * loudly. Every name referenced here must exist in `CORE` — validated at module
+ * load, so a typo fails every script and test that imports the contract instead of
+ * quietly requiring nothing.
+ */
+export interface StageContract {
+  /** Missing → readiness error; outside `local`, boot failure. */
+  required: readonly string[];
+  /** Missing → warning. Never blocking. */
+  recommended: readonly string[];
+}
 
-export const VARIABLES: readonly VariableSpec[] = [
+export interface VariableSpec extends CoreVariable {
+  /** Environments whose stage sub-contract lists this name as required. Derived. */
+  requiredIn: readonly EnvName[];
+  /** Environments whose stage sub-contract lists this name as recommended. Derived. */
+  recommendedIn?: readonly EnvName[];
+}
+
+const ENVIRONMENTS: readonly EnvName[] = ["local", "staging", "prod"];
+
+export const CORE: readonly CoreVariable[] = [
   {
     name: "APP_ENV",
     consumer: "api",
-    requiredIn: DEPLOYED,
-    recommendedIn: ["local"],
     secret: false,
     store: "process",
     why: "selects the whole config matrix; an unset value defaults to local, which is the one environment that tolerates everything else being missing",
@@ -103,7 +150,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "DATABASE_URL",
     consumer: "api",
-    requiredIn: ALL,
     secret: true,
     store: "github-environment",
     why: "every environment points at its own database; the deploy job runs migrations with the value from its own GitHub Environment",
@@ -111,7 +157,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "LOG_LEVEL",
     consumer: "api",
-    requiredIn: [],
     secret: false,
     store: "process",
     why: "defaults to debug locally and info elsewhere; set it to quiet a noisy host",
@@ -119,7 +164,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "APP_NAME",
     consumer: "api",
-    requiredIn: [],
     secret: false,
     store: "process",
     why: "defaulted; only set it to distinguish two deployments in one log sink",
@@ -127,8 +171,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "NEON_AUTH_JWKS_URL",
     consumer: "api",
-    requiredIn: DEPLOYED,
-    recommendedIn: ["local"],
     secret: false,
     store: "github-environment",
     why: "staff tokens cannot be verified without it, so every staff route answers 503",
@@ -136,8 +178,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "NEON_AUTH_ISSUER",
     consumer: "api",
-    requiredIn: DEPLOYED,
-    recommendedIn: ["local"],
     secret: false,
     oneOf: "auth-issuer",
     store: "github-environment",
@@ -146,8 +186,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "NEON_AUTH_BASE_URL",
     consumer: "api",
-    requiredIn: DEPLOYED,
-    recommendedIn: ["local"],
     secret: false,
     oneOf: "auth-issuer",
     store: "github-environment",
@@ -156,7 +194,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "NEON_AUTH_AUDIENCE",
     consumer: "api",
-    requiredIn: [],
     secret: false,
     store: "github-environment",
     why: "defaulted to the issuer; override only if the branch's tokens carry a different audience",
@@ -164,8 +201,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "GUEST_COOKIE_SECRET",
     consumer: "api",
-    requiredIn: DEPLOYED,
-    recommendedIn: ["local"],
     secret: true,
     store: "github-environment",
     why: "signs the anonymous guest identity cookie; a default would be a published signing key",
@@ -173,7 +208,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "GUEST_PUBLIC_URL",
     consumer: "api",
-    requiredIn: DEPLOYED,
     secret: false,
     store: "github-environment",
     why: "the bare origin a QR code encodes; unset, a printed card points at an internal hostname",
@@ -181,7 +215,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "LLM_PRIMARY_MODEL",
     consumer: "api",
-    requiredIn: ALL,
     secret: false,
     store: "github-environment",
     why: "the pinned model id; never defaulted, because a floating alias is a different model in six months",
@@ -189,7 +222,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "LLM_FALLBACK_MODEL",
     consumer: "api",
-    requiredIn: ALL,
     secret: false,
     store: "github-environment",
     why: "the second pinned model; the same id twice is the same failure twice",
@@ -197,8 +229,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "LLM_API_KEY",
     consumer: "api",
-    requiredIn: DEPLOYED,
-    recommendedIn: ["local"],
     secret: true,
     store: "github-environment",
     why: "without it the host cannot answer a single guest message",
@@ -206,7 +236,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "LLM_BASE_URL",
     consumer: "api",
-    requiredIn: [],
     secret: false,
     store: "github-environment",
     why: "defaulted to the Gemini endpoint",
@@ -214,7 +243,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "LLM_TIMEOUT_MS",
     consumer: "api",
-    requiredIn: [],
     secret: false,
     store: "github-environment",
     why: "defaulted to 8s; bounded by the guest's patience, not by a vendor's SLA",
@@ -222,7 +250,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "LLM_RETRIES",
     consumer: "api",
-    requiredIn: [],
     secret: false,
     store: "github-environment",
     why: "defaulted to two; the ceiling is four because the guest is the one waiting",
@@ -230,8 +257,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "EMBEDDING_API_KEY",
     consumer: "api",
-    requiredIn: DEPLOYED,
-    recommendedIn: ["local"],
     secret: true,
     store: "github-environment",
     why: "the vector branch of retrieval; without it the product answers from lexical + trigram only",
@@ -239,7 +264,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "EMBEDDING_MODEL",
     consumer: "api",
-    requiredIn: [],
     secret: false,
     store: "github-environment",
     why: "defaulted to the model that emits the 1536 dimensions D3 locked",
@@ -250,7 +274,6 @@ export const VARIABLES: readonly VariableSpec[] = [
     // genuinely wants a longer batch timeout.
     name: "EMBEDDING_TIMEOUT_MS",
     consumer: "api",
-    requiredIn: [],
     secret: false,
     store: "github-environment",
     why: "per-request timeout for the embedding provider; 20000 by default",
@@ -258,7 +281,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "EMBEDDING_BATCH_SIZE",
     consumer: "api",
-    requiredIn: [],
     secret: false,
     store: "github-environment",
     why: "chunks per embedding request, 1..128; 16 by default",
@@ -266,7 +288,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "EMBEDDING_BASE_URL",
     consumer: "api",
-    requiredIn: [],
     secret: false,
     store: "github-environment",
     why: "defaulted to the OpenAI endpoint",
@@ -274,7 +295,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "TURNSTILE_SECRET",
     consumer: "api",
-    requiredIn: DEPLOYED,
     secret: true,
     store: "github-environment",
     why: "the bot check on the first guest message; a control that is on only if someone remembered is off",
@@ -282,7 +302,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "NEXT_PUBLIC_TURNSTILE_SITE_KEY",
     consumer: "web",
-    requiredIn: DEPLOYED,
     secret: false,
     store: "vercel",
     why: "without the site key no widget renders, so the server's bot check has no token to verify",
@@ -290,7 +309,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "EMAIL_FROM",
     consumer: "api",
-    requiredIn: ALL,
     secret: false,
     store: "github-environment",
     why: "the escalation sender; a default would be a published address every deployment shares",
@@ -298,8 +316,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "EMAIL_API_KEY",
     consumer: "api",
-    requiredIn: DEPLOYED,
-    recommendedIn: ["local"],
     secret: true,
     store: "github-environment",
     why: "the provider key; without it a queued escalation is a row nobody sends",
@@ -307,7 +323,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "EMAIL_ESCALATION_FALLBACK",
     consumer: "api",
-    requiredIn: DEPLOYED,
     secret: false,
     store: "github-environment",
     why: "where a request goes when the property configured no contacts; no default exists on purpose",
@@ -315,7 +330,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "CONSOLE_BASE_URL",
     consumer: "api",
-    requiredIn: DEPLOYED,
     secret: false,
     store: "github-environment",
     why: "builds the link in every escalation email; the local default points recipients at their own machine",
@@ -323,8 +337,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "REVIEW_API_URL",
     consumer: "web",
-    requiredIn: DEPLOYED,
-    recommendedIn: ["local"],
     secret: false,
     store: "vercel",
     why: "the only address the staff screen calls, from the Next server, never the browser",
@@ -334,7 +346,6 @@ export const VARIABLES: readonly VariableSpec[] = [
     // this entry exists so the variable is documented and not required anywhere.
     name: "AI_FAIL_MODE",
     consumer: "api",
-    requiredIn: [],
     secret: false,
     store: "process",
     why: "none | once | always — turns an AI outage into an input; refused when APP_ENV=prod",
@@ -342,7 +353,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "TURNSTILE_TIMEOUT_MS",
     consumer: "api",
-    requiredIn: [],
     secret: false,
     store: "github-environment",
     why: "how long the bot check waits before treating the check as unavailable; 3000 by default",
@@ -350,7 +360,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "SENTRY_DSN",
     consumer: "api",
-    requiredIn: [],
     secret: true,
     store: "github-environment",
     planned: true,
@@ -359,7 +368,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "ALLOW_DEGRADED_BOOT",
     consumer: "api",
-    requiredIn: [],
     secret: false,
     store: "process",
     why: "staging-only escape hatch for preview hosts; refused outright in prod (see resolveBootMode)",
@@ -370,7 +378,6 @@ export const VARIABLES: readonly VariableSpec[] = [
     // requirement because nothing boots differently without it.
     name: "API_URL",
     consumer: "ci",
-    requiredIn: [],
     secret: false,
     store: "github-environment",
     why: "the origin `smoke` probes after deploying; absent, the smoke step skips visibly instead of pretending",
@@ -381,7 +388,6 @@ export const VARIABLES: readonly VariableSpec[] = [
     // environment would mean three copies of one credential.
     name: "VERCEL_TOKEN",
     consumer: "ci",
-    requiredIn: [],
     secret: true,
     store: "github-repo",
     why: "deploys the Vercel surface; one token for one project, so it is repo-level and not per-environment",
@@ -389,7 +395,6 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "VERCEL_ORG_ID",
     consumer: "ci",
-    requiredIn: [],
     secret: false,
     store: "github-repo",
     why: "identifies the Vercel team; identical across environments",
@@ -397,12 +402,211 @@ export const VARIABLES: readonly VariableSpec[] = [
   {
     name: "VERCEL_PROJECT_ID",
     consumer: "ci",
-    requiredIn: [],
     secret: false,
     store: "github-repo",
     why: "identifies the Vercel project; identical across environments",
   },
+  // ── platform plumbing: read by src/server.ts, declared so the contract (and the
+  // coverage test) can see them. None is required by any stage yet: no environment
+  // runs `src/server.ts` — hosting is issue #153 — and every reader below defaults
+  // or fails at its own route, not at boot. When a host lands, its stage sub-contract
+  // adopts them instead of this section growing a second source of truth.
+  {
+    name: "HOST",
+    consumer: "api",
+    secret: false,
+    store: "process",
+    why: "bind address for src/server.ts; defaulted to 127.0.0.1 by the hosting convention",
+  },
+  {
+    name: "PORT",
+    consumer: "api",
+    secret: false,
+    store: "process",
+    why: "bind port for src/server.ts; defaulted to 3000 by the hosting convention",
+  },
+  {
+    name: "AWS_ACCESS_KEY_ID",
+    consumer: "api",
+    secret: true,
+    store: "process",
+    why: "half of the credential pair for the asset bucket; /healthz/storage and the asset routes throw StorageEnvError without it",
+  },
+  {
+    name: "AWS_SECRET_ACCESS_KEY",
+    consumer: "api",
+    secret: true,
+    store: "process",
+    why: "the other half of that pair; stored wherever its host stores credentials, never printed",
+  },
+  {
+    name: "AWS_REGION",
+    consumer: "api",
+    secret: false,
+    store: "process",
+    why: "region of the asset bucket; not secret, but the S3 client refuses to guess",
+  },
+  {
+    name: "AWS_ENDPOINT_URL_S3",
+    consumer: "api",
+    secret: false,
+    store: "process",
+    why: "S3-compatible endpoint (Neon's asset storage); the client refuses to guess a vendor",
+  },
+  {
+    name: "NEON_FUNCTION_HELLO_BASE_URL",
+    consumer: "api",
+    secret: false,
+    store: "process",
+    why: "the Neon Function /healthz/function probes; missing, that probe reports the failure honestly",
+  },
+  {
+    name: "SMOKE_PROPERTY_SLUG",
+    consumer: "ci",
+    secret: false,
+    store: "process",
+    why: "which property `npm run smoke` scores; defaulted to demo",
+  },
 ];
+
+/**
+ * The per-environment sub-contracts. Every name must exist in `CORE`, must not
+ * appear in both lists of one stage, and a `planned` variable must appear in
+ * neither — all three invariants are checked when this module loads, and again in
+ * `contract-coverage.test.ts` with readable failures.
+ */
+export const STAGES: Readonly<Record<EnvName, StageContract>> = {
+  local: {
+    required: ["DATABASE_URL", "LLM_PRIMARY_MODEL", "LLM_FALLBACK_MODEL", "EMAIL_FROM"],
+    recommended: [
+      "APP_ENV",
+      "NEON_AUTH_JWKS_URL",
+      "NEON_AUTH_ISSUER",
+      "NEON_AUTH_BASE_URL",
+      "GUEST_COOKIE_SECRET",
+      "LLM_API_KEY",
+      "EMBEDDING_API_KEY",
+      "EMAIL_API_KEY",
+      "REVIEW_API_URL",
+    ],
+  },
+  staging: {
+    required: [
+      "APP_ENV",
+      "DATABASE_URL",
+      "NEON_AUTH_JWKS_URL",
+      "NEON_AUTH_ISSUER",
+      "NEON_AUTH_BASE_URL",
+      "GUEST_COOKIE_SECRET",
+      "GUEST_PUBLIC_URL",
+      "LLM_PRIMARY_MODEL",
+      "LLM_FALLBACK_MODEL",
+      "LLM_API_KEY",
+      "EMBEDDING_API_KEY",
+      "TURNSTILE_SECRET",
+      "NEXT_PUBLIC_TURNSTILE_SITE_KEY",
+      "EMAIL_FROM",
+      "EMAIL_API_KEY",
+      "EMAIL_ESCALATION_FALLBACK",
+      "CONSOLE_BASE_URL",
+      "REVIEW_API_URL",
+    ],
+    recommended: [],
+  },
+  prod: {
+    // Prod is exactly as strict as staging — no stricter, no looser. Prod being
+    // stricter is how a deploy passes every rehearsal and fails on the night.
+    required: [
+      "APP_ENV",
+      "DATABASE_URL",
+      "NEON_AUTH_JWKS_URL",
+      "NEON_AUTH_ISSUER",
+      "NEON_AUTH_BASE_URL",
+      "GUEST_COOKIE_SECRET",
+      "GUEST_PUBLIC_URL",
+      "LLM_PRIMARY_MODEL",
+      "LLM_FALLBACK_MODEL",
+      "LLM_API_KEY",
+      "EMBEDDING_API_KEY",
+      "TURNSTILE_SECRET",
+      "NEXT_PUBLIC_TURNSTILE_SITE_KEY",
+      "EMAIL_FROM",
+      "EMAIL_API_KEY",
+      "EMAIL_ESCALATION_FALLBACK",
+      "CONSOLE_BASE_URL",
+      "REVIEW_API_URL",
+    ],
+    recommended: [],
+  },
+};
+
+// ── Load-time validation. A stage that names a variable the core contract does not
+// declare is the exact failure class this file exists to prevent: the check would
+// gate on a name nothing reads, or require a name no loader knows. Failing at import
+// beats failing at 3 a.m.
+function validateContracts(): void {
+  const coreByName = new Map(CORE.map((variable) => [variable.name, variable]));
+  if (coreByName.size !== CORE.length) {
+    throw new Error("contract: CORE declares the same variable name twice");
+  }
+  for (const [env, stage] of Object.entries(STAGES)) {
+    const required = new Set(stage.required);
+    if (required.size !== stage.required.length) {
+      throw new Error(`contract: STAGES.${env}.required names a variable twice`);
+    }
+    for (const name of stage.required) {
+      const core = coreByName.get(name);
+      if (core === undefined) {
+        throw new Error(
+          `contract: STAGES.${env}.required names "${name}", which CORE does not declare`,
+        );
+      }
+      if (core.planned === true) {
+        throw new Error(
+          `contract: STAGES.${env}.required demands "${name}", which is planned and not enforced anywhere`,
+        );
+      }
+    }
+    const seen = new Set(required);
+    if (new Set(stage.recommended).size !== stage.recommended.length) {
+      throw new Error(`contract: STAGES.${env}.recommended names a variable twice`);
+    }
+    for (const name of stage.recommended) {
+      const core = coreByName.get(name);
+      if (core === undefined) {
+        throw new Error(
+          `contract: STAGES.${env}.recommended names "${name}", which CORE does not declare`,
+        );
+      }
+      if (seen.has(name)) {
+        throw new Error(
+          `contract: STAGES.${env} lists "${name}" as both required and recommended`,
+        );
+      }
+      seen.add(name);
+    }
+  }
+}
+validateContracts();
+
+/**
+ * The joined view: core facts + the stages that demand them. This is what every
+ * consumer — readiness, sync, audit, the workflow guards — has always read, kept as
+ * the derived projection of the two contracts so no caller needs to know about the
+ * split. `requiredIn`/`recommendedIn` are computed from `STAGES`; editing a stage
+ * list is the only way to change them.
+ */
+export const VARIABLES: readonly VariableSpec[] = CORE.map((core) => {
+  const requiredIn = ENVIRONMENTS.filter((env) => STAGES[env].required.includes(core.name));
+  const recommendedIn = ENVIRONMENTS.filter((env) =>
+    STAGES[env].recommended.includes(core.name),
+  );
+  return {
+    ...core,
+    requiredIn,
+    ...(recommendedIn.length > 0 ? { recommendedIn } : {}),
+  };
+});
 
 export const VARIABLE_BY_NAME: ReadonlyMap<string, VariableSpec> = new Map(
   VARIABLES.map((variable) => [variable.name, variable]),

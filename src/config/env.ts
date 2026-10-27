@@ -89,10 +89,18 @@ export function resolveDeploymentEnvironments(input: {
   const { localUrl, stagingUrl, prodUrl } = input;
 
   if (!stagingUrl || !isPostgresUrl(stagingUrl)) {
-    throw new ConfigError("STAGING_DATABASE_URL missing or not Postgres");
+    // The value comes from the `--staging <file>` argument, never from an env
+    // var named STAGING_DATABASE_URL — naming that variable here would send an
+    // operator to set a name nothing reads (the suffixed names the contract
+    // forbids). One name, one environment: the file's own DATABASE_URL.
+    throw new ConfigError(
+      "staging DATABASE_URL missing or not Postgres (the --staging file's DATABASE_URL)",
+    );
   }
   if (!prodUrl || !isPostgresUrl(prodUrl)) {
-    throw new ConfigError("PROD_DATABASE_URL missing or not Postgres");
+    throw new ConfigError(
+      "prod DATABASE_URL missing or not Postgres (the --prod file's DATABASE_URL)",
+    );
   }
   if (stagingUrl === prodUrl) {
     throw new ConfigError(

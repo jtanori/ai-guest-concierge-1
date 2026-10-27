@@ -78,12 +78,15 @@ describe("resolveDeploymentEnvironments — the no-shared-database gate (W00-13)
   });
 
   it("FAILS fast on missing or malformed URLs", () => {
+    // The messages name the file argument, not a STAGING_DATABASE_URL variable:
+    // no such name exists anywhere, and pointing an operator at a name nothing
+    // reads is how the suffixed-name pattern comes back.
     expect(() => resolveDeploymentEnvironments({ prodUrl: PG("p") })).toThrow(
-      /STAGING_DATABASE_URL/,
+      /staging DATABASE_URL missing/,
     );
     expect(() =>
       resolveDeploymentEnvironments({ stagingUrl: PG("s") }),
-    ).toThrow(/PROD_DATABASE_URL/);
+    ).toThrow(/prod DATABASE_URL missing/);
     expect(() =>
       resolveDeploymentEnvironments({ stagingUrl: "mysql://x", prodUrl: PG("p") }),
     ).toThrow(/not Postgres/);

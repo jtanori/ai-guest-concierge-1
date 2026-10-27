@@ -81,7 +81,12 @@ jobs:
       EMBEDDING_API_KEY: ${{ secrets.EMBEDDING_API_KEY }}
       TURNSTILE_SECRET: ${{ secrets.TURNSTILE_SECRET }}
       NEON_AUTH_JWKS_URL: ${{ vars.NEON_AUTH_JWKS_URL }}
+      # The auth-issuer group is oneOf: either member satisfies the contract, and
+      # staging stores NEON_AUTH_BASE_URL (NEON_AUTH_ISSUER unset). Mapping only
+      # ISSUER made the job's readiness gate fail on a group whose partner value
+      # existed in the environment but never reached the job. Map both.
       NEON_AUTH_ISSUER: ${{ vars.NEON_AUTH_ISSUER }}
+      NEON_AUTH_BASE_URL: ${{ vars.NEON_AUTH_BASE_URL }}
       GUEST_PUBLIC_URL: ${{ vars.GUEST_PUBLIC_URL }}
       EMAIL_FROM: ${{ vars.EMAIL_FROM }}
       EMAIL_API_KEY: ${{ secrets.EMAIL_API_KEY }}
@@ -109,8 +114,18 @@ jobs:
       # `npm run check:env` locally with all three URLs before the first deploy.
 
       - name: where each secret must live
+        # Not continue-on-error: this is the ONLY gate that audits the web-tier
+        # values (store: vercel) — readiness runs --consumer api and downgrades
+        # them to warnings, so without a fatal check here a missing
+        # NEXT_PUBLIC_TURNSTILE_SITE_KEY ships to production. It runs before
+        # migrate, so a gap stops the deploy before anything is touched.
+        # --allow-unknown keeps the honest half: a store this job cannot read is
+        # reported unknown rather than failing the deploy over a permission.
+        env:
+          # So `gh` can list the stores from CI. A permission the token lacks still
+          # degrades that store to "unknown" — reported, never a fake green.
+          GH_TOKEN: ${{ github.token }}
         run: npm run check:secrets -- --env staging --allow-unknown
-        continue-on-error: true
 
       - name: migrate BEFORE deploying
         run: npm run db:migrate
@@ -155,7 +170,9 @@ jobs:
       EMBEDDING_API_KEY: ${{ secrets.EMBEDDING_API_KEY }}
       TURNSTILE_SECRET: ${{ secrets.TURNSTILE_SECRET }}
       NEON_AUTH_JWKS_URL: ${{ vars.NEON_AUTH_JWKS_URL }}
+      # oneOf group: both members mapped, in both jobs (see staging above).
       NEON_AUTH_ISSUER: ${{ vars.NEON_AUTH_ISSUER }}
+      NEON_AUTH_BASE_URL: ${{ vars.NEON_AUTH_BASE_URL }}
       GUEST_PUBLIC_URL: ${{ vars.GUEST_PUBLIC_URL }}
       EMAIL_FROM: ${{ vars.EMAIL_FROM }}
       EMAIL_API_KEY: ${{ secrets.EMAIL_API_KEY }}
@@ -183,8 +200,10 @@ jobs:
       # `npm run check:env` locally with all three URLs before the first deploy.
 
       - name: where each secret must live
+        # Fatal, before migrate — see the staging job's comment above.
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: npm run check:secrets -- --env prod --allow-unknown
-        continue-on-error: true
 
       - name: migrate BEFORE deploying
         run: npm run db:migrate

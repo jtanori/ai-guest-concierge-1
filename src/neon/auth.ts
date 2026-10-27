@@ -18,9 +18,14 @@ export class AuthEnvError extends Error {}
 export async function authStatus(
   source: Record<string, string | undefined> = process.env,
 ): Promise<AuthStatus> {
-  const baseUrl = source["NEON_AUTH_BASE_URL"];
+  // The contract's auth-issuer group is oneOf: NEON_AUTH_ISSUER or
+  // NEON_AUTH_BASE_URL satisfies token verification (loadAuthConfig). Requiring
+  // BASE_URL here made a contract-valid ISSUER-only host pass readiness and then
+  // throw on /healthz/auth — two gates, one rule, applied differently. The probe
+  // targets whichever member the host actually has (both are base URLs).
+  const baseUrl = source["NEON_AUTH_BASE_URL"] ?? source["NEON_AUTH_ISSUER"];
   const jwksUrl = source["NEON_AUTH_JWKS_URL"];
-  if (!baseUrl) throw new AuthEnvError("missing NEON_AUTH_BASE_URL");
+  if (!baseUrl) throw new AuthEnvError("missing NEON_AUTH_ISSUER or NEON_AUTH_BASE_URL");
   if (!jwksUrl) throw new AuthEnvError("missing NEON_AUTH_JWKS_URL");
 
   const [baseRes, jwksRes] = await Promise.all([

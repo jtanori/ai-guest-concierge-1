@@ -132,9 +132,13 @@ function auditOne(
 }
 
 /**
- * Audit every variable the environment requires. Only `requiredIn` variables are
- * audited: chasing the recommended ones produces a list of things nobody is going to
- * do, which is how the important line gets lost.
+ * Audit every variable the environment requires, plus the repo-level plumbing the
+ * deploy cannot run without. Only `requiredIn` variables used to be audited — which
+ * left `VERCEL_TOKEN` (requiredIn: [], it is not something the *host* needs) invisible
+ * to `check:secrets` even though the deploy hard-fails without it. Chasing the
+ * recommended ones still produces a list of things nobody is going to do, which is
+ * how the important line gets lost; repo plumbing is not recommended, it is load-
+ * bearing, so it is audited for every environment.
  */
 export function auditSecrets(
   env: EnvName,
@@ -142,7 +146,9 @@ export function auditSecrets(
   localNames: ReadonlySet<string> | null = null,
 ): AuditResult {
   const required = VARIABLES.filter(
-    (variable) => variable.requiredIn.includes(env) && !variable.planned,
+    (variable) =>
+      !variable.planned &&
+      (variable.requiredIn.includes(env) || variable.store === "github-repo"),
   );
   const rows = required.map((variable) => auditOne(variable, env, remote, localNames));
 

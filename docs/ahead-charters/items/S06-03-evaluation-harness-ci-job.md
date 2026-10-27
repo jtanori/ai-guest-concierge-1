@@ -76,7 +76,7 @@ Eval runs as the demo tenant; the canary must use a dedicated read-only property
 Recorded open questions:
 
 - **The absolute gate is implemented but not enforced in CI.** With golden v1 on the demo fixture it fails on any reading (25% false answers), and not because the guardrail is broken: 12 of the 13 answerable questions ask about topics the seven fixture articles do not cover. `--enforce` is one flag away and is the thing G1 unlocks.
-- **The canary has never run.** It needs `GEMINI_API_KEY` as a repository secret; that is operator work, the same shape as S06-01's staging deploy.
+- **The canary has never run.** It originally gated on a `GEMINI_API_KEY` repository secret — a name no loader read (the provider adapter consumes `LLM_API_KEY`). The gate was removed with W00-13's contract coverage test; the job is bound to `environment: staging` and reads staging's own `LLM_API_KEY` and pinned model ids. It still needs its first observed run.
 ## 9. Definition of done
 
 - [x] CI green: `lint`, `typecheck`, `test`, `db-test`, `preview`, `web-build`, and the new `eval` job.
@@ -91,7 +91,7 @@ Recorded open questions:
 
 **AC-2 met.** `evaluateGate` enforces the Appendix D thresholds and is boundary-tested (4/200 passes a 2% cap, 4/199 fails it). The PR job runs the evaluation and `compareToBaseline` against `data/golden/eval-baseline.json`, so a change that makes any score worse fails, and a shrunken golden set fails too. `set -o pipefail` is in the workflow because `npm run eval | tee` would otherwise hide the exit code.
 
-**AC-3 delivered, unproven.** The `canary` job exists and only runs on `schedule`/`workflow_dispatch` with `GEMINI_API_KEY`; no key is present in the PR job. It has not run yet.
+**AC-3 delivered, unproven.** The `canary` job exists and only runs on `schedule`/`workflow_dispatch`, bound to the `staging` GitHub Environment so it reads the same `LLM_API_KEY` and pinned model ids the deployed API boots with; no key is present in the PR job. It has not run yet.
 
 **G2 is measured, and it is red: 25% false answers, 40% correct-or-escalated, 100% correct escalation, 53.8% needless escalation on 20 questions.** The number is honest and the causes are separable:
 

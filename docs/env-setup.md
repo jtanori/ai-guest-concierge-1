@@ -261,6 +261,23 @@ are placed as GitHub *variables*, not secrets. Only the token is a secret.
 
 ---
 
+## 10. Platform plumbing — `HOST`, `PORT`, `SMOKE_PROPERTY_SLUG`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `AWS_ENDPOINT_URL_S3`, `NEON_FUNCTION_HELLO_BASE_URL`
+
+Declared in the contract so a coverage test can see them, and required by **no**
+stage yet — no environment runs `src/server.ts` until a host is chosen (issue #153).
+Every reader below defaults or fails at its own route, never at boot.
+
+| Value | Where |
+|---|---|
+| `HOST`, `PORT` | The hosting convention injects these (defaults `127.0.0.1:3000`). |
+| `SMOKE_PROPERTY_SLUG` | Optional. Which property `npm run smoke` scores; defaults to `demo`. |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | The asset bucket's credential pair, from whatever host runs the API. `/healthz/storage` and the asset routes throw `StorageEnvError` without it. |
+| `AWS_REGION` | Region of that bucket. |
+| `AWS_ENDPOINT_URL_S3` | The S3-compatible endpoint (Neon's asset storage). |
+| `NEON_FUNCTION_HELLO_BASE_URL` | The Neon Function that `/healthz/function` probes; absent, that probe reports the failure honestly. |
+
+---
+
 ## Verify, then publish
 
 ```bash

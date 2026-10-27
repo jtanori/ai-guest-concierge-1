@@ -1,15 +1,15 @@
 # Master Sprint Backlog v2
 
-**Single source of truth for the build** · 80 items · 14 sprints · 21 October 2026
+**Single source of truth for the build** · 81 items · 14 sprints · 21 October 2026
 
 | | |
 |---|---|
-| **Lean pilot path** | **69.75 dev-days** across 14 sprints |
+| **Lean pilot path** | **70.00 dev-days** across 14 sprints |
 | **WhatsApp track** | 7.75 dev-days, built W14–16 after the pilot |
 | **Deferred to MVP-1.5** | 1.50 dev-days |
-| **Total backlog** | **79.00 dev-days** / 80 items |
+| **Total backlog** | **79.25 dev-days** / 81 items |
 | **Capacity** | 14 sprints × 5 productive days = 70 days |
-| **Unallocated** | **0.25 days** — W13 carries 3 days of carry-forward room |
+| **Unallocated** | **0.00 days** — W13 carries 3 days of carry-forward room |
 | **Pilot live** | Monday **W14** · readout **W17** · WhatsApp **W18** |
 
 ---
@@ -22,7 +22,7 @@ v1 had a backlog, but it was not safe to build from. Three defects:
 2. **S13 was empty.** The launch sprint had no work items — staff training, content corrections and the GM go/no-go were described in prose but never costed. They are now three items totalling 2.0 days.
 3. **No acceptance criteria.** "Definition of done" entries were vague. Every item now has a **testable** acceptance criterion: *"Pool hours answered by lookup, not generation"* rather than *"facts table works"*.
 
-The day count rose from 67.75 to **69.75** as a direct result — the missing launch work is now visible rather than assumed to be free.
+The day count rose from 67.75 to **70.00** as a direct result — the missing launch work is now visible rather than assumed to be free.
 
 ---
 
@@ -30,23 +30,23 @@ The day count rose from 67.75 to **69.75** as a direct result — the missing la
 
 | Sprint | Week | Name | Items | Days | Cum. weeks | Slack | Gate |
 |---|---|---|---|---|---|---|---|
-| **W00** | W0 | Foundation lock | 20 | 8.00 | 1.60 | -3.00 | G0 |
-| **S01** | W1 | Schema and tenancy | 3 | 5.75 | 2.75 | -0.75 | — |
-| **S02** | W2 | Identity, settings, audit | 5 | 5.50 | 3.85 | -0.50 | — |
-| **S03** | W3 | Knowledge | 3 | 5.00 | 4.85 | +0.00 | G1 |
-| **S04** | W4 | Retrieval and review | 3 | 5.00 | 5.85 | +0.00 | — |
-| **S05** | W5 | AI core and evaluation | 3 | 5.50 | 6.95 | -0.50 | G2 |
-| **S06** | W6 | Guest chat and evaluation | 3 | 5.00 | 7.95 | +0.00 | — |
-| **S07** | W7 | Chat hardening | 6 | 4.00 | 8.75 | +1.00 | — |
-| **S08** | W8 | Staff inbox | 4 | 5.50 | 9.85 | -0.50 | — |
-| **S09** | W9 | Requests and notifications | 5 | 4.50 | 10.75 | +0.50 | — |
-| **S10** | W10 | Analytics | 3 | 4.50 | 11.65 | +0.50 | — |
-| **S11** | W11 | Reliability | 5 | 5.00 | 12.65 | +0.00 | — |
-| **S12** | W12 | Pilot readiness | 4 | 4.50 | 13.55 | +0.50 | G3 |
-| **S13** | W13 | Launch | 3 | 2.00 | 13.95 | +3.00 | — |
-| | | **Total** | **70** | **69.75** | **13.95** | **+0.25** | |
+| **W00** | W0 | Foundation lock | 21 | 8.25 | 1.65 | -3.25 | G0 |
+| **S01** | W1 | Schema and tenancy | 3 | 5.75 | 2.80 | -0.75 | — |
+| **S02** | W2 | Identity, settings, audit | 5 | 5.50 | 3.90 | -0.50 | — |
+| **S03** | W3 | Knowledge | 3 | 5.00 | 4.90 | +0.00 | G1 |
+| **S04** | W4 | Retrieval and review | 3 | 5.00 | 5.90 | +0.00 | — |
+| **S05** | W5 | AI core and evaluation | 3 | 5.50 | 7.00 | -0.50 | G2 |
+| **S06** | W6 | Guest chat and evaluation | 3 | 5.00 | 8.00 | +0.00 | — |
+| **S07** | W7 | Chat hardening | 6 | 4.00 | 8.80 | +1.00 | — |
+| **S08** | W8 | Staff inbox | 4 | 5.50 | 9.90 | -0.50 | — |
+| **S09** | W9 | Requests and notifications | 5 | 4.50 | 10.80 | +0.50 | — |
+| **S10** | W10 | Analytics | 3 | 4.50 | 11.70 | +0.50 | — |
+| **S11** | W11 | Reliability | 5 | 5.00 | 12.70 | +0.00 | — |
+| **S12** | W12 | Pilot readiness | 4 | 4.50 | 13.60 | +0.50 | G3 |
+| **S13** | W13 | Launch | 3 | 2.00 | 14.00 | +3.00 | — |
+| | | **Total** | **71** | **70.00** | **14.00** | **+0.00** | |
 
-> Work completes at **13.95 weeks**. W14 is launch; W13 carries the launch work and roughly three days of carry-forward room.
+> Work completes at **14.00 weeks**. W14 is launch; W13 carries the launch work and roughly three days of carry-forward room.
 
 ---
 
@@ -55,7 +55,7 @@ The day count rose from 67.75 to **69.75** as a direct result — the missing la
 ### W00 · W0 — Foundation lock
 
 **Goal:** Close G0: decisions signed, approval clocks started, pilot secured  
-**Days:** 8.00 · **Gate:** G0  
+**Days:** 8.25 · **Gate:** G0  
 **Exit:** All 14 ADRs signed · Meta verification submitted · pilot content owner named with dates · repo, CI and three environments live · fixture hotel seeded
 
 | ID | Track | Item | Days | Depends | Acceptance criteria |
@@ -80,6 +80,7 @@ The day count rose from 67.75 to **69.75** as a direct result — the missing la
 | `W00-18` | Founder | Privacy notice + DPA to Mexican counsel | 0.25 | — | Sent; turnaround expected |
 | `W00-19` | Eng | Event taxonomy written | 0.50 | — | 18 events merged as a typed module; contract test passes; no dashboard before this exists |
 | `W00-20` | Both | G0 review | 0.25 | W00-03, W00-08, W00-10 | Every W00 row ticked; unsigned ADRs block S01 |
+| `W00-21` | Eng | Environment contract: core contract + per-stage sub-contracts | 0.25 | W00-13 | No workflow or loader gates a name the contract does not declare; prod stage requires exactly what staging requires |
 
 ### S01 · W1 — Schema and tenancy
 
@@ -254,7 +255,7 @@ The day count rose from 67.75 to **69.75** as a direct result — the missing la
 
 | Sprint | Eng days | Founder days | Total | Status |
 |---|---|---|---|---|
-| W00 | 4.25 | 3.75 | 8.00 | **Over by 3.00** |
+| W00 | 4.50 | 3.75 | 8.25 | **Over by 3.25** |
 | S01 | 5.75 | 0.00 | 5.75 | **Over by 0.75** |
 | S02 | 5.50 | 0.00 | 5.50 | **Over by 0.50** |
 | S03 | 5.00 | 0.00 | 5.00 | Fits |
@@ -268,9 +269,9 @@ The day count rose from 67.75 to **69.75** as a direct result — the missing la
 | S11 | 5.00 | 0.00 | 5.00 | Fits |
 | S12 | 4.50 | 0.00 | 4.50 | Fits |
 | S13 | 0.50 | 1.50 | 2.00 | Fits |
-| **Total** | | | **69.75** | 70 available |
+| **Total** | | | **70.00** | 70 available |
 
-**W00 is the structural problem.** 8.0 days of work in a 5-day week — 4.0 engineering and 4.0 founder/GTM. It fits only if two people work in parallel. **Solo, it runs to mid-W1**, which pushes every downstream date by three days.
+**W00 is the structural problem.** 8.2 days of work in a 5-day week — 4.5 engineering and 3.8 founder/GTM. It fits only if two people work in parallel. **Solo, it runs to mid-W1**, which pushes every downstream date by three days.
 
 ---
 
@@ -337,4 +338,4 @@ The day count rose from 67.75 to **69.75** as a direct result — the missing la
 
 ---
 
-*Totals reconcile: 69.75 + 7.75 + 1.50 = **79.00 dev-days**.*
+*Totals reconcile: 70.00 + 7.75 + 1.50 = **79.25 dev-days**.*

@@ -80,6 +80,12 @@ jobs:
   canary:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    # W00-13: the canary measures the SAME pair the app boots with, so it reads
+    # staging's own contract values — one credential, one name (LLM_API_KEY),
+    # rotated in one place. Binding the environment is what resolves
+    # `secrets.LLM_API_KEY` to staging's value. Tradeoff: if staging later gets
+    # required reviewers, the nightly run queues for approval.
+    environment: staging
     services:
       postgres:
         image: pgvector/pgvector:pg17
@@ -96,9 +102,16 @@ jobs:
           --health-retries 10
     env:
       DATABASE_URL: postgres://concierge:concierge@localhost:54329/concierge_local
-      # The only place a model key exists. Never echoed: the script reports
-      # scores, and the provider adapter's errors are already redacted.
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      # The staging environment is bound above, so these resolve to staging's own
+      # contract values — the SAME secret and model ids the deployed API boots
+      # with (`buildAi` → `loadLlmConfig` reads exactly these three names). The
+      # old GEMINI_API_KEY read a name nothing consumed; the gate checked it,
+      # `loadLlmConfig` never did, and the run died one step later on the missing
+      # model ids anyway. One name per credential, never echoed: the script
+      # reports scores, and the provider adapter's errors are already redacted.
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      LLM_PRIMARY_MODEL: ${{ vars.LLM_PRIMARY_MODEL }}
+      LLM_FALLBACK_MODEL: ${{ vars.LLM_FALLBACK_MODEL }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

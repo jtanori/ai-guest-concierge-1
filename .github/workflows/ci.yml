@@ -7,8 +7,9 @@ on:
 
 # W00-12 — "A PR produces a preview URL and a green check."
 # lint/typecheck/test run immediately. preview deploys the PR to the linked
-# Vercel project (repo secrets VERCEL_TOKEN / VERCEL_ORG_ID / VERCEL_PROJECT_ID)
-# and probes the deployed endpoint — the proof is a green check AND a
+# Vercel project (repo secret VERCEL_TOKEN; repo variables VERCEL_ORG_ID /
+# VERCEL_PROJECT_ID — the contract's type, see manifest.ts) and probes the
+# deployed endpoint — the proof is a green check AND a
 # reachable URL printed in the log. The deployed surface is the CI probe in
 # api/health.ts (vercel.json pins @vercel/node on api/** — the zero-config
 # root-entrypoint pipeline dead-ends on our noEmit tsconfig) until S01 ships
@@ -233,8 +234,13 @@ jobs:
       - name: Deploy PR preview to Vercel
         id: deploy
         env:
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          # The contract declares the ids non-secret (they sit in dashboard URLs)
+          # and `secrets:sync` writes them as repo VARIABLES. `secrets.` here made
+          # ci.yml contradict the manifest while deploy.yml agreed with it — and
+          # `deploy-workflow.test.ts` only guarded deploy.yml, so nothing failed.
+          # Only the token is a secret.
+          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
           URL="$(npx -y vercel@latest deploy --yes --token "$VERCEL_TOKEN")"

@@ -163,3 +163,38 @@ export interface GapPageWire {
   medianOpenAgeDays: number | null;
   openCount: number;
 }
+
+/**
+ * S10-03 — the dashboard, as `src/analytics/dashboard.ts` serialises it.
+ *
+ * `value` is a **string**, not a number, and that is deliberate: it is the exact
+ * text Postgres returned from `rollups.value`, so the screen cannot round it,
+ * re-derive it, or accumulate floating-point error. Formatting happens at render
+ * time and nothing else happens at all.
+ *
+ * `days` holds stored rows only. An empty array means "no rollup was written",
+ * which renders as no data — never as zero.
+ */
+export interface DashboardDayWire {
+  windowStart: string;
+  value: string;
+}
+
+export interface DashboardTileWire {
+  id: string;
+  metric: string;
+  labelId: string;
+  descriptionId: string;
+  unit: "count" | "ratio" | "seconds";
+  querySql: string;
+  days: DashboardDayWire[];
+  latest: DashboardDayWire | null;
+}
+
+export interface DashboardWire {
+  from: string;
+  to: string;
+  timeZone: string;
+  generatedAt: string | null;
+  tiles: DashboardTileWire[];
+}

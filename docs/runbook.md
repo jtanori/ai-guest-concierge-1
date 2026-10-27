@@ -1907,3 +1907,44 @@ $ npm run db:test                         # 41 files / 437 passed (rollups: 10)
 $ npm test                                # 50 files / 647 passed (rollups pure:  9)
 ```
 AC-2 is asserted per metric against `SELECT count(*) FROM events` bounded by the property's local day (`(date::timestamp AT TIME ZONE tz)`), not against the rollup's own output.
+
+## S10-03 — Management dashboard (2.00d)
+
+**AC (verbatim):** Every tile traceable to a query a manager can explain.
+
+- **AC-1** Each tile links to its `rollups.metric` name and the SQL that produced it.
+- **AC-2** Numbers match `rollups` exactly (no client-side recomputation).
+- **AC-3** ES + EN copy via the catalogue; no hardcoded strings.
+
+**Status: ✅ — all three ACs verified; no migration.** `src/analytics/tiles.ts` (the tile table), `src/analytics/dashboard.ts` (`getDashboard`), `GET /api/analytics` on the shared staff pipeline, and `web/app/(staff)/analytics/page.tsx` behind the new nav link.
+
+**DEC-1 (UI rendering) closed by precedent, not by fiat.** The charter left it open because tile *markup* was waiting on a framework decision; by now the repo has four staff surfaces and they all answer it the same way — a Next.js **server component** that reads a JSON endpoint on the root server. That **is** "server-rendered HTML by default": the page is rendered on the server, ships no client JavaScript, and the date range is a plain `GET` form that works before hydration. Adding a second rendering stack for one screen would have been the only new decision here.
+
+**AC-1 is a data structure, not a paragraph.** A tile has no value of its own: it has a `metric` (`rollups.metric`), a `querySql`, and two catalogue ids. `querySql` is imported from `src/analytics/rollups.ts` — and `tests/analytics/tiles.test.ts` asserts **identity** (`toBe`), not equality, for all twelve. A copy that happens to match today is exactly the drift this prevents. The screen prints the metric name and the statement inside a native `<details>` — "show query" is the AC, so it is the element, not a doc link.
+
+**AC-2 is enforced by having no arithmetic on the path.** `getDashboard` groups stored rows and hands out `rollups.value` **as the text Postgres returned it** (`value::text`, `window_start::text` — a `date` arrives as a JS `Date` at midnight, which shifts a day in negative offsets; a `numeric` arrives as a string anyway). The screen formats a ratio to "57.1%" and prints the raw stored text next to it on the same card. Two consequences, both deliberate:
+
+- **There is no "last 7 days total".** A total is arithmetic the rollup never made, and it would make the query disclosure a lie. A range means the stored days between the dates; the tile's headline is the most recent one. A weekly total belongs in `rollups` as its own metric if anyone wants it.
+- **A missing day is not zero.** S10-02 writes no row for a percentile day with no answers, deliberately; filling one in here would resurrect the "instant first response" lie one layer up. An empty tile renders the no-data string.
+
+The db test inserts `rollups` rows **by hand** (`0.5714`, `4.250`, `23`) and requires them back verbatim; a round-trip through `runRollups` would let the two sides agree with each other and pass on a shared bug.
+
+**AC-3 is compile-checked.** `TILES` is built from `ROLLUP_METRICS`, and the label map is `as const satisfies Record<RollupMetricName, {labelId; descriptionId}>` — adding a metric without its two strings is a **type error**, so the failure mode is caught at build time instead of rendering `staff.analytics.tile.new_metric` on a manager's screen. 17 chrome strings + 12 labels + 12 one-sentence hints, in **both** languages; `src/i18n/catalog.test.ts` enforces parity and the tile test asserts every id exists in `en` and `es`. A test also rejects a "label" that is just the metric name — technically translated, practically unreadable.
+
+**Roles.** `analytics: read` is granted to all four roles in S02-01's matrix, and `getDashboard`'s first statement is `session.requireRole("analytics", "read")`, before any query. A denial test injects a session whose guard throws and asserts the error propagates untouched.
+
+**Live check (the degraded-host contract, same as every staff route):**
+```text
+$ GET http://127.0.0.1:8787/api/analytics          → 503 {"detail":"NEON_AUTH_JWKS_URL is required"}
+$ GET http://127.0.0.1:8787/api/analyticsx         → 404
+```
+The 503 is the proof that `/api/analytics` reaches the **shared** staff pipeline (identity → tenant → role) instead of falling through to the health table; the 404 proves `ownsAnalyticsPath` does not claim a lookalike prefix.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector 0.6.2 + pg_trgm 1.6, Node 22):**
+```text
+$ npm run db:test   # 42 files / 444 passed (dashboard: 7)
+$ npm test          # 51 files / 653 passed (tiles: 4)
+$ npm run lint && npm run typecheck && npx tsc --noEmit -p web/tsconfig.json   # clean
+$ npm run web:build # ƒ /analytics emitted, 143 B / 103 kB
+```
+**Owed:** a screenshot of the rendered screen. It cannot be taken from this environment — `/api/analytics` needs a verified Neon JWT and there is no JWKS here, so a browser would only ever show the sign-in redirect or the error state. It joins the other outstanding physical-evidence items (S07-01 QR scan, S08-01 stopwatch, S08-02 sources screenshot, S06-01 staging deploy). The ACs themselves do not depend on it: the values, the traceability and both languages are asserted in the suites above.

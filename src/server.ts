@@ -20,10 +20,12 @@ import { loadConfig, type AppConfig } from "./config/env.ts";
 import { postgresStatus, closePool, getPool } from "./neon/postgres.ts";
 import { loadAuthConfig, verifyIdentityToken } from "./auth/session.ts";
 import {
+  handleAnalyticsRequest,
   handleGapsRequest,
   handleInboxRequest,
   handleReviewRequest,
   handleSettingsRequest,
+  ownsAnalyticsPath,
   ownsGapsPath,
   ownsInboxPath,
   ownsReviewPath,
@@ -195,7 +197,8 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     ownsReviewPath(path) ||
     ownsInboxPath(path) ||
     ownsSettingsPath(path) ||
-    ownsGapsPath(path)
+    ownsGapsPath(path) ||
+    ownsAnalyticsPath(path)
   ) {
     // One checked-out client per request: withStaffSession runs BEGIN/COMMIT,
     // so it must never borrow a different connection per statement.
@@ -219,6 +222,7 @@ const server = createServer((req: IncomingMessage, res: ServerResponse) => {
         if (ownsInboxPath(path)) await handleInboxRequest(req, res, deps);
         else if (ownsSettingsPath(path)) await handleSettingsRequest(req, res, deps);
         else if (ownsGapsPath(path)) await handleGapsRequest(req, res, deps);
+        else if (ownsAnalyticsPath(path)) await handleAnalyticsRequest(req, res, deps);
         else await handleReviewRequest(req, res, deps);
       } finally {
         client.release();

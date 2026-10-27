@@ -62,9 +62,30 @@ import { withTenant, type TenantContext } from "../db/tenant.ts";
 /** What the stored `value` means, so a formatter never has to guess. */
 export type RollupUnit = "count" | "ratio" | "seconds";
 
+/**
+ * The metric names as a union, not `string`.
+ *
+ * S10-03's tile table is `Record<RollupMetricName, …>`, so adding a metric here
+ * without a tile (or a tile for a metric that does not exist) is a **compile error**
+ * rather than a dashboard tile that renders a catalogue id nobody wrote.
+ */
+export type RollupMetricName =
+  | "conversations_started"
+  | "messages_received"
+  | "ai_answers_sent"
+  | "escalations"
+  | "no_answers"
+  | "containment"
+  | "first_response_p95_seconds"
+  | "requests_created"
+  | "requests_acknowledged"
+  | "ack_median_seconds"
+  | "knowledge_gaps_opened"
+  | "knowledge_gaps_closed";
+
 export interface RollupMetric {
   /** `rollups.metric` — stable, used by tiles and by the runbook. */
-  metric: string;
+  metric: RollupMetricName;
   unit: RollupUnit;
   /** Where the number comes from. Events win where a count is available. */
   source: "events" | "conversations" | "messages" | "service_requests";
@@ -359,7 +380,9 @@ export const ROLLUP_METRICS: readonly RollupMetric[] = [
 ];
 
 /** The metric names, in dashboard order — the contract S10-03 renders. */
-export const ROLLUP_METRIC_NAMES: readonly string[] = ROLLUP_METRICS.map((m) => m.metric);
+export const ROLLUP_METRIC_NAMES: readonly RollupMetricName[] = ROLLUP_METRICS.map(
+  (m) => m.metric,
+);
 
 export interface RollupRange {
   /** Inclusive first local day, `YYYY-MM-DD`. */
@@ -369,7 +392,7 @@ export interface RollupRange {
 }
 
 export interface RollupRow {
-  metric: string;
+  metric: RollupMetricName;
   windowStart: string;
   value: number;
 }

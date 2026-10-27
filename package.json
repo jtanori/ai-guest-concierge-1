@@ -16,6 +16,7 @@
     "eval:retrieval": "node --experimental-strip-types scripts/eval-retrieval.ts",
     "eval": "node --experimental-strip-types scripts/eval.ts",
     "rollup": "node --experimental-strip-types scripts/rollup.ts",
+    "retention": "node --experimental-strip-types scripts/retention.ts",
     "db:test": "vitest run --config tests/db/vitest.db.config.ts",
     "smoke:neon": "node --env-file=.env.local scripts/smoke-neon.ts",
     "start": "node --env-file=.env.local src/server.ts",

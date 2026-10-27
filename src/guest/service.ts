@@ -43,6 +43,8 @@ import {
   transition,
 } from "../conversation/state.ts";
 import { captureRequest, type RequestTopic } from "../requests/capture.ts";
+import { containsCardLike } from "../security/pii.ts";
+import { incrementCounter } from "../metrics/counters.ts";
 import { enqueueReview } from "../review/queue.ts";
 import { recordOutage } from "../ai/answer.ts";
 import { checkRate, type RateVerdict } from "../security/ratelimit.ts";
@@ -76,6 +78,28 @@ export class RateLimitedError extends Error {
     this.bucket = verdict.blocked?.bucket ?? "unknown";
     this.retryAfterSeconds = verdict.blocked?.retryAfterSeconds ?? 60;
     this.limit = verdict.blocked?.limit ?? 0;
+  }
+}
+
+/**
+ * S11-03 / AC-1 — the guest's message carried something that looks like a payment
+ * card number, so the turn is refused before anything is written.
+ *
+ * A refusal, not a sanitisation. The AC is "detected, refused in chat and never
+ * logged", and the only version of "never logged" that survives a future debug
+ * statement is one where the text never enters the process's data at all: it is not
+ * in `messages.body`, not in an event payload, and not in the request log, because
+ * nothing downstream of this throw ever sees it. The guest is told why in their own
+ * language, from the catalogue, and told to send the rest without the number.
+ *
+ * Carries no text, deliberately: an error that quotes the offending message would
+ * re-introduce the leak the class exists to prevent, and it is exactly what a
+ * well-meaning `detail:` would do.
+ */
+export class CardNumberRefusedError extends Error {
+  constructor() {
+    super("message contains a payment card number; the turn was refused");
+    this.name = "CardNumberRefusedError";
   }
 }
 
@@ -548,6 +572,19 @@ export async function postGuestMessage(
   if (text === "") throw new GuestInputError("message text is required");
   if (text.length > MAX_MESSAGE_CHARS) {
     throw new GuestInputError(`message text is longer than ${MAX_MESSAGE_CHARS} characters`);
+  }
+  // S11-03 AC-1. Deliberately BEFORE `withGuestSession`: the refusal must not be
+  // preceded by a property lookup, an identity row or a conversation, because "we
+  // refused to read the message" and "we read it, then refused to store it" are
+  // different promises and only the first one is checkable.
+  //
+  // The counter carries no tenant labels for the same reason — resolving the slug to
+  // an org is a database read, and this path does no database work. A process-wide
+  // spike is still what an alert needs; per-tenant attribution would arrive with the
+  // event taxonomy change recorded as S11-03-1 in the runbook.
+  if (containsCardLike(text)) {
+    incrementCounter("pii_blocked_total");
+    throw new CardNumberRefusedError();
   }
   const at = (deps.now ?? (() => new Date()))();
 

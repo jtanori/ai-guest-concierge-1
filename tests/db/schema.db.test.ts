@@ -106,6 +106,7 @@ describe("schema (db)", () => {
       "0027_answer_review_outbox.sql",
       "0028_email_outbox.sql",
       "0029_events_hardening.sql",
+      "0030_pii_hygiene.sql",
     ]);
   });
 

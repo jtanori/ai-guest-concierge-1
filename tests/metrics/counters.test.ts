@@ -64,6 +64,10 @@ describe("counting", () => {
       "ai_fallback_total",
       "ai_circuit_open_total",
       "ai_outage_total",
+      // S11-03 — a guest turn was refused because it carried a card number. It is a
+      // counter rather than an event because Appendix C's event list is verbatim;
+      // this test is what makes adding either a deliberate, reviewable edit.
+      "pii_blocked_total",
     ]);
   });
 });

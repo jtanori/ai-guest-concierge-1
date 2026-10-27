@@ -57,6 +57,7 @@ export default async function GuestPropertyPage({
         rateLimited: tr("guest.chat.rate_limited"),
         rateLimitedSeconds: tr("guest.chat.rate_limited_seconds"),
         botCheck: tr("guest.chat.bot_check"),
+        cardRefused: tr("guest.chat.card_refused"),
       }}
       // Public by design (Cloudflare's site key is not a secret). Absent on a
       // host that does not enforce a bot check — the widget then renders

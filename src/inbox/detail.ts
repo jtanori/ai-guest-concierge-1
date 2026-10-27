@@ -132,6 +132,8 @@ interface MessageRow {
   direction: "inbound" | "outbound";
   author_role: "guest" | "ai" | "staff";
   body: string;
+  /** S11-03 — set when retention destroyed the text; the row itself survives. */
+  body_redacted_at: Date | null;
   created_at: Date;
 }
 
@@ -182,7 +184,7 @@ export async function getConversationDetail(
   // Newest first for the LIMIT, then reversed: a long conversation should show
   // its end, and `ORDER BY created_at ASC LIMIT 100` would show its beginning.
   const messages = await client.query<MessageRow>(
-    `SELECT message_id, direction, author_role, body, created_at
+    `SELECT message_id, direction, author_role, body, body_redacted_at, created_at
        FROM messages
       WHERE org_id = $1 AND property_id = $2 AND conversation_id = $3
       ORDER BY created_at DESC, message_id DESC
@@ -253,6 +255,9 @@ export async function getConversationDetail(
       direction: message.direction,
       authorRole: message.author_role,
       body: message.body,
+      // A redacted body is empty by construction; the screen needs to know WHY so
+      // it can say so in the reader's language instead of showing a blank bubble.
+      bodyRedactedAt: message.body_redacted_at?.toISOString() ?? null,
       createdAt: message.created_at.toISOString(),
       aiRun: runByMessage.get(message.message_id) ?? null,
     })),

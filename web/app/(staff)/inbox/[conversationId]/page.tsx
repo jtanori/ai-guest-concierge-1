@@ -318,7 +318,15 @@ function MessageBubble({
         <span className="text-[11px] font-medium">{tr(AUTHOR_LABEL[message.authorRole])}</span>
         <span className="text-[11px] text-muted-foreground">{formatTime(message.createdAt)}</span>
       </div>
-      <p className="mt-1 whitespace-pre-wrap text-sm">{message.body}</p>
+      {message.bodyRedactedAt === null ? (
+        <p className="mt-1 whitespace-pre-wrap text-sm">{message.body}</p>
+      ) : (
+        // S11-03 AC-2 — retention removed the text after the configured window. A
+        // blank bubble would read as a bug, so the screen states what happened.
+        <p className="mt-1 text-sm italic text-muted-foreground">
+          {tr("staff.inbox.message_redacted")}
+        </p>
+      )}
 
       {message.aiRun === null ? null : (
         <section className="mt-3 space-y-2 border-t pt-2">

@@ -79,8 +79,9 @@ describe("non-superuser owner (db)", () => {
 
     const applied = await migrateDatabase(urlFor(DB, ROLE, PASSWORD));
     // A literal on purpose: this is the drift guard that makes a new migration
-    // announce itself. 0029 is S10-01's events hardening.
-    expect(applied).toBe(29);
+    // announce itself. 0030 is S11-03's PII hygiene (retention column + index, and
+    // the CHECK that keeps message text out of event payloads).
+    expect(applied).toBe(30);
 
     // What the migrations granted, the migrations revoked: no membership in
     // any definer role was granted BY the owner itself.

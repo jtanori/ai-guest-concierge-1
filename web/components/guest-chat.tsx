@@ -49,6 +49,13 @@ export interface GuestChatLabels {
   rateLimitedSeconds: string;
   /** S07-04: said when the first message fails the bot check (403). */
   botCheck: string;
+  /**
+   * S11-03: said when the server refuses a message that looks like a card number
+   * (422). It is shown INSTEAD of the generic error because the guest can fix it
+   * by sending the message again without the digits — and because "something went
+   * wrong" would invite them to retry with the same number.
+   */
+  cardRefused: string;
 }
 
 interface Props {
@@ -143,6 +150,11 @@ export function GuestChat({
         }
         if (response.status === 403 && "error" in body && body.error === "bot_check_failed") {
           setProblem(labels.botCheck);
+          return;
+        }
+        // S11-03 AC-1 — the refusal is in the guest's language and names no digits.
+        if (response.status === 422 && "error" in body && body.error === "card_number_not_allowed") {
+          setProblem(labels.cardRefused);
           return;
         }
         setProblem(labels.error);

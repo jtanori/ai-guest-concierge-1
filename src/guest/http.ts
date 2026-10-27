@@ -32,6 +32,7 @@ import {
 } from "./cookie.ts";
 import {
   BotCheckFailedError,
+  CardNumberRefusedError,
   GuestInputError,
   RateLimitedError,
   UnknownPropertyError,
@@ -131,6 +132,12 @@ export function classifyGuestError(error: unknown): {
   // 403, not 400: the request was well-formed, the client was not believed.
   if (error instanceof BotCheckFailedError) {
     return { status: 403, error: "bot_check_failed", detail: error.reason };
+  }
+  // S11-03 — 422, not 400: the request was well-formed and the client can fix it
+  // by sending the message again without the number. The guest screen keys its
+  // catalogue copy off this code, so the string is stable.
+  if (error instanceof CardNumberRefusedError) {
+    return { status: 422, error: "card_number_not_allowed" };
   }
   if (error instanceof GuestInputError) {
     return { status: 400, error: "invalid_message", detail: error.message };

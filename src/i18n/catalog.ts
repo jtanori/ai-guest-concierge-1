@@ -29,6 +29,11 @@ export const en = {
     "That was a lot of messages at once. Please wait {seconds} seconds and send it again.",
   "guest.chat.bot_check":
     "We couldn't confirm this is a real browser. Please reload the page and try again.",
+  // S11-03 — the guest pasted something that looks like a card number. The turn is
+  // refused before anything is stored or logged; this sentence is the whole of what
+  // the guest sees, and it says what to do next rather than scolding.
+  "guest.chat.card_refused":
+    "That message looks like it contains a card number, so we didn't send or store it. Please write your question again without the card details — never share card numbers in chat.",
   "guest.idontknow":
     "I don't want to guess on that one — I've asked the front desk to reply directly.",
   // S07-03: sent when a request was captured for a reason other than a missing
@@ -38,6 +43,9 @@ export const en = {
     "I've passed this to our team. A person will reply here, and you'll see their answer in this chat.",
   "staff.common.brand": "Staff console",
   "staff.inbox.title": "Inbox",
+  // S11-03 — retention window passed; the row is kept, the text is gone.
+  "staff.inbox.message_redacted":
+    "The text of this message was deleted after the property's retention window. The conversation and its counts are kept.",
   "staff.inbox.needs_attention": "Needs attention",
   "staff.inbox.mine": "Mine",
   "staff.inbox.unresolved": "Unresolved",
@@ -317,12 +325,18 @@ export const es: Record<StringId, string> = {
     "Fueron muchos mensajes a la vez. Espere {seconds} segundos y envíelo otra vez.",
   "guest.chat.bot_check":
     "No pudimos confirmar que es un navegador real. Recargue la página e inténtelo de nuevo.",
+  // S11-03 — el huésped pegó algo que parece un número de tarjeta. El turno se
+  // rechaza antes de guardarse o registrarse; esta frase es todo lo que ve.
+  "guest.chat.card_refused":
+    "Ese mensaje parece contener un número de tarjeta, así que no lo enviamos ni lo guardamos. Escriba su pregunta otra vez sin los datos de la tarjeta — nunca comparta números de tarjeta en el chat.",
   "guest.idontknow":
     "No quiero adivinar en esa — le pedí a recepción que le responda directamente.",
   "guest.request_ack":
     "Ya lo pasé a nuestro equipo. Una persona le responderá aquí y verá su respuesta en este chat.",
   "staff.common.brand": "Consola del personal",
   "staff.inbox.title": "Bandeja",
+  "staff.inbox.message_redacted":
+    "El texto de este mensaje se eliminó al cumplirse el plazo de conservación de la propiedad. La conversación y sus conteos se conservan.",
   "staff.inbox.needs_attention": "Requieren atención",
   "staff.inbox.mine": "Mías",
   "staff.inbox.unresolved": "Sin resolver",

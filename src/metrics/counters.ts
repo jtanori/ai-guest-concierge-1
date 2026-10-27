@@ -41,6 +41,11 @@ export const COUNTER_NAMES = [
   "ai_fallback_total",
   "ai_circuit_open_total",
   "ai_outage_total",
+  // S11-03 — a guest's turn was refused because it carried a card number. The
+  // count is the only trace: the message itself is never written, so this is how an
+  // operator sees that guests are pasting card numbers at all. Not an event: the
+  // event list is Appendix C, verbatim (see S11-03-1 in the runbook).
+  "pii_blocked_total",
 ] as const;
 export type CounterName = (typeof COUNTER_NAMES)[number];
 

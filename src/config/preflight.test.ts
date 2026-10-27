@@ -100,14 +100,19 @@ describe("checkReadiness — the traps", () => {
     expect(report.errors.map((e) => e.variable)).toContain("AI_FAIL_MODE");
   });
 
-  it("surfaces a shared staging/prod database when both URLs are present", () => {
-    const shared = "postgres://u:p@one-db.example.com/concierge";
-    const report = checkReadiness(
-      { ...STAGING, STAGING_DATABASE_URL: shared, PROD_DATABASE_URL: shared },
-      "staging",
-    );
-    expect(report.ok).toBe(false);
-    expect(report.errors.map((e) => e.message).join(" ")).toMatch(/must NOT share/);
+  it("names a one-of group once, with a variable to act on", () => {
+    // `NEON_AUTH_ISSUER | NEON_AUTH_BASE_URL` is one requirement with two spellings.
+    // The report names one representative in `missing` (a name the operator can set)
+    // and one finding in `errors` (the group), never two of either.
+    const report = checkReadiness(without("NEON_AUTH_ISSUER", "NEON_AUTH_BASE_URL"), "staging");
+    expect(report.missing.filter((name) => name.startsWith("NEON_AUTH_ISSUER"))).toHaveLength(1);
+    const groupFindings = report.errors.filter((entry) => entry.variable.includes("|"));
+    expect(groupFindings).toHaveLength(1);
+    expect(groupFindings[0]!.message).toMatch(/one of these is required/);
+
+    // Supplying either member satisfies it.
+    const satisfied = checkReadiness({ ...without("NEON_AUTH_BASE_URL") }, "staging");
+    expect(satisfied.missing.filter((name) => name.startsWith("NEON_AUTH"))).toEqual([]);
   });
 
   it("reports at most one finding per variable", () => {

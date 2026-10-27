@@ -121,6 +121,43 @@ jobs:
             exit 1
           fi
 
+      - name: readiness rejects a half-filled staging file
+        run: |
+          mkdir -p /tmp/ready
+          # A file that is complete except for LLM_API_KEY: the contract must catch it.
+          cat > /tmp/ready/.env.incomplete <<'ENVEOF'
+          APP_ENV=staging
+          DATABASE_URL=postgres://u:p@staging.example.com/concierge
+          NEON_AUTH_ISSUER=https://staging.neonauth.example.com/auth
+          NEON_AUTH_JWKS_URL=https://staging.neonauth.example.com/auth/.well-known/jwks.json
+          GUEST_COOKIE_SECRET=0123456789abcdef0123456789abcdef
+          GUEST_PUBLIC_URL=https://staging.chat.example.com
+          LLM_PRIMARY_MODEL=gemini-2.5-flash
+          LLM_FALLBACK_MODEL=gemini-2.5-flash-lite
+          EMBEDDING_API_KEY=sk-not-a-real-key-0123456789
+          TURNSTILE_SECRET=0x4AAAAAAAnotarealsecret
+          NEXT_PUBLIC_TURNSTILE_SITE_KEY=0x4AAAAAAAsitekey
+          EMAIL_FROM=Concierge <desk@example.com>
+          EMAIL_API_KEY=re_notarealkey0123456789
+          EMAIL_ESCALATION_FALLBACK=oncall@example.com
+          CONSOLE_BASE_URL=https://console.staging.example.com
+          REVIEW_API_URL=https://api.staging.example.com
+          ENVEOF
+          set +e
+          npm run check:readiness -- --env staging --file /tmp/ready/.env.incomplete
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then
+            echo "::error::check:readiness passed a staging file with no LLM_API_KEY"
+            exit 1
+          fi
+          echo "readiness refused the incomplete file as expected (exit $code)"
+
+      - name: readiness accepts the same file once complete
+        run: |
+          printf 'LLM_API_KEY=AIza-not-a-real-key-0123456789\n' >> /tmp/ready/.env.incomplete
+          npm run check:readiness -- --env staging --file /tmp/ready/.env.incomplete
+
       # The real matrix is NOT run here on purpose. A CI job cannot read two GitHub
       # Environments' secrets — that is the isolation the design depends on — so a
       # step here could only ever compare two empty strings and pass. The operator

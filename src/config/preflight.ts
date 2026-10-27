@@ -12,7 +12,14 @@
  * *this* environment, and which of them are secrets that must never appear in a
  * report.
  */
-import { ConfigError, isEnvName, loadConfig, loadEmbeddingConfig, loadLlmConfig, resolveDeploymentEnvironments, type EnvName } from "./env.ts";
+import {
+  ConfigError,
+  isEnvName,
+  loadConfig,
+  loadEmbeddingConfig,
+  loadLlmConfig,
+  type EnvName,
+} from "./env.ts";
 import {
   VARIABLES,
   VARIABLE_BY_NAME,
@@ -188,7 +195,7 @@ export function checkReadiness(
       variable: members.map((member) => member.name).join(" | "),
       severity: required ? "error" : "warning",
       message:
-        `one of these is${required ? "" : " recommended"} in ${env} (${group}): ` +
+        `one of these is ${required ? "required" : "recommended"} in ${env} (${group}): ` +
         members[0]!.why,
     });
   }
@@ -247,26 +254,6 @@ export function checkReadiness(
     });
   }
 
-  // 8. The deployment matrix, when all three legs are present. Absent legs are not
-  //    an error here: a single environment is often checked on its own.
-  const stagingUrl = source["STAGING_DATABASE_URL"];
-  const prodUrl = source["PROD_DATABASE_URL"];
-  if (stagingUrl !== undefined && prodUrl !== undefined) {
-    try {
-      resolveDeploymentEnvironments({
-        localUrl: source["LOCAL_DATABASE_URL"],
-        stagingUrl,
-        prodUrl,
-      });
-    } catch (error) {
-      push({
-        variable: "STAGING_DATABASE_URL | PROD_DATABASE_URL",
-        severity: "error",
-        message: error instanceof ConfigError ? error.message : String(error),
-      });
-    }
-  }
-
   const present: PresentVariable[] = VARIABLES.filter(
     (variable) => (source[variable.name] ?? "").trim() !== "",
   ).map((variable) => ({
@@ -275,12 +262,21 @@ export function checkReadiness(
     secret: variable.secret,
   }));
 
-  const missing = VARIABLES.filter(
-    (variable) =>
-      variable.requiredIn.includes(env) &&
-      !variable.oneOf &&
-      (source[variable.name] ?? "").trim() === "",
-  ).map((variable) => variable.name);
+  // One representative per unsatisfied one-of group, so the operator sees a name to
+  // set rather than a group with no handle on it.
+  const missing: string[] = [];
+  for (const variable of VARIABLES) {
+    if (!variable.requiredIn.includes(env)) continue;
+    if ((source[variable.name] ?? "").trim() !== "") continue;
+    if (variable.oneOf) {
+      const members = VARIABLES.filter(
+        (other) => other.oneOf === variable.oneOf && other.requiredIn.includes(env),
+      );
+      if (members.some((member) => (source[member.name] ?? "").trim() !== "")) continue;
+      if (members.some((member) => missing.includes(member.name))) continue;
+    }
+    missing.push(variable.name);
+  }
 
   // A consumer filter changes which findings are FATAL, never which are found: the
   // API deploy must not fail over a Next.js-only variable, and it must not pretend

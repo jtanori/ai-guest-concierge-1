@@ -68,6 +68,9 @@ describe("counting", () => {
       // counter rather than an event because Appendix C's event list is verbatim;
       // this test is what makes adding either a deliberate, reviewable edit.
       "pii_blocked_total",
+      // S11-05 — nightly reconciliation found drift. Its alert consumer is S11-04,
+      // which cannot be built until S11-01 unblocks.
+      "embedding_drift_total",
     ]);
   });
 });

@@ -22,6 +22,7 @@ import type pg from "pg";
 import { assertTenantShape, type TenantContext } from "../db/tenant.ts";
 import type { AiRunDecision, AiRunReasonCode } from "./contract.ts";
 import { AI_RUN_DECISIONS, AI_RUN_REASON_CODES } from "./contract.ts";
+import { CREATED_AT_ISO_SQL, type CreatedAtIsoRow } from "../events/clock.ts";
 
 export interface AiRunInput {
   conversationId: string;
@@ -45,11 +46,26 @@ export class AiRunError extends Error {}
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * The run's id plus the exact stamp of the row that holds it.
+ *
+ * `createdAtIso` exists because of issue #147: the `ai_runs` reconciliation metric
+ * counts `DISTINCT payload->>'ai_run_id'` over `events` against `count(*)` over
+ * `ai_runs`, windowed on each side's own `created_at`. Every event carrying this run's
+ * id must therefore be stamped with THIS row's created_at, or a window boundary can
+ * admit the run and exclude its events (or the reverse) and report a delta that reads
+ * as missing instrumentation. Callers pass it straight into `EventContext.createdAt`.
+ */
+export interface RecordedAiRun {
+  aiRunId: string;
+  createdAtIso: string;
+}
+
 export async function recordAiRun(
   client: pg.Client | pg.PoolClient,
   context: TenantContext,
   input: AiRunInput,
-): Promise<string> {
+): Promise<RecordedAiRun> {
   assertTenantShape(context);
 
   if (!UUID.test(input.conversationId)) throw new AiRunError("conversationId must be a uuid");
@@ -71,12 +87,12 @@ export async function recordAiRun(
     throw new AiRunError("latencyMs must be a non-negative integer");
   }
 
-  const result = await client.query<{ ai_run_id: string }>(
+  const result = await client.query<{ ai_run_id: string } & CreatedAtIsoRow>(
     `INSERT INTO ai_runs
        (org_id, property_id, conversation_id, message_id, model_id, prompt_version,
         decision, reason_code, confidence, latency_ms, usage)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
-     RETURNING ai_run_id`,
+     RETURNING ai_run_id, ${CREATED_AT_ISO_SQL}`,
     [
       context.orgId,
       context.propertyId,
@@ -91,7 +107,8 @@ export async function recordAiRun(
       JSON.stringify(input.usage ?? {}),
     ],
   );
-  return result.rows[0]!.ai_run_id;
+  const row = result.rows[0]!;
+  return { aiRunId: row.ai_run_id, createdAtIso: row.created_at_iso };
 }
 
 /**

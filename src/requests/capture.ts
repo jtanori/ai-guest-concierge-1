@@ -35,6 +35,7 @@
  */
 import type pg from "pg";
 import { emitEvent } from "../events/emit.ts";
+import { CREATED_AT_ISO_SQL, type CreatedAtIsoRow } from "../events/clock.ts";
 import type { EventContext } from "../events/taxonomy.ts";
 import { recordGap } from "../gaps/queue.ts";
 import { enqueueEmail } from "../notifications/email.ts";
@@ -85,7 +86,6 @@ export interface CaptureRequestInput {
    * empty one.
    */
   messageId?: string | null;
-  at?: Date;
 }
 
 export interface CapturedRequest {
@@ -106,8 +106,6 @@ export async function captureRequest(
   context: TenantContext,
   input: CaptureRequestInput,
 ): Promise<CapturedRequest> {
-  const at = input.at ?? new Date();
-
   const open = await client.query<OpenRequestRow>(
     `SELECT request_id
        FROM service_requests
@@ -118,17 +116,38 @@ export async function captureRequest(
   );
 
   let requestId = open.rows[0]?.request_id;
-  const created = requestId === undefined;
+  // Issue #147 option 3 — the request row's OWN created_at, read back from the INSERT,
+  // is the timestamp for `request_created`. `service_requests` stamps
+  // `DEFAULT now()` (the Postgres transaction clock); this function used to stamp the
+  // event with a JS `new Date()` read milliseconds earlier or later, so a reconcile
+  // window whose boundary fell between the two readings counted the row and not its
+  // event and reported `delta ±1`. That reads exactly like missing instrumentation,
+  // which is the one thing a reconciliation must never claim.
+  //
+  // This is also why `CaptureRequestInput.at` is gone rather than plumbed through: it
+  // moved *only* the event's timestamp, so any caller supplying it widened the skew
+  // arbitrarily. There is now no way to stamp the event independently of the row.
+  let insertedAt: string | null = null;
   if (requestId === undefined) {
-    const inserted = await client.query<OpenRequestRow>(
+    const inserted = await client.query<OpenRequestRow & CreatedAtIsoRow>(
       `INSERT INTO service_requests (org_id, property_id, conversation_id, topic, status)
        VALUES ($1, $2, $3, $4, 'new')
-       RETURNING request_id`,
+       RETURNING request_id, ${CREATED_AT_ISO_SQL}`,
       [context.orgId, context.propertyId, input.conversationId, input.topic],
     );
     requestId = inserted.rows[0]!.request_id;
+    insertedAt = inserted.rows[0]!.created_at_iso;
   }
+  const created = insertedAt !== null;
 
+  const eventBase: Omit<EventContext, "createdAt"> = {
+    orgId: context.orgId,
+    propertyId: context.propertyId,
+    conversationId: input.conversationId,
+    channel: "web",
+    language: input.language ?? null,
+    topic: input.topic,
+  };
   // S09-02 — capture goes through the queue's one writer instead of being a
   // second one.
   //
@@ -159,33 +178,18 @@ export async function captureRequest(
         language: input.language ?? null,
         topic: input.topic,
       },
-      {
-        orgId: context.orgId,
-        propertyId: context.propertyId,
-        conversationId: input.conversationId,
-        channel: "web",
-        language: input.language ?? null,
-        topic: input.topic,
-        createdAt: at.toISOString(),
-      },
+      eventBase,
       { reasonCode: input.reasonCode ?? "low_retrieval" },
     );
     gapId = recorded.gapId;
     gapCreated = recorded.created;
   }
 
-  const eventContext: EventContext = {
-    orgId: context.orgId,
-    propertyId: context.propertyId,
-    conversationId: input.conversationId,
-    channel: "web",
-    language: input.language ?? null,
-    topic: input.topic,
-    createdAt: at.toISOString(),
-  };
-
-  if (created) {
-    await emitEvent(client, context, "request_created", eventContext, {
+  if (insertedAt !== null) {
+    await emitEvent(client, context, "request_created", {
+      ...eventBase,
+      createdAt: insertedAt,
+    }, {
       request_id: requestId,
       topic: input.topic,
       ...(input.reasonCode === undefined || input.reasonCode === null

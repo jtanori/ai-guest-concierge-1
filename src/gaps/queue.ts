@@ -34,6 +34,7 @@ import type pg from "pg";
 import { assertTenantShape, type TenantContext } from "../db/tenant.ts";
 import type { StaffSession } from "../auth/context.ts";
 import { emitEvent } from "../events/emit.ts";
+import { CREATED_AT_ISO_SQL, type CreatedAtIsoRow } from "../events/clock.ts";
 import type { EventContext } from "../events/taxonomy.ts";
 import { writeAudit } from "../audit/write.ts";
 import { decodeCursor, encodeCursor, parseLimit } from "../inbox/queries.ts";
@@ -73,7 +74,14 @@ export async function recordGap(
   client: pg.Client | pg.PoolClient,
   context: TenantContext,
   input: RecordGapInput,
-  eventBase: EventContext,
+  /**
+   * Everything but the timestamp. `createdAt` is deliberately NOT accepted: this
+   * function owns the `knowledge_gaps` row, so it owns the stamp, and a caller-supplied
+   * one is exactly how issue #147's two-clock skew got here. Passing a full
+   * `EventContext` still type-checks (the extra field is ignored), but a fresh literal
+   * may not carry `createdAt` — the compiler now enforces the invariant.
+   */
+  eventBase: Omit<EventContext, "createdAt">,
   why: { reasonCode: string },
 ): Promise<RecordedGap> {
   assertTenantShape(context);
@@ -81,7 +89,7 @@ export async function recordGap(
     throw new GapInputError("a gap needs the question that was not answered");
   }
 
-  const row = await client.query<{ gap_id: string; hits: number; inserted: boolean }>(
+  const row = await client.query<{ gap_id: string; hits: number; inserted: boolean } & CreatedAtIsoRow>(
     `INSERT INTO knowledge_gaps
        (org_id, property_id, conversation_id, question, language, topic, status, hits)
      VALUES ($1, $2, $3, $4, $5, $6, 'open', 1)
@@ -108,7 +116,11 @@ export async function recordGap(
        -- the earliest row wins on identity, the latest on missing detail.
        topic = COALESCE(knowledge_gaps.topic, EXCLUDED.topic),
        language = COALESCE(knowledge_gaps.language, EXCLUDED.language)
-     RETURNING gap_id, hits, (xmax = 0) AS inserted`,
+     -- Issue #147 option 3: the row's own created_at, rendered at full
+     -- microsecond precision, so the knowledge_gap_created event cannot
+     -- disagree with the row it describes. Only meaningful on the insert
+     -- path; on conflict it is the ORIGINAL row's stamp (see the emit below).
+     RETURNING gap_id, hits, (xmax = 0) AS inserted, ${CREATED_AT_ISO_SQL}`,
     [
       context.orgId,
       context.propertyId,
@@ -128,7 +140,14 @@ export async function recordGap(
   const created = recorded.inserted;
 
   if (created) {
-    await emitEvent(client, context, "knowledge_gap_created", eventBase, {
+    // The caller's eventBase carries a JS-side timestamp; the gap row's own
+    // created_at wins, so a window boundary can never fall between the two.
+    // (On the conflict path created_at is the ORIGINAL row's, which is why this
+    // override is inside `if (created)` — the event describes the insert.)
+    await emitEvent(client, context, "knowledge_gap_created", {
+      ...eventBase,
+      createdAt: recorded.created_at_iso,
+    }, {
       gap_id: recorded.gap_id,
       question: input.question,
       reason_code: why.reasonCode,

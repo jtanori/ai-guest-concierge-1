@@ -50,31 +50,34 @@ import { assertTenantShape, type TenantContext } from "../db/tenant.ts";
 /**
  * Inclusive lower bound, exclusive upper bound; either may be omitted.
  *
- * **READ THIS BEFORE WINDOWING — issue #147.** The two sides of a windowed
- * reconciliation are not on the same clock, so a boundary can produce a delta that is
- * a timing artifact rather than missing instrumentation:
+ * WINDOWING IS SAFE BECAUSE THERE IS ONLY ONE CLOCK — issue #147, resolved by option 3.
  *
- * - every business table here declares `created_at timestamptz NOT NULL DEFAULT
- *   now()` (0001), which is the Postgres **transaction** timestamp;
- * - the paired event takes a **JS-side** timestamp — `captureRequest` does
- *   `const at = input.at ?? new Date()` and no business INSERT in `src/` supplies
- *   `created_at` explicitly.
+ * It used not to be. Business tables take `created_at` from Postgres (`DEFAULT now()`,
+ * the transaction timestamp) while the paired event took a JS-side `new Date()` read
+ * elsewhere in the same request. A `from`/`to` falling between those two readings put
+ * the row inside the window and its event outside it, and the metric reported `delta ±1`
+ * — a timing artifact wearing the costume of missing instrumentation, which is the one
+ * thing a reconciliation must never claim.
  *
- * A `from`/`to` falling between those two readings puts the business row inside the
- * window and its event outside it, or the reverse, and the metric reports `delta ±1`.
- * The skew is sub-millisecond today, so this is latent rather than active — but
- * `CaptureRequestInput.at` moves *only* the event's timestamp, so any caller that
- * starts supplying it widens the skew arbitrarily.
+ * Each producer now reads its own row's `created_at` back out of its INSERT and hands
+ * that exact value to `emitEvent` (see `src/events/clock.ts`), so a row and its event
+ * carry one identical stamp and no boundary can fall between them. This is asserted, not
+ * assumed: `tests/db/clock-agreement.db.test.ts` drives the real producers for all eight
+ * metrics and compares the two `created_at` values **in SQL**, because comparing them in
+ * JS would round both to milliseconds and pass with the rows 999us apart.
  *
- * Therefore: **an unwindowed call is the authoritative reconciliation.** A windowed
- * delta of ±1 at a boundary is advisory and must not page anyone on its own. S10-02's
- * rollups are the first consumer of the windowed path and carry this caveat in their
- * charter; #147 records the three ways to remove it properly, of which making the
- * producers pass their business row's `created_at` through to the event context is the
- * one that actually honours D10's "reconcile exactly" promise.
+ * Two things would break it, and both are guarded:
  *
- * `tests/db/events.db.test.ts` pins the artifact with a pair whose two rows carry
- * deliberately different timestamps, so the behaviour is asserted rather than assumed.
+ *  - A producer stamping an event from a JS clock again. The suite injects a `deps.now`
+ *    three decades off and asserts that no event anywhere carries it.
+ *  - An event that *names* a row it was not written with. This is not hypothetical: it
+ *    was a live bug in the `ai_runs` metric, which counted `DISTINCT payload->>'ai_run_id'`
+ *    over every event — including `answer_flagged_wrong`, written when a person reviews
+ *    the answer, possibly days later. A window holding the flag but not the run counted
+ *    one distinct run against zero rows. See AI_RUN_TERMINAL_EVENT_TYPES.
+ *
+ * `reconcile()` still has no production caller: S10-02's rollups and S10-03's dashboard
+ * are what will consume it, and the windowed path is now safe for them to build on.
  */
 export interface ReconcileWindow {
   from?: Date | null;
@@ -144,6 +147,40 @@ interface CountRow {
   ai_run_ids: string;
 }
 
+/**
+ * The event types emitted in the SAME transaction as the `ai_runs` row they name, and
+ * therefore the only ones the `ai_runs` metric may count.
+ *
+ * This filter is a bug fix, not a tidy-up. The metric compares `count(*)` over
+ * `ai_runs` against `count(DISTINCT payload->>'ai_run_id')` over `events`, each windowed
+ * on its own `created_at`. Counting *every* event that names a run breaks that
+ * comparison, because some events name a run long after it happened: `answer_flagged_wrong`
+ * is written when a person reviews the answer, which can be days later. A window covering
+ * the flag but not the run then counted one distinct run on the event side and zero rows
+ * on the business side — `delta -1`, phantom drift reported against a database in which
+ * nothing was missing. It is the same failure class as issue #147 (a windowed
+ * reconciliation inventing a delta), reached by a different route: not two clocks
+ * disagreeing about one moment, but two moments being counted as one.
+ *
+ * Excluded deliberately: `answer_flagged_wrong`. It is the paired event of the
+ * `answer_flags` metric, where its own row supplies the timestamp, and it must not also
+ * speak for the run.
+ *
+ * Drift guard: `tests/db/clock-agreement.db.test.ts` fails if an event type outside this
+ * list is ever found carrying `ai_run_id`, so adding a new run-terminal event means
+ * adding it here too rather than silently under-counting.
+ */
+export const AI_RUN_TERMINAL_EVENT_TYPES = [
+  "ai_run_completed",
+  "ai_answer_sent",
+  "ai_escalated",
+  "no_answer_emitted",
+  "message_failed",
+] as const;
+
+const AI_RUN_EVENT_FILTER =
+  `e.event_type IN (${AI_RUN_TERMINAL_EVENT_TYPES.map((t) => `'${t}'`).join(", ")})`;
+
 // The window predicate is repeated per table rather than factored into a SQL
 // function: a function would need to be created by a migration to be usable here,
 // and an inline predicate keeps this module readable against `\d` output.
@@ -184,6 +221,7 @@ const QUERY = `SELECT
   ${businessCount("ai_runs", "u")} AS ai_runs,
   (SELECT count(DISTINCT e.payload->>'ai_run_id') FROM events e
     WHERE e.org_id = $1 AND e.property_id = $2
+      AND ${AI_RUN_EVENT_FILTER}
       AND e.payload ? 'ai_run_id'
       AND e.payload->>'ai_run_id' IS NOT NULL
       AND ${windowOn("e")}) AS ai_run_ids`;

@@ -33,6 +33,7 @@ import { aiRunIdFor, answerMessage, type AnswerOutcome } from "../ai/answer.ts";
 import { AiUnavailableError, type ResilientAi } from "../ai/provider.ts";
 import type { Channel, EventContext } from "../events/taxonomy.ts";
 import { emitEvent } from "../events/emit.ts";
+import { CREATED_AT_ISO_SQL, type CreatedAtIsoRow } from "../events/clock.ts";
 import {
   StaffTookOverError,
   assertModelMaySpeak,
@@ -285,7 +286,7 @@ async function resolveConversation(
   ticket: GuestTicket | null,
   identity: { identityId: string; connectionId: string },
   language: Lang,
-): Promise<{ conversationId: string; created: boolean }> {
+): Promise<{ conversationId: string; created: boolean; createdAtIso: string | null }> {
   const { context } = session;
   if (ticket !== null && ticket.conversationId !== null) {
     const existing = await client.query<{ conversation_id: string }>(
@@ -295,16 +296,24 @@ async function resolveConversation(
       [ticket.conversationId, identity.identityId],
     );
     const row = existing.rows[0];
-    if (row !== undefined) return { conversationId: row.conversation_id, created: false };
+    // No timestamp on the reuse path: `conversation_started` is emitted only for a
+    // conversation this call created, so there is no event to stamp.
+    if (row !== undefined) {
+      return { conversationId: row.conversation_id, created: false, createdAtIso: null };
+    }
   }
 
-  const created = await client.query<{ conversation_id: string }>(
+  const created = await client.query<{ conversation_id: string } & CreatedAtIsoRow>(
     `INSERT INTO conversations (org_id, property_id, connection_id, identity_id, language)
      VALUES ($1, $2, $3, $4, $5)
-     RETURNING conversation_id`,
+     RETURNING conversation_id, ${CREATED_AT_ISO_SQL}`,
     [context.orgId, context.propertyId, identity.connectionId, identity.identityId, language],
   );
-  return { conversationId: created.rows[0]!.conversation_id, created: true };
+  return {
+    conversationId: created.rows[0]!.conversation_id,
+    created: true,
+    createdAtIso: created.rows[0]!.created_at_iso,
+  };
 }
 
 interface InsertedMessage {
@@ -323,7 +332,7 @@ async function insertMessage(
     language: Lang;
   },
 ): Promise<InsertedMessage> {
-  const result = await client.query<{ message_id: string; created_at: Date | string }>(
+  const result = await client.query<{ message_id: string } & CreatedAtIsoRow>(
     // `clock_timestamp()`, not the column default: both messages of a turn are
     // written inside ONE transaction, and `now()` is the transaction's start
     // time, so the inbound and the outbound row would tie to the microsecond and
@@ -331,7 +340,7 @@ async function insertMessage(
     `INSERT INTO messages
        (org_id, property_id, conversation_id, direction, author_role, body, language, created_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, clock_timestamp())
-     RETURNING message_id, created_at`,
+     RETURNING message_id, ${CREATED_AT_ISO_SQL}`,
     [
       context.orgId,
       context.propertyId,
@@ -343,7 +352,11 @@ async function insertMessage(
     ],
   );
   const row = result.rows[0]!;
-  return { messageId: row.message_id, createdAt: new Date(row.created_at).toISOString() };
+  // Exact text from Postgres, NOT `new Date(row.created_at).toISOString()`: a JS Date
+  // holds milliseconds while clock_timestamp() wrote microseconds, so the round-trip
+  // silently truncated and the event landed up to 999us before the row it describes —
+  // a small copy of the very skew issue #147 exists to remove.
+  return { messageId: row.message_id, createdAt: row.created_at_iso };
 }
 
 /**
@@ -605,18 +618,25 @@ export async function postGuestMessage(
       at,
     });
 
-    const eventBase: EventContext = {
+    // Issue #147 option 3 — no `createdAt` here on purpose. Each emit below takes the
+    // timestamp of the row it describes, read back from that row's own INSERT, so the
+    // business row and its event cannot straddle a reconcile window boundary. `at`
+    // (the JS clock) still drives spend windows and the model call, which are not
+    // reconciled against `events`; it no longer stamps anything that is.
+    const eventBase: Omit<EventContext, "createdAt"> = {
       orgId: session.context.orgId,
       propertyId: session.context.propertyId,
       conversationId: conversation.conversationId,
       channel: "web",
       language,
       topic: null,
-      createdAt: at.toISOString(),
     };
 
-    if (conversation.created) {
-      await emitEvent(scoped, session.context, "conversation_started", eventBase, {
+    if (conversation.created && conversation.createdAtIso !== null) {
+      await emitEvent(scoped, session.context, "conversation_started", {
+        ...eventBase,
+        createdAt: conversation.createdAtIso,
+      }, {
         channel: "web",
         anonymous: true,
       });
@@ -629,7 +649,10 @@ export async function postGuestMessage(
       body: text,
       language,
     });
-    await emitEvent(scoped, session.context, "message_received", eventBase, {
+    await emitEvent(scoped, session.context, "message_received", {
+      ...eventBase,
+      createdAt: inbound.createdAt,
+    }, {
       message_id: inbound.messageId,
       characters: text.length,
     });
@@ -696,7 +719,6 @@ export async function postGuestMessage(
         knowledgeGap: false,
         reasonCode: "staff_takeover",
         messageId: inbound.messageId,
-        at,
       });
       await scoped.query(
         `UPDATE conversations SET last_activity_at = $2::timestamptz WHERE conversation_id = $1`,
@@ -729,7 +751,6 @@ export async function postGuestMessage(
         // CaptureRequestInput — so what travels is the id, and the body is read at
         // send time under the tenant policy.
         messageId: inbound.messageId,
-        at,
       });
     }
 
@@ -882,7 +903,6 @@ export async function postGuestHandoff(
       topic: "guest_requested_human",
       language,
       reasonCode: "guest_asked_human",
-      at,
     });
     const requestId = captured.requestId;
     const requestCreated = captured.created;

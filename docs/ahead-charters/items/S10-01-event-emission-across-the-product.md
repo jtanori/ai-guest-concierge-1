@@ -145,9 +145,10 @@ one changes what a future reader would otherwise assume.
   emitted on paths that never record a run. All four carry `ai_run_id` in the payload,
   so the reconciliation counts **distinct `payload->>'ai_run_id'`**, which is the exact
   image of the table.
-- **DEC-5 — review round (issue #147): the windowed `reconcile()` compares two
-  different clocks, and that is documented and pinned rather than fixed here.** Found
-  in review of PR #146. Business tables declare `created_at timestamptz NOT NULL
+- **DEC-5 — review round (issue #147): the windowed `reconcile()` compared two
+  different clocks. SUPERSEDED — the owner chose option 3 and it is now implemented in
+  the follow-up branch (`S10-01-1`), so what follows is the historical record of the
+  finding, not the current state.** Found in review of PR #146. Business tables declare `created_at timestamptz NOT NULL
   DEFAULT now()` (0001:107/126/158/176/299/344), i.e. the Postgres **transaction**
   timestamp, while the paired event takes a **JS-side** timestamp (`captureRequest`'s
   `const at = input.at ?? new Date()` at `src/requests/capture.ts:109`, passed as

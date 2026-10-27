@@ -79,6 +79,11 @@ Staging deploys to Vercel's **preview** target and prod to **production**; that
 mapping is `vercelTargetFor()` and it is asserted by a test, because getting it
 backwards puts staging's console URL in production's emails.
 
+The rule is enforced, not just documented: `src/config/deploy-workflow.test.ts` reads
+`deploy.yml` and fails if it names a variable after its environment, trusts a value as a
+secret that the manifest calls public (or the reverse), gives the two jobs different
+sets of names, deploys before migrating, or echoes a secret into a log.
+
 ## `secrets:sync` — one file, every store
 
 ```bash

@@ -40,6 +40,11 @@ export default async function StaffLayout({
             <Link href="/settings" className="text-muted-foreground hover:text-foreground">
               {tr("staff.mode.nav")}
             </Link>
+            {/* S10-03: read-only for every role, which is why it sits after the
+                surfaces that can be acted on. */}
+            <Link href="/analytics" className="text-muted-foreground hover:text-foreground">
+              {tr("staff.analytics.nav")}
+            </Link>
             <span className="text-xs text-muted-foreground">{lang.toUpperCase()}</span>
           </nav>
         </div>

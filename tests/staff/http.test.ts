@@ -22,7 +22,17 @@ import {
   RequestLifecycleError,
   RequestNotFoundError,
 } from "../../src/requests/lifecycle.ts";
-import { classifyError, ownsInboxPath, ownsReviewPath, tenantFromHeaders } from "../../src/staff/http.ts";
+import {
+  DashboardPropertyNotFoundError,
+  DashboardRangeError,
+} from "../../src/analytics/dashboard.ts";
+import {
+  classifyError,
+  ownsAnalyticsPath,
+  ownsInboxPath,
+  ownsReviewPath,
+  tenantFromHeaders,
+} from "../../src/staff/http.ts";
 
 const ORG = "11111111-1111-5111-a111-111111111111";
 const PROP = "22222222-2222-5222-a222-222222222222";
@@ -119,5 +129,19 @@ describe("review surface: ownership of the path (S04-01)", () => {
     expect(ownsReviewPath("/api/review/queue")).toBe(true);
     expect(ownsReviewPath("/api/reviews")).toBe(false);
     expect(ownsReviewPath("/healthz")).toBe(false);
+  });
+});
+
+describe("analytics surface: status mapping and path ownership (S10-03)", () => {
+  it("maps a bad date range to 400 and a missing property to 404", () => {
+    expect(classifyError(new DashboardRangeError("from and to go together")).status).toBe(400);
+    expect(classifyError(new DashboardPropertyNotFoundError("gone")).status).toBe(404);
+  });
+
+  it("claims /api/analytics and nothing that merely starts with it awkwardly", () => {
+    expect(ownsAnalyticsPath("/api/analytics")).toBe(true);
+    expect(ownsAnalyticsPath("/api/analytics/anything")).toBe(true);
+    expect(ownsAnalyticsPath("/api/analyticsx")).toBe(false);
+    expect(ownsAnalyticsPath("/api/inbox")).toBe(false);
   });
 });

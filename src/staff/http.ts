@@ -46,6 +46,11 @@ import {
 } from "../knowledge/facts.ts";
 import { InboxInputError, listInbox } from "../inbox/queries.ts";
 import {
+  DashboardPropertyNotFoundError,
+  DashboardRangeError,
+  getDashboard,
+} from "../analytics/dashboard.ts";
+import {
   ModeInputError,
   PropertyModeNotFoundError,
   getAiMode,
@@ -88,6 +93,7 @@ const REVIEW_PREFIX = "/api/review";
 const INBOX_PREFIX = "/api/inbox";
 const SETTINGS_PREFIX = "/api/settings";
 const GAPS_PREFIX = "/api/gaps";
+const ANALYTICS_PREFIX = "/api/analytics";
 
 /** 401/403/404/409/400 mapping — one place, so no route invents its own code. */
 interface Failure {
@@ -132,8 +138,11 @@ export function classifyError(error: unknown): Failure {
   if (error instanceof PropertyModeNotFoundError) {
     return { status: 404, error: "not_found", extra: { detail: error.message } };
   }
-  if (error instanceof ModeInputError) {
+  if (error instanceof ModeInputError || error instanceof DashboardRangeError) {
     return { status: 400, error: "invalid_request", extra: { detail: error.message } };
+  }
+  if (error instanceof DashboardPropertyNotFoundError) {
+    return { status: 404, error: "not_found", extra: { detail: error.message } };
   }
   if (error instanceof AssigneeNotMemberError) {
     // 409, not 403: the caller is allowed to assign, they simply named someone
@@ -455,6 +464,31 @@ const GAPS_ROUTES: Route[] = [
   },
 ];
 
+/**
+ * S10-03 — the management dashboard.
+ *
+ * Its own prefix because it is its own surface: `analytics` is read-only for every
+ * role (S02-01's matrix), including the front desk that can write the inbox, so
+ * folding it into `/api/inbox` would put two matrices behind one path.
+ *
+ * One GET, no query params required. `from`/`to` are optional and validated by the
+ * same `validateRange` that `npm run rollup` uses, so the screen cannot ask for a
+ * range the rollup would refuse.
+ */
+const ANALYTICS_ROUTES: Route[] = [
+  {
+    method: "GET",
+    pattern: /^\/api\/analytics$/,
+    run: (_m, _d, session, scoped, context, req) => {
+      const url = new URL(req.url ?? "/", "http://localhost");
+      return getDashboard(scoped, context, session, {
+        from: url.searchParams.get("from"),
+        to: url.searchParams.get("to"),
+      });
+    },
+  },
+];
+
 /** True when this handler owns the path (so the health table never sees it). */
 export function ownsReviewPath(path: string): boolean {
   return path === REVIEW_PREFIX || path.startsWith(`${REVIEW_PREFIX}/`);
@@ -468,6 +502,11 @@ export function ownsSettingsPath(path: string): boolean {
 /** True for `/api/gaps` (S09-02). */
 export function ownsGapsPath(path: string): boolean {
   return path === GAPS_PREFIX || path.startsWith(`${GAPS_PREFIX}/`);
+}
+
+/** True for `/api/analytics` (S10-03). */
+export function ownsAnalyticsPath(path: string): boolean {
+  return path === ANALYTICS_PREFIX || path.startsWith(`${ANALYTICS_PREFIX}/`);
 }
 
 /** True for `/api/inbox` (S08-01). */
@@ -512,6 +551,15 @@ export function handleGapsRequest(
   deps: ReviewHttpDeps,
 ): Promise<void> {
   return handleStaffRequest(req, res, deps, GAPS_ROUTES);
+}
+
+/** S10-03 — `/api/analytics`, same pipeline, `analytics: read` for every role. */
+export function handleAnalyticsRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: ReviewHttpDeps,
+): Promise<void> {
+  return handleStaffRequest(req, res, deps, ANALYTICS_ROUTES);
 }
 
 /**

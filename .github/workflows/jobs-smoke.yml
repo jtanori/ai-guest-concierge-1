@@ -1,0 +1,86 @@
+# S11-05 / DECISION 1b — the nightly jobs' CI smoke test.
+#
+# WHAT THIS IS: a throwaway Postgres (pgvector/pgvector:pg17), the real migrations, the
+# real seed, then `rollup`, `reconcile` and `retention` executed against it. It proves the
+# three operator commands still run end to end after a refactor — nothing more.
+#
+# WHAT THIS IS NOT: real reconciliation. This database is created for the run and
+# destroyed with the runner; it contains no hotel's articles, so "all three invariants
+# hold" here means the SQL parses and the invariants are satisfied by seed data. Real
+# drift detection needs a durable database with real publishes, which is why
+# `workflow_dispatch` is the ONLY trigger — there is deliberately no `schedule:` key.
+# Scheduling is deferred to S11-01's worker loop / W00-13's durable environments
+# (DECISION 1a, 2026-10-26). Do not add a cron trigger to this file: a green nightly
+# badge over an empty database is worse than no badge.
+
+name: jobs-smoke
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: jobs-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: concierge
+          POSTGRES_PASSWORD: concierge
+          POSTGRES_DB: concierge_local
+        ports:
+          - 54329:5432
+        options: >-
+          --health-cmd "pg_isready -U concierge"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://concierge:concierge@localhost:54329/concierge_local
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+
+      - name: migrate + seed
+        run: |
+          npm run db:migrate
+          npm run db:seed
+
+      - name: resolve the seeded org
+        run: |
+          cat > /tmp/org.mjs <<'JS'
+          import pg from "pg";
+          const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+          await client.connect();
+          const { rows } = await client.query(
+            "SELECT org_id FROM organizations ORDER BY created_at LIMIT 1",
+          );
+          await client.end();
+          if (rows.length === 0) throw new Error("seed produced no organization");
+          process.stdout.write(rows[0].org_id);
+          JS
+          echo "ORG=$(node /tmp/org.mjs)" >> "$GITHUB_ENV"
+
+      # The seeded articles have no events yet, so the interesting assertion is that the
+      # command succeeds twice and the second run is a no-op (AC-1 idempotency).
+      - name: rollup (twice — idempotency)
+        run: |
+          npm run rollup -- --date "$(date -u +%F)" --org "$ORG"
+          npm run rollup -- --date "$(date -u +%F)" --org "$ORG"
+
+      - name: reconcile (exit 1 means drift; this fixture must be clean)
+        run: npm run reconcile -- --org "$ORG"
+
+      - name: retention (dry run first, then apply, then prove it is a no-op)
+        run: |
+          npm run retention -- --org "$ORG"
+          npm run retention -- --org "$ORG" --apply
+          npm run retention -- --org "$ORG" --apply

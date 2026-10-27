@@ -1986,3 +1986,46 @@ $ npm test                          # 52 files / 663 passed (redaction: 10)
 $ npm run lint && npm run typecheck && npx tsc --noEmit -p web/tsconfig.json && npm run web:build   # clean
 ```
 `tests/db/non-superuser.db.test.ts` and `tests/db/schema.db.test.ts` were bumped 29 → 30 on purpose: both are drift guards that make a new migration announce itself.
+
+## S11-05 — Nightly embedding reconciliation (0.50d)
+
+**AC-1** three invariants over `article_versions`/`article_chunks`; **AC-2** a seeded drift case fails the job with a non-zero exit and a named violation.
+
+**Status: ✅ AC-1 and AC-2 met. ⚠️ The word "nightly" in the title is not yet true — see "What is not built" below.**
+
+**The three invariants, and what each one costs the guest.**
+
+| Invariant | What it means | What the guest experiences |
+|---|---|---|
+| `current_version_without_chunks` | the live version of an article has no chunks | the hotel wrote the policy and the assistant cannot find it — "the bot doesn't know", for a thing the hotel did document |
+| `chunk_on_non_current_version` | a chunk hangs off a superseded version | the guest is quoted yesterday's policy while the current one says something else |
+| `chunk_without_parent_version` | a chunk with no version row | nothing today; the FK cascade makes it impossible, and the check exists to notice if that ever stops being true |
+
+**Invariant 2 is not hypothetical — it is what the publish path does.** `promote_article_version()` (0003) demotes the old version and raises the new one in one transaction; it does **not** delete the old version's chunks, because they are history. So every publish leaves the previous version's chunks in place, and retrieval that is not filtered to `is_current` would quote them. The db test publishes through that function (writing `is_current = true` directly is refused by 0003) and then asserts exactly one stale chunk, on the old version, and none on the new one. That is the check earning its keep on day one rather than on the day it is needed.
+
+**It reports; it never repairs.** The charter says so and the reason is worth repeating: a reconciler that silently deletes a stale chunk hides the publish path that produced it, so the next publish is broken the same way with nobody watching. Exit **1** names the invariant, the chunk and the version — never "reconciliation failed", which sends whoever is paged looking at pgvector settings instead of at the publish path. Exit **2** is reserved for bad usage, so a scheduler can tell "the check ran and found drift" from "the check could not run"; collapsing those two is how a nightly job reports green forever while never once connecting.
+
+**Tenancy.** Per property, under `withTenant`, with the tenant repeated in each predicate as well as relying on FORCE RLS — the query stays correct on a connection that never set a role. Verification is cheap: `INSERT`/`SELECT` are org+property scoped, so one tenant's chunks cannot satisfy another's "has ≥1 chunk". A single property's failure does not stop the loop.
+
+**`embedding_drift_total` — emitted, and explicitly without a consumer.** It is incremented once per violation with `org_id`/`property_id` labels (the guest path cannot afford a label lookup; a nightly job can). The consumer named in the charter is **S11-04**, which is blocked behind **S11-01**, which is blocked behind **S06-01**. So the counter is wired and tested, and **nobody is alerting on it yet** — recorded here so that "drift is monitored" is not claimed anywhere until S11-04 lands.
+
+**What is not built: the schedule.** The charter's calculated changes name `reconcile-nightly.yml`; **DECISION 1a (owner, 2026-10-26)** defers scheduling to S11-01's worker loop / W00-13's durable environments, and that takes precedence. No cron workflow exists for any of the three jobs (`rollup`, `retention`, `reconcile`) — the repo still has exactly two workflow files, `ci.yml` and `eval.yml`. When a durable staging database exists **and the owner approves**, the shape is one `schedule:` entry calling `npm run reconcile -- --org <uuid>`; retention's schedule must be approved separately because it deletes.
+
+**The CI smoke test (DECISION 1b) is not reconciliation.** `.github/workflows/jobs-smoke.yml` is `workflow_dispatch` **only** — deliberately no `schedule:` key, because a green nightly badge over an empty database is worse than no badge. It boots `pgvector/pgvector:pg17`, runs the real migrations and the real seed, then runs `rollup` twice (AC-1 idempotency), `reconcile`, and `retention` (dry run → apply → apply, proving the second apply is a no-op). It proves the three operator commands still run end to end after a refactor. It contains no hotel's articles, so "all three invariants hold" there means the SQL parses and the seed satisfies it — **it cannot detect real drift**, and the runbook says that rather than letting a green check imply otherwise.
+
+**Evidence (local, PostgreSQL 16.2 + pgvector 0.6.2 + pg_trgm 1.6, Node 22):**
+```text
+$ npm run reconcile -- --org <uuid>                     # clean seed
+ok   demo  current_version_without_chunks=0 chunk_on_non_current_version=0 chunk_without_parent_version=0
+reconcile: 1 property · all three invariants hold · nothing to do        exit 0
+
+# seeded drift: a current version published through promote_article_version() with no chunks
+DRIFT demo
+demo: current_version_without_chunks (article_version e819d1f6-4bad-4d95-a6fe-eaa0adea07d8)
+reconcile: 1 violation across 1 property · NOT repaired (fix the publish path, then re-run)   exit 1
+
+$ npm run db:test     # 45 files / 462 passed (reconcile: 7)
+$ npm test            # 53 files / 667 passed (reconcile pure: 4)
+$ npm run lint && npm run typecheck && npm run web:build    # clean
+```
+Removing the planted drift by deleting the article does **not** work — `article_versions` is append-only and the cascade hits 0003's trigger. The probe was cleared by rebuilding the local database (`30 applied`, re-seed, `article_chunks: 26`); on a real deployment the repair is a forward fix on the publish path, never a delete.

@@ -46,6 +46,9 @@ export const COUNTER_NAMES = [
   // operator sees that guests are pasting card numbers at all. Not an event: the
   // event list is Appendix C, verbatim (see S11-03-1 in the runbook).
   "pii_blocked_total",
+  // S11-05 — an embedding invariant failed. Per-tenant labels are allowed here (the
+  // guest path could not afford the label lookup; a nightly job can). No consumer yet.
+  "embedding_drift_total",
 ] as const;
 export type CounterName = (typeof COUNTER_NAMES)[number];
 

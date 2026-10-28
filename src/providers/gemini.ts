@@ -25,9 +25,13 @@ export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>
 
 export const DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 
-/** Documented pair for DEC-2; still passed in explicitly, never defaulted here. */
-export const RECOMMENDED_GEMINI_PRIMARY = "gemini-2.5-flash";
-export const RECOMMENDED_GEMINI_FALLBACK = "gemini-2.5-flash-lite";
+/**
+ * DEC-2's pair, swapped 2026-10-28 when Google retired the 2.5 ids (404 "no
+ * longer available"); both replacements were verified against the live API
+ * before the swap. Still passed in explicitly, never defaulted here.
+ */
+export const RECOMMENDED_GEMINI_PRIMARY = "gemini-3.6-flash";
+export const RECOMMENDED_GEMINI_FALLBACK = "gemini-3.5-flash-lite";
 
 const SNIPPET_LIMIT = 300;
 const MAX_OUTPUT_TOKENS = 1024;

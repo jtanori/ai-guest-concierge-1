@@ -21,8 +21,8 @@ const SOURCE: Record<string, string> = {
   APP_ENV: "staging",
   DATABASE_URL: "postgres://u:p@staging-db/concierge",
   LLM_API_KEY: "sk-live-0123456789",
-  LLM_PRIMARY_MODEL: "gemini-2.5-flash",
-  LLM_FALLBACK_MODEL: "gemini-2.5-flash-lite",
+  LLM_PRIMARY_MODEL: "gemini-3.6-flash",
+  LLM_FALLBACK_MODEL: "gemini-3.5-flash-lite",
   EMAIL_FROM: "Concierge <desk@example.com>",
   REVIEW_API_URL: "https://api.staging.example.com",
   NEON_AUTH_ISSUER: "https://staging.neonauth.example.com/auth",
@@ -70,7 +70,7 @@ describe("planSync — deciding whether to write", () => {
 
   it("compares VARIABLES and skips the identical ones", () => {
     const state = empty();
-    state.github!.envVariables.set("LLM_PRIMARY_MODEL", "gemini-2.5-flash");
+    state.github!.envVariables.set("LLM_PRIMARY_MODEL", "gemini-3.6-flash");
     const plan = planSync("staging", SOURCE, state);
     expect(row(plan, "LLM_PRIMARY_MODEL").action).toBe("skip-equal");
   });

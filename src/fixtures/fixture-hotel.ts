@@ -394,7 +394,7 @@ export const FIXTURE_FACTS: FixtureFact[] = [
     language: "en",
     effectiveFrom: "2026-01-01",
     sourceArticleVersionId: VERSION.diningHours,
-    verified: true,
+    verified: false,
     sourceNote: "S06-03 — breakfast hours for golden set",
   },
   {
@@ -407,7 +407,7 @@ export const FIXTURE_FACTS: FixtureFact[] = [
     language: "en",
     effectiveFrom: "2026-01-01",
     sourceArticleVersionId: VERSION.parkingInfo,
-    verified: true,
+    verified: false,
     sourceNote: "S06-03 — parking rate for golden set",
   },
   {
@@ -420,7 +420,7 @@ export const FIXTURE_FACTS: FixtureFact[] = [
     language: "en",
     effectiveFrom: "2026-01-01",
     sourceArticleVersionId: VERSION.transportAirport,
-    verified: true,
+    verified: false,
     sourceNote: "S06-03 — airport transfer sedan price for golden set",
   },
   {
@@ -433,7 +433,7 @@ export const FIXTURE_FACTS: FixtureFact[] = [
     language: "es",
     effectiveFrom: "2026-01-01",
     sourceArticleVersionId: VERSION.roomAmenities,
-    verified: true,
+    verified: false,
     sourceNote: "S06-03 — extra bed rate for golden set",
   },
   {
@@ -446,7 +446,7 @@ export const FIXTURE_FACTS: FixtureFact[] = [
     language: "es",
     effectiveFrom: "2026-01-01",
     sourceArticleVersionId: VERSION.checkinHours,
-    verified: true,
+    verified: false,
     sourceNote: "S06-03 — check-in time for golden set",
   },
   {
@@ -459,7 +459,7 @@ export const FIXTURE_FACTS: FixtureFact[] = [
     language: "en",
     effectiveFrom: "2026-01-01",
     sourceArticleVersionId: VERSION.wifiInfo,
-    verified: true,
+    verified: false,
     sourceNote: "S06-03 — wifi is free for golden set",
   },
 ];

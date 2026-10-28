@@ -45,22 +45,20 @@ AS $$
 $$;
 
 -- Ownership transfer needs the migration role to SET ROLE into the new owner,
--- which a non-superuser cannot do without membership (0027 hit exactly this, and
--- tests/db/non-superuser.db.test.ts is what caught it). Granted for the duration
--- and revoked immediately after: a login role left a member of a definer role can
--- SET ROLE into it and reach that role's permissive policy, which here is every
--- tenant's outbox. That is the hole 0005 closed for concierge_promoter.
+-- which a non-superuser cannot do without membership (0015's idiom for it, as
+-- 0004/0009 use it). Granted for the duration of this file: a login role left a
+-- member of a definer role can SET ROLE into it and reach that role's permissive
+-- policy, which here is every tenant's outbox — 0005 closed exactly that hole for
+-- concierge_promoter. Revoked as the LAST statement, not right after the
+-- transfer: the DROP and COMMENT below check ownership, and a member passes that
+-- check. See 0027's closing note for the PostgreSQL 17-passes/18-fails history
+-- that made revoking early fail on the real server while CI stayed green.
 DO $$
 BEGIN
   EXECUTE format('GRANT concierge_worker TO %I', current_user);
 END $$;
 
 ALTER FUNCTION claim_outbox(text, integer) OWNER TO concierge_worker;
-
-DO $$
-BEGIN
-  EXECUTE format('REVOKE concierge_worker FROM %I', current_user);
-END $$;
 
 -- ALTER ... OWNER discards the ACL and restores EXECUTE FOR PUBLIC (0003/0004/0009
 -- all re-tighten afterwards), so re-tighten. EXECUTE goes to concierge_app only,
@@ -72,11 +70,18 @@ GRANT EXECUTE ON FUNCTION claim_outbox(text, integer) TO concierge_app;
 
 -- Retire the kind-specific one now that the general one exists. Nothing outside
 -- src/review/queue.ts referenced it, and leaving both would mean two definer
--- windows over the same table and two places to keep in step.
+-- windows over the same table and two places to keep in step. Dropping another
+-- role's function is an ownership check too — held membership (above) satisfies it.
 DROP FUNCTION claim_review_outbox(integer);
 
 COMMENT ON FUNCTION claim_outbox(text, integer) IS
   'S09-05: claim due outbox rows of one kind across every tenant. The single cross-tenant read the workers need; the work itself runs under normal RLS.';
+
+-- Membership revoked last — after every ownership-checking statement (see above).
+DO $$
+BEGIN
+  EXECUTE format('REVOKE concierge_worker FROM %I', current_user);
+END $$;
 
 -- ---------- 2. one queued email per request-stage ---------------------------
 --

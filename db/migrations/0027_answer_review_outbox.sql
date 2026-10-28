@@ -218,6 +218,8 @@ $$;
 -- it for the duration; 0005 is the reason it must not stay granted — a login role
 -- that is a member of a definer role can SET ROLE into it and reach whatever
 -- permissive policy that role has, which here is "every tenant's outbox".
+-- The grant is revoked as the LAST statement of this file, not right after the
+-- transfer (see the end): every statement below that needs the membership held.
 DO $$
 BEGIN
   EXECUTE format('GRANT concierge_worker TO %I', current_user);
@@ -225,20 +227,28 @@ END $$;
 
 ALTER FUNCTION claim_review_outbox(integer) OWNER TO concierge_worker;
 
-DO $$
-BEGIN
-  EXECUTE format('REVOKE concierge_worker FROM %I', current_user);
-END $$;
-
 -- ALTER ... OWNER discards the ACL and restores EXECUTE FOR PUBLIC (0003/0004/0009
 -- all re-tighten after transferring), so re-tighten here too.
 --
 -- EXECUTE goes to concierge_app only, and deliberately NOT to CURRENT_USER the way
 -- 0009 does: the worker always `SET LOCAL ROLE concierge_app` before claiming, so
--- the login role never needs it, and granting it would let a session that forgot
--- to switch roles claim across every tenant.
+-- the login role never needs it, and granting it would let a session that forgot to
+-- switch roles claim across every tenant.
 REVOKE ALL ON FUNCTION claim_review_outbox(integer) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION claim_review_outbox(integer) TO concierge_app;
 
 COMMENT ON FUNCTION claim_review_outbox(integer) IS
   'S09-04: claim due review rows across every tenant. The one cross-tenant read the worker needs; the work itself runs under normal RLS.';
+
+-- The membership granted above is revoked LAST — after the comment, not before it.
+-- COMMENT ON FUNCTION checks ownership, and a member of the owner passes that check
+-- (has_privs_of_role); revoked first, it fails with "must be owner of function" on
+-- PostgreSQL 18 (Neon's server) while PostgreSQL 17 (the CI image) passed it — the
+-- version gap that hid this from tests/db/non-superuser.db.test.ts until the first
+-- staging deploy. 0004 and 0009 hold membership to the end of their ACL work for
+-- the same reason; this now matches that idiom. The grant cannot outlive the file:
+-- the migration runner wraps every file in one transaction.
+DO $$
+BEGIN
+  EXECUTE format('REVOKE concierge_worker FROM %I', current_user);
+END $$;

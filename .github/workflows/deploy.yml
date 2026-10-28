@@ -104,6 +104,15 @@ jobs:
           cache: npm
       - run: npm ci
 
+      # Build the Build Output (.vercel/output: esbuild-bundled api/ functions
+      # + config.json routes) HERE, and ship it with --prebuilt below. Without
+      # --prebuilt the remote build runs a second TypeScript compile AFTER
+      # `npm run build` and replaces the bundles with single-file compiles whose
+      # `.ts` imports do not exist inside the lambda — FUNCTION_INVOCATION_FAILED
+      # on every function that touches src/, which is exactly what smoke caught
+      # on main in run 40739849831 (healthz HTTP 500, 0 passed / 4 failed).
+      - run: npm run build
+
       - name: readiness gate (before anything is touched)
         run: npm run check:readiness -- --env staging --consumer api
 
@@ -132,7 +141,7 @@ jobs:
 
       - name: deploy the Vercel surface to the staging target
         run: |
-          URL="$(npx -y vercel@latest deploy --yes --token "$VERCEL_TOKEN")"
+          URL="$(npx -y vercel@latest deploy --prebuilt --yes --token "$VERCEL_TOKEN")"
           echo "STAGING_DEPLOY_URL=$URL" >> "$GITHUB_ENV"
           echo "deployed: $URL" >> "$GITHUB_STEP_SUMMARY"
 
@@ -212,6 +221,9 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # Same Build Output as the staging job — see its comment for why the
+      # deploy below must be --prebuilt.
+      - run: npm run build
 
       - name: readiness gate (before anything is touched)
         run: npm run check:readiness -- --env prod --consumer api
@@ -233,7 +245,7 @@ jobs:
 
       - name: deploy the Vercel surface to production
         run: |
-          URL="$(npx -y vercel@latest deploy --prod --yes --token "$VERCEL_TOKEN")"
+          URL="$(npx -y vercel@latest deploy --prod --prebuilt --yes --token "$VERCEL_TOKEN")"
           echo "PROD_DEPLOY_URL=$URL" >> "$GITHUB_ENV"
           echo "deployed: $URL" >> "$GITHUB_STEP_SUMMARY"
 

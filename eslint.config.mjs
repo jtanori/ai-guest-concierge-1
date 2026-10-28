@@ -7,7 +7,7 @@ export default tseslint.config(
   {
     // web/ is the Next.js app (S04-01): it has its own build and its own
     // lint story, and the root config's Node globals do not describe it.
-    ignores: ["node_modules/", "dist/", "coverage/", "docs/", "web/"],
+    ignores: ["node_modules/", "dist/", "coverage/", "docs/", "web/", ".vercel/"],
   },
   eslint.configs.recommended,
   tseslint.configs.recommended,

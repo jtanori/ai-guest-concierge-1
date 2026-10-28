@@ -11,9 +11,10 @@ on:
 # VERCEL_PROJECT_ID — the contract's type, see manifest.ts) and probes the
 # deployed endpoint — the proof is a green check AND a
 # reachable URL printed in the log. The deployed surface is the CI probe in
-# api/health.ts (vercel.json pins @vercel/node on api/** — the zero-config
-# root-entrypoint pipeline dead-ends on our noEmit tsconfig) until S01 ships
-# real routes.
+# api/health.ts (npm run build bundles api/** into the Build Output API via
+# scripts/build-vercel.ts; --prebuilt ships it without a remote rebuild — the
+# zero-config root-entrypoint pipeline dead-ends on our noEmit tsconfig)
+# until S01 ships real routes.
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -243,7 +244,7 @@ jobs:
           VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
-          URL="$(npx -y vercel@latest deploy --yes --token "$VERCEL_TOKEN")"
+          URL="$(npx -y vercel@latest deploy --prebuilt --yes --token "$VERCEL_TOKEN")"
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           echo "PREVIEW URL: $URL"
       - name: Probe preview /api/health.ts

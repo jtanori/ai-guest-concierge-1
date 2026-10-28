@@ -359,7 +359,16 @@ export function loadAuthConfig(
   } catch {
     throw new AuthConfigError("NEON_AUTH_JWKS_URL is not a valid URL");
   }
-  const issuer = source["NEON_AUTH_ISSUER"] ?? source["NEON_AUTH_BASE_URL"];
+  // `||`, not `??`: CI maps every contract name into the job env, and a name the
+  // GitHub Environment does not set resolves to the EMPTY STRING, not to
+  // undefined. `??` therefore never fell back to NEON_AUTH_BASE_URL when a
+  // workflow mapped `NEON_AUTH_ISSUER: ${{ vars.NEON_AUTH_ISSUER }}` and the
+  // variable was absent — the oneOf group passed the file-based readiness check
+  // (name absent) and failed the env-based one (name present, empty). The
+  // contract's rule is presence = non-empty; this is that rule.
+  const issuer =
+    (source["NEON_AUTH_ISSUER"] ?? "").trim() ||
+    (source["NEON_AUTH_BASE_URL"] ?? "").trim();
   if (!issuer) {
     throw new AuthConfigError(
       "NEON_AUTH_ISSUER or NEON_AUTH_BASE_URL is required to verify token issuer",
@@ -368,6 +377,6 @@ export function loadAuthConfig(
   return {
     url,
     issuer,
-    audience: source["NEON_AUTH_AUDIENCE"] ?? issuer,
+    audience: (source["NEON_AUTH_AUDIENCE"] ?? "").trim() || issuer,
   };
 }

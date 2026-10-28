@@ -5,6 +5,19 @@
       "src": "api/**/*.ts",
       "use": "@vercel/node"
     }
+  ],
+  "routes": [
+    {
+      "src": "/healthz/postgres",
+      "dest": "/api/healthz/postgres.ts"
+    },
+    {
+      "src": "/healthz",
+      "dest": "/api/healthz.ts"
+    },
+    {
+      "handle": "filesystem"
+    }
   ]
 }
 

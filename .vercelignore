@@ -1,0 +1,33 @@
+# Uploaded by `vercel deploy` from a workstation.
+#
+# IMPORTANT: the CLI does NOT apply .gitignore — only this file. The .env
+# files were uploaded inside a failed local deployment before this file
+# existed (remediated: that deployment was deleted). Never remove the
+# .env rules below.
+
+# Credentials — never upload
+.env
+.env.*
+.neon
+
+# Local-only strays. pnpm-lock.yaml made Vercel pick pnpm for this npm
+# project and the build died on `packages field missing or empty`
+# (pnpm-workspace.yaml has no packages field). CI never sees these files.
+pnpm-lock.yaml
+pnpm-workspace.yaml
+
+# Dependencies / build output / tool state
+node_modules
+.vercel
+.git
+.next
+dist
+build
+coverage
+
+# Logs / OS noise
+*.log
+.DS_Store
+Thumbs.db
+.idea
+.vscode

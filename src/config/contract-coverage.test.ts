@@ -207,10 +207,11 @@ describe("contract coverage - stage sub-contracts against CORE", () => {
 describe("contract coverage - the Vercel surface serves what smoke probes", () => {
   // smoke.ts probes these paths on ${API_URL} on EVERY run; the deploy job's
   // smoke step is the last gate before a deployment is called green. The
-  // Vercel-hosted surface is only api/** (vercel.json builds pin), so a probe
-  // path with no file behind it 404s - which is exactly how the first staging
-  // rehearsal failed: /healthz existed on the long-running host and nowhere
-  // else. This test makes that mismatch a PR-time failure.
+  // Vercel-hosted surface is only api/** (bundled into the Build Output API by
+  // scripts/build-vercel.ts), so a probe path with no file behind it 404s -
+  // which is exactly how the first staging rehearsal failed: /healthz existed
+  // on the long-running host and nowhere else. This test makes that mismatch
+  // a PR-time failure.
   const ALWAYS_PROBED = ["/healthz", "/healthz/postgres"];
   // Only probed with --write (never in deploy.yml): posting a synthetic guest
   // turn. Ported with the rest of the chat surface in #153's Option A.
@@ -218,7 +219,10 @@ describe("contract coverage - the Vercel surface serves what smoke probes", () =
 
   const vercelJson = JSON.parse(
     readFileSync(new URL("../../vercel.json", import.meta.url), "utf8"),
-  ) as { builds?: { src?: string }[]; routes?: { src?: string; dest?: string }[] };
+  ) as { routes?: { src?: string; dest?: string }[] };
+  const packageJson = JSON.parse(
+    readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+  ) as { scripts?: { build?: string } };
 
   it("extracts the probe list from smoke.ts (so the guard tracks the script)", () => {
     const smoke = readFileSync(new URL("../../scripts/smoke.ts", import.meta.url), "utf8");
@@ -230,15 +234,23 @@ describe("contract coverage - the Vercel surface serves what smoke probes", () =
     }
   });
 
-  it("builds every always-probed path: a file exists behind the route", () => {
-    // Builds pin api/**/*.ts, and the builder serves each file at its source path
-    // (that is how /api/health.ts answers today), so the route dest must be an
-    // existing file under api/.
-    expect(vercelJson.builds?.map((b) => b.src)).toContain("api/**/*.ts");
+  it("bundles every always-probed path: a file exists behind the route", () => {
+    // The build script is what puts api/** into the deployment, so the first
+    // assertion keeps `npm run build` wired to it - a green tsc alone deploys
+    // nothing. The rest: every probe route must dest to an existing api entry
+    // on the api surface (a dest outside api/ would be the monolith returning),
+    // which scripts/build-vercel.ts then bundles at that exact path.
+    expect(packageJson.scripts?.build ?? "").toContain("build-vercel.ts");
     for (const path of ALWAYS_PROBED) {
       const route = (vercelJson.routes ?? []).find((r) => r.src === path);
       expect(route, `vercel.json has no route for ${path} - smoke will 404`).toBeDefined();
-      const file = join(ROOT, route!.dest!.replace(/^\//, ""));
+      expect(
+        route!.dest!.startsWith("/api/"),
+        `route ${path} dests to ${route!.dest} - outside the api surface`,
+      ).toBe(true);
+      // Route dests are extensionless (the function dir name); the source file
+      // behind them carries the .ts the bundler consumed.
+      const file = join(ROOT, route!.dest!.replace(/^\//, "") + ".ts");
       expect(
         statSync(file, { throwIfNoEntry: false })?.isFile(),
         `route ${path} -> ${route!.dest} has no file behind it`,

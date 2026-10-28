@@ -8,7 +8,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node --experimental-strip-types scripts/build-vercel.ts",
     "check:env": "node scripts/check-env.ts",
     "check:readiness": "node --experimental-strip-types scripts/check-readiness.ts",
     "check:secrets": "node --experimental-strip-types scripts/check-secrets.ts",
@@ -38,6 +38,7 @@
     "@types/node": "^24.19.2",
     "@types/pg": "^8.23.1",
     "@types/qrcode": "^1.5.6",
+    "esbuild": "^0.28.2",
     "eslint": "^9.39.5",
     "exceljs": "^4.4.0",
     "globals": "^15.15.0",

@@ -136,6 +136,29 @@ jobs:
           echo "STAGING_DEPLOY_URL=$URL" >> "$GITHUB_ENV"
           echo "deployed: $URL" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: pin the staging domain to this deployment
+        # The staging domain is NOT a production domain (it used to be — which is
+        # how it served a stale production build and 500ed, see #153). It serves
+        # whatever deployment it is aliased to, and this step re-pins it after
+        # every deploy: before smoke, so that probing API_URL (the staging
+        # domain) proves THIS deployment answers, not the previous one. A failed
+        # alias must fail the job (curl -f): otherwise smoke would probe the old
+        # deployment and could pass while the new one is unreachable.
+        # Raw API, not `vercel alias set`: the CLI resolves aliases against
+        # team-REGISTERED domains only, and bretu.dev is external DNS verified
+        # per-domain — the CLI fails with "You don't have access to the domain".
+        # The aliases endpoint takes the deployment URL directly.
+        # The web domain gets its own alias line when the web deploy step lands (#153) —
+        # it can never alias to an API deployment.
+        run: |
+          DEPLOY="${STAGING_DEPLOY_URL#https://}"
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $VERCEL_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"alias":"api.concierge-staging.bretu.dev"}' \
+            "https://api.vercel.com/v2/deployments/$DEPLOY/aliases?teamId=$VERCEL_ORG_ID"
+          echo "pinned api.concierge-staging.bretu.dev → $DEPLOY" >> "$GITHUB_STEP_SUMMARY"
+
       - name: smoke
         run: |
           if [ -z "${API_URL}" ]; then

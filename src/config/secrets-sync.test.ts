@@ -15,6 +15,7 @@ const empty = (): RemoteState => ({
     environmentExists: true,
   },
   vercel: { target: "preview", entries: new Map<string, string | null>() },
+  vercelWeb: { target: "preview", entries: new Map<string, string | null>() },
 });
 
 const SOURCE: Record<string, string> = {
@@ -44,14 +45,14 @@ describe("planSync — routing", () => {
       store: "github-environment",
       kind: "variable",
     });
-    expect(row(plan, "REVIEW_API_URL").target).toBe("vercel:preview");
+    expect(row(plan, "REVIEW_API_URL").target).toBe("vercel-web:preview");
     expect(row(plan, "VERCEL_PROJECT_ID").target).toBe("repo");
   });
 
   it("maps prod to the production environment and the production Vercel target", () => {
     const plan = planSync("prod", { ...SOURCE, APP_ENV: "prod" }, empty());
     expect(row(plan, "LLM_API_KEY").target).toBe("environment:production");
-    expect(row(plan, "REVIEW_API_URL").target).toBe("vercel:production");
+    expect(row(plan, "REVIEW_API_URL").target).toBe("vercel-web:production");
   });
 
   it("never writes a value the host supplies", () => {
@@ -101,22 +102,31 @@ describe("planSync — deciding whether to write", () => {
   });
 
   it("compares a Vercel value when Vercel returned one", () => {
+    // REVIEW_API_URL is consumer:"web", so it reads from vercelWeb (the web project).
     const state = empty();
-    state.vercel!.entries.set("REVIEW_API_URL", "https://api.staging.example.com");
+    state.vercelWeb!.entries.set("REVIEW_API_URL", "https://api.staging.example.com");
     expect(row(planSync("staging", SOURCE, state), "REVIEW_API_URL").action).toBe("skip-equal");
 
-    state.vercel!.entries.set("REVIEW_API_URL", "https://old.example.com");
+    state.vercelWeb!.entries.set("REVIEW_API_URL", "https://old.example.com");
     expect(row(planSync("staging", SOURCE, state), "REVIEW_API_URL").action).toBe("update");
   });
 
   it("treats a Vercel value it cannot read as present, unverified", () => {
     const state = empty();
-    state.vercel!.entries.set("REVIEW_API_URL", null);
+    state.vercelWeb!.entries.set("REVIEW_API_URL", null);
     expect(row(planSync("staging", SOURCE, state), "REVIEW_API_URL").action).toBe("skip-present");
   });
 
+  it("routes web-consumer vercel vars to vercel-web, not vercel", () => {
+    const plan = planSync("staging", SOURCE, empty());
+    // NEXT_PUBLIC_TURNSTILE_SITE_KEY is consumer:"web" + store:"vercel" → web project.
+    expect(row(plan, "NEXT_PUBLIC_TURNSTILE_SITE_KEY").target).toBe("vercel-web:preview");
+    // REVIEW_API_URL is also consumer:"web" → web project.
+    expect(row(plan, "REVIEW_API_URL").target).toBe("vercel-web:preview");
+  });
+
   it("decides nothing when the store cannot be read", () => {
-    const plan = planSync("staging", SOURCE, { github: null, vercel: null });
+    const plan = planSync("staging", SOURCE, { github: null, vercel: null, vercelWeb: null });
     expect(row(plan, "LLM_API_KEY").action).toBe("blocked");
     expect(plan.writes).toBe(0);
   });

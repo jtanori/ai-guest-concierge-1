@@ -221,8 +221,12 @@ async function main(): Promise<number> {
 
   const github = args.destinations.github ? readGithubState(env) : null;
   const vercel = args.destinations.vercel ? await readVercelState(env, source) : null;
+  const vercelWeb =
+    args.destinations.vercel && source["VERCEL_WEB_PROJECT_ID"]
+      ? await readVercelState(env, source, fetch, source["VERCEL_WEB_PROJECT_ID"])
+      : null;
 
-  const plan = planSync(env, source, { github, vercel }, {
+  const plan = planSync(env, source, { github, vercel, vercelWeb }, {
     force: args.force,
     ...(args.only === null ? {} : { only: args.only }),
   });
@@ -283,10 +287,21 @@ async function main(): Promise<number> {
     const value = row.value ?? "";
     let ok: boolean;
     if (row.store === "vercel") {
+      const isWeb = row.target.startsWith("vercel-web:");
+      const state = isWeb ? vercelWeb : vercel;
+      const projectId = isWeb ? source["VERCEL_WEB_PROJECT_ID"] : undefined;
       ok =
-        vercel === null
+        state === null
           ? false
-          : await writeVercel(row, value, vercel, row.action === "update" ? "update" : "create", source);
+          : await writeVercel(
+              row,
+              value,
+              state,
+              row.action === "update" ? "update" : "create",
+              source,
+              fetch,
+              projectId,
+            );
     } else {
       ok = writeGithub(row, value, env);
     }

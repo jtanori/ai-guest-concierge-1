@@ -104,30 +104,36 @@ function auditOne(
     };
   }
 
-  // vercel
-  if (remote.vercel !== null && remote.vercel.target !== vercelTargetFor(env)) {
+  // vercel — route to the correct project based on consumer
+  const isWeb = variable.consumer === "web";
+  const state = isWeb ? remote.vercelWeb : remote.vercel;
+  const stateLabel = isWeb ? "vercel (web project)" : "vercel (API project)";
+
+  if (state !== null && state.target !== vercelTargetFor(env)) {
     // A state read for one target cannot answer for another. Reporting "present"
     // here would let a preview-only variable satisfy a production audit.
     return {
       name: variable.name,
       store,
       status: "unknown",
-      detail: `state was read for target "${remote.vercel.target}", not "${vercelTargetFor(env)}"`,
+      detail: `${stateLabel} state was read for target "${state.target}", not "${vercelTargetFor(env)}"`,
     };
   }
-  if (remote.vercel === null) {
+  if (state === null) {
     return {
       name: variable.name,
       store,
       status: "unknown",
-      detail: "Vercel environment variables could not be listed (no token)",
+      detail: isWeb
+        ? "web project environment variables could not be listed (no VERCEL_WEB_PROJECT_ID or token)"
+        : "Vercel environment variables could not be listed (no token)",
     };
   }
   return {
     name: variable.name,
     store,
-    status: remote.vercel.entries.has(variable.name) ? "present" : "missing",
-    detail: `target ${remote.vercel.target}`,
+    status: state.entries.has(variable.name) ? "present" : "missing",
+    detail: `target ${state.target} (${stateLabel})`,
   };
 }
 

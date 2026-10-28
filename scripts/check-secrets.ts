@@ -136,7 +136,10 @@ async function main(): Promise<number> {
 
   const github = readGithubState(env);
   const vercel = await readVercelState(env, process.env);
-  const result = auditSecrets(env, { github, vercel }, localNames);
+  const vercelWeb = process.env["VERCEL_WEB_PROJECT_ID"]
+    ? await readVercelState(env, process.env, fetch, process.env["VERCEL_WEB_PROJECT_ID"])
+    : null;
+  const result = auditSecrets(env, { github, vercel, vercelWeb }, localNames);
 
   const checkedAnything = result.rows.some(
     (row) => row.status === "present" || row.status === "missing",

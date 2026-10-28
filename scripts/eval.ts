@@ -304,8 +304,14 @@ async function main(): Promise<number> {
     const conversationId = await ensureConversation(client);
 
     const judged: JudgedQuestion[] = [];
-    for (const question of questions) {
+    for (const [index, question] of questions.entries()) {
       judged.push(await judge(client, conversationId, question, ai));
+      // In live mode, a small delay between questions avoids Gemini rate limiting
+      // (429) on rapid sequential calls. The canary runs 20 questions; without
+      // this, the last few can exhaust the retry budget and surface as outages.
+      if (args.live && index < questions.length - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
     }
     const result = scoreEval(judged);
     const gate = evaluateGate(result);

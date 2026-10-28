@@ -50,6 +50,11 @@ on:
         description: 'Type "deploy-production" to deploy production'
         type: string
         required: false
+      deploy-web:
+        description: "Also deploy the web tier (requires the web Vercel project to exist)"
+        type: boolean
+        default: false
+        required: false
 
 concurrency:
   # A half-applied migration is worse than a queued deploy.
@@ -95,6 +100,7 @@ jobs:
       # Ids are not secrets — they sit in dashboard URLs. Only the token is.
       VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+      VERCEL_WEB_PROJECT_ID: ${{ vars.VERCEL_WEB_PROJECT_ID }}
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
     steps:
       - uses: actions/checkout@v4
@@ -157,8 +163,6 @@ jobs:
         # team-REGISTERED domains only, and bretu.dev is external DNS verified
         # per-domain — the CLI fails with "You don't have access to the domain".
         # The aliases endpoint takes the deployment URL directly.
-        # The web domain gets its own alias line when the web deploy step lands (#153) —
-        # it can never alias to an API deployment.
         run: |
           DEPLOY="${STAGING_DEPLOY_URL#https://}"
           curl -fsS -X POST \
@@ -167,6 +171,45 @@ jobs:
             -d '{"alias":"api.concierge-staging.bretu.dev"}' \
             "https://api.vercel.com/v2/deployments/$DEPLOY/aliases?teamId=$VERCEL_ORG_ID"
           echo "pinned api.concierge-staging.bretu.dev → $DEPLOY" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: deploy the web tier (gated)
+        # Gated behind the deploy-web input so the first merge does not
+        # accidentally deploy web before the pipeline is verified. The web
+        # project is a separate Vercel project (VERCEL_WEB_PROJECT_ID); the
+        # CLI links via env vars, not a .vercel directory.
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-web == 'true'
+        run: |
+          if [ -z "$VERCEL_WEB_PROJECT_ID" ]; then
+            echo "::error::deploy-web is true but VERCEL_WEB_PROJECT_ID is not set on this GitHub Environment."
+            exit 1
+          fi
+          cd web
+          URL="$(VERCEL_ORG_ID="$VERCEL_ORG_ID" VERCEL_PROJECT_ID="$VERCEL_WEB_PROJECT_ID" \
+            npx -y vercel@latest deploy --yes --token "$VERCEL_TOKEN")"
+          echo "STAGING_WEB_DEPLOY_URL=$URL" >> "$GITHUB_ENV"
+          echo "web deployed: $URL" >> "$GITHUB_STEP_SUMMARY"
+        env:
+          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+          VERCEL_WEB_PROJECT_ID: ${{ vars.VERCEL_WEB_PROJECT_ID }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+
+      - name: pin the staging web domain (gated)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-web == 'true'
+        run: |
+          if [ -z "$STAGING_WEB_DEPLOY_URL" ]; then
+            echo "::error::web deploy did not produce a URL — cannot pin the alias."
+            exit 1
+          fi
+          DEPLOY="${STAGING_WEB_DEPLOY_URL#https://}"
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $VERCEL_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"alias":"concierge-staging.bretu.dev"}' \
+            "https://api.vercel.com/v2/deployments/$DEPLOY/aliases?teamId=$VERCEL_ORG_ID"
+          echo "pinned concierge-staging.bretu.dev → $DEPLOY" >> "$GITHUB_STEP_SUMMARY"
+        env:
+          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
 
       - name: smoke
         run: |
@@ -213,6 +256,7 @@ jobs:
       # Ids are not secrets — they sit in dashboard URLs. Only the token is.
       VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+      VERCEL_WEB_PROJECT_ID: ${{ vars.VERCEL_WEB_PROJECT_ID }}
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
     steps:
       - uses: actions/checkout@v4
@@ -248,6 +292,41 @@ jobs:
           URL="$(npx -y vercel@latest deploy --prod --prebuilt --yes --token "$VERCEL_TOKEN")"
           echo "PROD_DEPLOY_URL=$URL" >> "$GITHUB_ENV"
           echo "deployed: $URL" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: deploy the web tier to production (gated)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-web == 'true'
+        run: |
+          if [ -z "$VERCEL_WEB_PROJECT_ID" ]; then
+            echo "::error::deploy-web is true but VERCEL_WEB_PROJECT_ID is not set on this GitHub Environment."
+            exit 1
+          fi
+          cd web
+          URL="$(VERCEL_ORG_ID="$VERCEL_ORG_ID" VERCEL_PROJECT_ID="$VERCEL_WEB_PROJECT_ID" \
+            npx -y vercel@latest deploy --prod --yes --token "$VERCEL_TOKEN")"
+          echo "PROD_WEB_DEPLOY_URL=$URL" >> "$GITHUB_ENV"
+          echo "web deployed: $URL" >> "$GITHUB_STEP_SUMMARY"
+        env:
+          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+          VERCEL_WEB_PROJECT_ID: ${{ vars.VERCEL_WEB_PROJECT_ID }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+
+      - name: pin the production web domain (gated)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.deploy-web == 'true'
+        run: |
+          if [ -z "$PROD_WEB_DEPLOY_URL" ]; then
+            echo "::error::web deploy did not produce a URL — cannot pin the alias."
+            exit 1
+          fi
+          DEPLOY="${PROD_WEB_DEPLOY_URL#https://}"
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $VERCEL_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"alias":"concierge.bretu.dev"}' \
+            "https://api.vercel.com/v2/deployments/$DEPLOY/aliases?teamId=$VERCEL_ORG_ID"
+          echo "pinned concierge.bretu.dev → $DEPLOY" >> "$GITHUB_STEP_SUMMARY"
+        env:
+          VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
 
       - name: smoke
         run: |

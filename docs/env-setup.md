@@ -31,7 +31,7 @@ for what you want to run.
 | 5 | `EMBEDDING_API_KEY` | retrieval beyond keyword matching | 2 min |
 | 6 | `TURNSTILE_SECRET`, `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | the bot check is real | 5 min |
 | 7 | `EMAIL_FROM`, `EMAIL_API_KEY`, `EMAIL_ESCALATION_FALLBACK`, `CONSOLE_BASE_URL` | escalation mail is delivered, not just queued | 10 min + DNS |
-| 8 | `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`, `API_URL` | the deploy pipeline | 5 min |
+| 8 | `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`, `VERCEL_WEB_PROJECT_ID`, `API_URL` | the deploy pipeline | 5 min |
 
 Steps 2–7 are **required for staging and prod** and merely recommended for local.
 A local file missing them still boots; the affected route answers 503 and names what
@@ -233,15 +233,19 @@ staff console. Point it at a host the recipient can reach — locally it default
 
 ---
 
-## 8. Deploy plumbing — `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`, `API_URL`
+## 8. Deploy plumbing — `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`, `VERCEL_WEB_PROJECT_ID`, `API_URL`
 
-These live at **repository** level, once, because a single Vercel project serves both
-environments. `API_URL` is per environment.
+These live at **repository** level, once, because the same ids serve both environments.
+`API_URL` is per environment. There are two Vercel projects: the API surface
+(`VERCEL_PROJECT_ID`) and the web tier (`VERCEL_WEB_PROJECT_ID`). Web-consumer
+vercel-store variables (`NEXT_PUBLIC_TURNSTILE_SITE_KEY`, `REVIEW_API_URL`) route
+to the web project, not the API project.
 
 | Value | Where |
 |---|---|
 | `VERCEL_TOKEN` | <https://vercel.com/account/settings/tokens> → **Create** → scope it to the team that owns the project → copy (shown once). Starts with `vcp_`. |
-| `VERCEL_PROJECT_ID` | Project → **Settings → General** → scroll to **Project ID**. Starts with `prj_`. |
+| `VERCEL_PROJECT_ID` | API project → **Settings → General** → scroll to **Project ID**. Starts with `prj_`. |
+| `VERCEL_WEB_PROJECT_ID` | Web project → **Settings → General** → **Project ID**. Starts with `prj_`. |
 | `VERCEL_ORG_ID` | Team → **Settings → General** → **Team ID**. Starts with `team_`. For a personal (Hobby) account it is your account ID under Personal Settings. |
 | `API_URL` | The deployed origin of this environment's API — the same value as `REVIEW_API_URL`, but read by CI's smoke step rather than by the Next server. |
 

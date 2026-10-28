@@ -19,9 +19,10 @@ const remote = (overrides: Partial<NonNullable<RemoteState["github"]>> = {}): Re
     ...overrides,
   },
   vercel: { target: "preview", entries: new Map<string, string | null>() },
+  vercelWeb: { target: "preview", entries: new Map<string, string | null>() },
 });
 
-const unreadable: RemoteState = { github: null, vercel: null };
+const unreadable: RemoteState = { github: null, vercel: null, vercelWeb: null };
 
 describe("auditSecrets", () => {
   it("maps an environment to the Vercel target it actually deploys to", () => {
@@ -69,9 +70,11 @@ describe("auditSecrets", () => {
   });
 
   it("checks Vercel variables against the right target", () => {
+    // REVIEW_API_URL is consumer:"web", so it reads from vercelWeb (the web project).
     const stagingHasIt: RemoteState = {
       github: remote().github,
-      vercel: { target: "preview", entries: new Map([["REVIEW_API_URL", "https://api.staging"]]) },
+      vercel: { target: "preview", entries: new Map() },
+      vercelWeb: { target: "preview", entries: new Map([["REVIEW_API_URL", "https://api.staging"]]) },
     };
     expect(
       auditSecrets("staging", stagingHasIt).rows.find((r) => r.name === "REVIEW_API_URL")!.status,
@@ -88,10 +91,45 @@ describe("auditSecrets", () => {
     const prodState: RemoteState = {
       github: remote().github,
       vercel: { target: "production", entries: new Map() },
+      vercelWeb: { target: "production", entries: new Map() },
     };
     expect(
       auditSecrets("prod", prodState).rows.find((r) => r.name === "REVIEW_API_URL")!.status,
     ).toBe("missing");
+  });
+
+  it("routes web-consumer vercel vars to the web project, not the API project", () => {
+    // NEXT_PUBLIC_TURNSTILE_SITE_KEY is consumer:"web". It must be present on the
+    // web project even when the API project's state has it.
+    const apiOnly: RemoteState = {
+      github: remote().github,
+      vercel: {
+        target: "preview",
+        entries: new Map([["NEXT_PUBLIC_TURNSTILE_SITE_KEY", "key-from-api-project"]]),
+      },
+      vercelWeb: { target: "preview", entries: new Map() },
+    };
+    // The API project has it, but the web project does not → missing for a web var.
+    expect(
+      auditSecrets("staging", apiOnly).rows.find(
+        (r) => r.name === "NEXT_PUBLIC_TURNSTILE_SITE_KEY",
+      )!.status,
+    ).toBe("missing");
+
+    // On the web project, it is present.
+    const webHasIt: RemoteState = {
+      github: remote().github,
+      vercel: { target: "preview", entries: new Map() },
+      vercelWeb: {
+        target: "preview",
+        entries: new Map([["NEXT_PUBLIC_TURNSTILE_SITE_KEY", "key-from-web-project"]]),
+      },
+    };
+    expect(
+      auditSecrets("staging", webHasIt).rows.find(
+        (r) => r.name === "NEXT_PUBLIC_TURNSTILE_SITE_KEY",
+      )!.status,
+    ).toBe("present");
   });
 
   it("accepts either half of an either/or pair", () => {

@@ -115,16 +115,19 @@ export interface VercelState extends NonNullable<RemoteState["vercel"]> {
 /**
  * Vercel environment variables for the target this environment deploys to.
  *
- * `decrypt=true` is requested because some variable types (plain) return their value;
- * sensitive ones never do, and come back as `null` — which the planner treats as
- * "present, not comparable" rather than inventing an equality.
+ * `projectId` selects which Vercel project to read: the API project by default,
+ * or the web project when `source["VERCEL_WEB_PROJECT_ID"]` is supplied by the
+ * caller. `decrypt=true` is requested because some variable types (plain) return
+ * their value; sensitive ones never do, and come back as `null` — which the
+ * planner treats as "present, not comparable" rather than inventing an equality.
  */
 export async function readVercelState(
   env: EnvName,
   source: Record<string, string | undefined>,
   fetchImpl: typeof fetch = fetch,
+  projectIdOverride?: string,
 ): Promise<VercelState | null> {
-  const projectId = source["VERCEL_PROJECT_ID"];
+  const projectId = projectIdOverride ?? source["VERCEL_PROJECT_ID"];
   const token = source["VERCEL_TOKEN"];
   const teamId = source["VERCEL_ORG_ID"];
   if (!projectId || !token) return null;
@@ -215,8 +218,9 @@ export async function writeVercel(
   action: "create" | "update",
   source: Record<string, string | undefined>,
   fetchImpl: typeof fetch = fetch,
+  projectIdOverride?: string,
 ): Promise<boolean> {
-  const projectId = source["VERCEL_PROJECT_ID"];
+  const projectId = projectIdOverride ?? source["VERCEL_PROJECT_ID"];
   const token = source["VERCEL_TOKEN"];
   const teamId = source["VERCEL_ORG_ID"];
   if (!projectId || !token) return false;

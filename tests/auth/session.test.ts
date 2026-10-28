@@ -196,6 +196,34 @@ describe("Neon Auth token verification (S02-01)", () => {
     ).toThrow(AuthConfigError);
   });
 
+  it("treats empty strings as absent — the oneOf group's CI form (W00-13)", () => {
+    // A workflow mapping `NEON_AUTH_ISSUER: ${{ vars.NEON_AUTH_ISSUER }}` for an
+    // Environment that does not set the variable puts an EMPTY STRING in the job
+    // env. `??` never falls back on "" (only on undefined), so the loader once
+    // threw while the file-based readiness check — where the name is simply
+    // absent — passed. Presence means non-empty, here and in the contract.
+    const base = "https://branch.neonauth.example/neondb/auth";
+    const jwks = `${base}/.well-known/jwks.json`;
+    expect(
+      loadAuthConfig({
+        NEON_AUTH_ISSUER: "",
+        NEON_AUTH_BASE_URL: base,
+        NEON_AUTH_JWKS_URL: jwks,
+      }),
+    ).toEqual({ url: jwks, issuer: base, audience: base });
+    expect(
+      loadAuthConfig({
+        NEON_AUTH_ISSUER: "  ",
+        NEON_AUTH_BASE_URL: base,
+        NEON_AUTH_JWKS_URL: jwks,
+        NEON_AUTH_AUDIENCE: "",
+      }),
+    ).toMatchObject({ issuer: base, audience: base });
+    expect(() =>
+      loadAuthConfig({ NEON_AUTH_ISSUER: "", NEON_AUTH_BASE_URL: "", NEON_AUTH_JWKS_URL: jwks }),
+    ).toThrow(AuthConfigError);
+  });
+
   it("exposes live-window claims for DB suites", () => {
     const claims = liveClaims();
     expect(claims["exp"]).toBeGreaterThan(Math.floor(Date.now() / 1000));

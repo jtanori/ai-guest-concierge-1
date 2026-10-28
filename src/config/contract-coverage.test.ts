@@ -203,3 +203,63 @@ describe("contract coverage - stage sub-contracts against CORE", () => {
     expect([...STAGES.prod.recommended].sort()).toEqual([...STAGES.staging.recommended].sort());
   });
 });
+
+describe("contract coverage - the Vercel surface serves what smoke probes", () => {
+  // smoke.ts probes these paths on ${API_URL} on EVERY run; the deploy job's
+  // smoke step is the last gate before a deployment is called green. The
+  // Vercel-hosted surface is only api/** (vercel.json builds pin), so a probe
+  // path with no file behind it 404s - which is exactly how the first staging
+  // rehearsal failed: /healthz existed on the long-running host and nowhere
+  // else. This test makes that mismatch a PR-time failure.
+  const ALWAYS_PROBED = ["/healthz", "/healthz/postgres"];
+  // Only probed with --write (never in deploy.yml): posting a synthetic guest
+  // turn. Ported with the rest of the chat surface in #153's Option A.
+  const WRITE_ONLY_PROBED = ["/api/chat/messages"];
+
+  const vercelJson = JSON.parse(
+    readFileSync(new URL("../../vercel.json", import.meta.url), "utf8"),
+  ) as { builds?: { src?: string }[]; routes?: { src?: string; dest?: string }[] };
+
+  it("extracts the probe list from smoke.ts (so the guard tracks the script)", () => {
+    const smoke = readFileSync(new URL("../../scripts/smoke.ts", import.meta.url), "utf8");
+    const probed = [...smoke.matchAll(/\$\{target\.url\}(\/[a-zA-Z0-9/_-]*)/g)].map(
+      (m) => m[1]!,
+    );
+    for (const path of ALWAYS_PROBED.concat(WRITE_ONLY_PROBED)) {
+      expect(probed, `smoke.ts no longer probes ${path} - update this guard`).toContain(path);
+    }
+  });
+
+  it("builds every always-probed path: a file exists behind the route", () => {
+    // Builds pin api/**/*.ts, and the builder serves each file at its source path
+    // (that is how /api/health.ts answers today), so the route dest must be an
+    // existing file under api/.
+    expect(vercelJson.builds?.map((b) => b.src)).toContain("api/**/*.ts");
+    for (const path of ALWAYS_PROBED) {
+      const route = (vercelJson.routes ?? []).find((r) => r.src === path);
+      expect(route, `vercel.json has no route for ${path} - smoke will 404`).toBeDefined();
+      const file = join(ROOT, route!.dest!.replace(/^\//, ""));
+      expect(
+        statSync(file, { throwIfNoEntry: false })?.isFile(),
+        `route ${path} -> ${route!.dest} has no file behind it`,
+      ).toBe(true);
+    }
+  });
+
+  it("routes appear before the filesystem handle, most specific first", () => {
+    const routes = vercelJson.routes ?? [];
+    const handleIndex = routes.findIndex((r) => (r as { handle?: string }).handle !== undefined);
+    expect(handleIndex, "no { handle: 'filesystem' } - /api/** would stop serving").toBeGreaterThan(
+      -1,
+    );
+    for (const path of ALWAYS_PROBED) {
+      const i = routes.findIndex((r) => r.src === path);
+      expect(i).toBeGreaterThanOrEqual(0);
+      expect(i).toBeLessThan(handleIndex);
+    }
+    // /healthz must not shadow /healthz/postgres.
+    const healthz = routes.findIndex((r) => r.src === "/healthz");
+    const pg = routes.findIndex((r) => r.src === "/healthz/postgres");
+    expect(pg).toBeLessThan(healthz);
+  });
+});

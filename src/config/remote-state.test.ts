@@ -109,13 +109,13 @@ describe("readGithubState", () => {
     const runner: CommandRunner = (_command, args) => {
       const path = args[1] ?? "";
       if (path.endsWith("/actions/secrets")) return "LLM_API_KEY\nGUEST_COOKIE_SECRET\n";
-      if (path.endsWith("/actions/variables")) return "LLM_PRIMARY_MODEL\tgemini-2.5-flash\n";
+      if (path.endsWith("/actions/variables")) return "LLM_PRIMARY_MODEL\tgemini-3.6-flash\n";
       return "";
     };
     const state = readGithubState("staging", runner);
     expect(state).not.toBeNull();
     expect(state!.repoSecrets.has("LLM_API_KEY")).toBe(true);
-    expect(state!.repoVariables.get("LLM_PRIMARY_MODEL")).toBe("gemini-2.5-flash");
+    expect(state!.repoVariables.get("LLM_PRIMARY_MODEL")).toBe("gemini-3.6-flash");
     // A secret has no value to compare — that is the whole reason for skip-present.
     expect(state!.repoVariables.has("LLM_API_KEY")).toBe(false);
   });

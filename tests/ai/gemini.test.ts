@@ -95,8 +95,8 @@ const request = {
 
 describe("Gemini adapter (S05-01 / DEC-2)", () => {
   it("pins the recommended pair and sends a pinned model id", () => {
-    expect(RECOMMENDED_GEMINI_PRIMARY).toBe("gemini-2.5-flash");
-    expect(RECOMMENDED_GEMINI_FALLBACK).toBe("gemini-2.5-flash-lite");
+    expect(RECOMMENDED_GEMINI_PRIMARY).toBe("gemini-3.6-flash");
+    expect(RECOMMENDED_GEMINI_FALLBACK).toBe("gemini-3.5-flash-lite");
     const { ai, calls } = provider(() => geminiReply(answerJson()));
     expect(ai.modelId).toBe(RECOMMENDED_GEMINI_PRIMARY);
     void ai.generate(request).then(() => {

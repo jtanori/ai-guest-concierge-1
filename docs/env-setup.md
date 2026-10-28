@@ -136,20 +136,23 @@ preview origin while staging has no domain.
 Leave the two model ids as shipped unless you have a reason:
 
 ```text
-LLM_PRIMARY_MODEL=gemini-2.5-flash
-LLM_FALLBACK_MODEL=gemini-2.5-flash-lite
+LLM_PRIMARY_MODEL=gemini-3.6-flash
+LLM_FALLBACK_MODEL=gemini-3.5-flash-lite
 ```
 
 They are pinned on purpose. `loadLlmConfig` **refuses** a value ending in `-latest`,
 because the same alias is a different model six months from now.
 
-> **These two ids are two generations behind as of October 2026.** The models page
-> (<https://ai.google.dev/gemini-api/docs/models>) lists Gemini 4 Argon and Gemini 3.8
-> Flash as current; `gemini-2.5-flash` and `gemini-2.5-flash-lite` are still served,
-> under their own sections. The pair stays the default here because it is the pair the
-> prompts, the eval set and the tests were built against — switching a model is a
-> measurement, not a paste. If you want the newer generation, swap both ids and re-run
-> `npm run eval` before deciding; the loader only requires that whatever you set is
+> **The 2.5 pair was retired by Google (observed 2026-10-28; the nightly canary's
+> first red run was 2026-10-27).** Calls return `404 "no longer available to new
+> users"`. The ids above replaced them after verifying each against the live API
+> with the project's own key. Google's suggested successor for the primary
+> (`gemini-3.8-flash`) was returning sustained `503 UNAVAILABLE` capacity errors at
+> swap time, which is why the primary sits one version earlier; the fallback
+> (`gemini-3.5-flash-lite`) is Google's own suggested replacement for the retired
+> lite. Swapping a model is a measurement, not a paste: change both ids, re-run
+> `npm run eval -- --live` (the nightly canary is the live measurement), and keep
+> them only if the gate passes. The loader only requires that whatever you set is
 > pinned.
 
 The rest have working defaults — `LLM_BASE_URL`, `LLM_TIMEOUT_MS` (8000),

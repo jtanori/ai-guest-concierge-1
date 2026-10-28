@@ -1,0 +1,106 @@
+name: failure-report
+
+# Every red run in this repo becomes a Sentry issue — not another email.
+#
+# The failure mode this exists for: GitHub emails on every failed run, and a
+# stretch of red runs (deploy experiments, broken builds) trains the inbox
+# owner to filter those emails as expected noise — at which point a DIFFERENT
+# red run (the nightly eval canary, three nights running) arrives disguised as
+# the same noise and gets ignored until someone happens to read the logs.
+# A Sentry issue is fingerprinted (one open issue per workflow, not per run),
+# stays unresolved until a human acts, and carries a click-through to the run:
+# a signal that cannot be mass-deleted from an inbox.
+#
+# SENTRY_DSN is still `planned` in the contract (W00-14): until a Sentry
+# project exists, this job SAYS SO and succeeds — an unprovisioned reporter
+# must not turn every workflow red a second time. When the DSN lands:
+#   1. add it as a repo secret (SENTRY_DSN)
+#   2. un-plan SENTRY_DSN in src/config/manifest.ts and set store: github-repo
+#   3. npm run secrets:sync (both envs, the value is repo-level)
+#
+# Cancelled runs are deliberately NOT reported: cancel-in-progress superseding
+# a run is routine (the concurrency groups do it on every push) and reporting
+# it would recreate the exact noise this workflow exists to remove.
+
+on:
+  workflow_run:
+    workflows: [CI, deploy, eval, jobs-smoke]
+    types: [completed]
+
+# No API calls are made — everything comes from the event payload — so the
+# job needs no token scope at all.
+permissions: {}
+
+concurrency:
+  group: failure-report-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  sentry:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' ||
+      github.event.workflow_run.conclusion == 'timed_out'
+    steps:
+      - name: Report the failed run to Sentry
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          RUN_PATH: ${{ github.event.workflow_run.path }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          DISPLAY_TITLE: ${{ github.event.workflow_run.display_title }}
+        run: |
+          if [ -z "$SENTRY_DSN" ]; then
+            echo "::warning::SENTRY_DSN is not set — failed run NOT reported to Sentry: $RUN_URL"
+            exit 0
+          fi
+          # Probed 2026-10-28 against the real DSNs (both answered 200):
+          #  - POSTing the raw event to the bare DSN path        -> 404
+          #  - POSTing raw JSON to /api/<project>/ (store)       -> 404
+          #  - auth in BOTH query string and X-Sentry-Auth header -> 401
+          #    "multiple authorization payloads detected"
+          # The working shape is an ENVELOPE with query-only auth:
+          #   https://<key>@<host>/api/<project>/envelope/?sentry_key=<key>&sentry_version=7
+          scheme="${SENTRY_DSN%%://*}"
+          key="${SENTRY_DSN#*://}"; key="${key%%@*}"
+          rest="${SENTRY_DSN#*@}"; host="${rest%%/*}"
+          project="/${rest#*/}"; project="${project%/}"
+          endpoint="$scheme://$key@$host/api$project/envelope/?sentry_key=$key&sentry_version=7"
+          event_id=$(uuidgen | tr -d '-' | tr '[:upper:]' '[:lower:]')
+          sent_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          jq -cn --arg id "$event_id" --arg t "$sent_at" '{event_id:$id, sent_at:$t}'   > /tmp/envelope
+          echo '{"type":"event"}'                                                       >> /tmp/envelope
+          jq -cn \
+            --arg message "$RUN_PATH failed ($RUN_CONCLUSION): $RUN_URL" \
+            --arg logger "github-actions.$RUN_PATH" \
+            --arg conclusion "$RUN_CONCLUSION" \
+            --arg url "$RUN_URL" \
+            --arg branch "$HEAD_BRANCH" \
+            --arg title "$DISPLAY_TITLE" \
+            --arg run_id "$RUN_ID" \
+            '{
+              message: $message,
+              platform: "other",
+              level: "error",
+              logger: $logger,
+              tags: {
+                workflow: $logger,
+                conclusion: $conclusion,
+                branch: $branch,
+                run_id: $run_id
+              },
+              extra: { run_url: $url, title: $title }
+            }' >> /tmp/envelope
+          http_code=$(curl -sS -o /tmp/sentry-reply.txt -w '%{http_code}' \
+            -X POST "$endpoint" \
+            -H 'Content-Type: application/x-sentry-envelope' \
+            --data-binary @/tmp/envelope)
+          if [ "$http_code" = "200" ] || [ "$http_code" = "202" ]; then
+            echo "reported to Sentry: $RUN_URL"
+          else
+            echo "::error::Sentry rejected the envelope (HTTP $http_code) — this run went unreported: $RUN_URL"
+            cat /tmp/sentry-reply.txt || true
+            exit 1
+          fi

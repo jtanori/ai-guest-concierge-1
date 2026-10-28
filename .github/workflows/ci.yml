@@ -232,6 +232,11 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      # --prebuilt ships .vercel/output from THIS workspace (the remote build
+      # is skipped, which is the point — see deploy.yml), so the preview job
+      # must install and build like every other producer of that output.
+      - run: npm ci
+      - run: npm run build
       - name: Deploy PR preview to Vercel
         id: deploy
         env:

@@ -29,7 +29,7 @@ def hdr(ws,row,labels,color=NAVY):
 ws=wb.active; ws.title="README"; ws.sheet_properties.tabColor=NAVY
 ws.column_dimensions["A"].width=3; ws.column_dimensions["B"].width=32; ws.column_dimensions["C"].width=94
 ws["B2"]="Master Sprint Backlog v2"; ws["B2"].font=Font(name="Calibri",size=18,bold=True,color=NAVY)
-ws["B3"]="Single source of truth for the build · 80 items · 14 sprints · 21 Oct 2026"
+ws["B3"]=f"Single source of truth for the build · {n_lean+len(WA)+len(DEFERRED)} items · 14 sprints · 21 Oct 2026"
 ws["B3"].font=Font(name="Calibri",size=10,italic=True,color=GREY)
 rows=[("",""),
 ("The numbers",""),
@@ -48,7 +48,7 @@ rows=[("",""),
 ("",""),
 ("How to read it",""),
 ("02 · Sprint ladder","14 sprints: goal, items, days, cumulative weeks, gate, exit criterion."),
-("03 · Master backlog","All 80 items with sprint, track, estimate, dependency and acceptance criteria. The working board."),
+ ("03 · Master backlog",f"All {n_lean+len(WA)+len(DEFERRED)} items with sprint, track, estimate, dependency and acceptance criteria. The working board."),
 ("04 · Capacity","Demand vs capacity per sprint, split by owner."),
 ("05 · Gates","Gates mapped to the sprint that closes them."),
 ("06 · Critical path","The dependency chain that sets the launch date."),
@@ -138,7 +138,7 @@ for d in LAD:
     tot=eng+fnd
     st="Fits" if tot<=5.0 else "Over by %.2f"%(tot-5.0)
     note=""
-    if d["sid"]=="W00": note="8.0 days in a 5-day week. Fits only with founder and engineer in parallel; solo it runs to mid-W1."
+    if d["sid"]=="W00": note=f"{d['days']:.1f} days in a 5-day week. Fits only with founder and engineer in parallel; solo it runs to mid-W1."
     elif d["sid"]=="S13": note="Launch work plus ~3 days of carry-forward room."
     elif tot>5.0: note="Spills into the following week."
     vals=[d["sid"],d["wk"],d["name"],eng,fnd,tot,st,note]

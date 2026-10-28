@@ -12,9 +12,12 @@
  *  - default: `createGroundedProvider()` — deterministic, no key, no network.
  *    It measures retrieval and the guardrails, which is what a PR can break.
  *  - `--live`: the production Gemini pair (DEC-2). Used by the nightly canary;
- *    needs `GEMINI_API_KEY`. Never used in PR CI — a vendor outage must not be
- *    able to turn a pull request red for a reason the author cannot fix, and an
- *    LLM key in PR CI is a key in every fork.
+ *    needs `LLM_API_KEY` — the SAME name the app boots with, because `buildAi`
+ *    below calls `loadLlmConfig`, which reads `LLM_API_KEY` and nothing else.
+ *    A second name for one credential is two places to rotate and one to forget.
+ *    Never used in PR CI — a vendor outage must not be able to turn a pull
+ *    request red for a reason the author cannot fix, and an LLM key in PR CI is
+ *    a key in every fork.
  *
  * Two gates, and they are not the same gate:
  *
@@ -277,8 +280,11 @@ async function main(): Promise<number> {
 
   let ai: ReturnType<typeof withResilience>;
   if (args.live) {
-    if ((process.env["GEMINI_API_KEY"] ?? "").trim() === "") {
-      console.error("eval: --live needs GEMINI_API_KEY. The canary never falls back to a stub.");
+    if ((process.env["LLM_API_KEY"] ?? "").trim() === "") {
+      console.error(
+        "eval: --live needs LLM_API_KEY (the canary job reads it from the staging environment). " +
+          "The canary never falls back to a stub.",
+      );
       return 2;
     }
     ai = buildAi(process.env);

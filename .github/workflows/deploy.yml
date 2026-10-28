@@ -1,0 +1,250 @@
+# W00-13 — staging and production deploys, in the order that fails safely.
+#
+#   1. readiness   — is the environment complete? Refuse before touching anything.
+#   2. matrix      — are staging and prod pointing at different databases?
+#   3. migrate     — schema first, against the environment's own database.
+#   4. deploy      — only now does new code meet an upgraded database.
+#   5. smoke       — prove the environment answers, and that it is the environment
+#                    it claims to be.
+#
+# The order is the whole point. A deploy that ships code before migrating runs the
+# new code against the old schema; a migration that runs after a readiness check
+# fails has already touched a database for an environment that was never deployable.
+#
+# ## What "deploy" means here, stated plainly
+#
+# The Vercel project in this repository is the API surface (`api/**`). The
+# long-running application process (`src/server.ts`) has no host configuration in
+# this repository yet — choosing one is an infrastructure decision, not a YAML edit,
+# and inventing one would produce a workflow that reports success while nothing
+# serves the product. So this workflow:
+#
+#   - migrates the environment's database (real, and the part that must never be
+#     reordered),
+#   - deploys the Vercel surface to that environment's target,
+#   - runs `smoke` against the `API_URL` **variable of that GitHub Environment** when
+#     it is configured, and says out loud when it is not.
+#
+# The smoke step SKIPPING is visible in the job summary. It is never a pass.
+#
+# ## Environments
+#
+# Both jobs bind to a GitHub Environment (`staging`, `production`). Protection rules
+# live there — required reviewers, wait timers, branch restrictions — which is what
+# makes the production gate a review rather than a hope.
+
+name: deploy
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Which environment to deploy"
+        type: choice
+        options: [staging, production]
+        required: true
+      confirm:
+        description: 'Type "deploy-production" to deploy production'
+        type: string
+        required: false
+
+concurrency:
+  # A half-applied migration is worse than a queued deploy.
+  group: deploy-${{ github.event.inputs.environment || (startsWith(github.ref, 'refs/tags/v') && 'production' || 'staging') }}
+  cancel-in-progress: false
+
+jobs:
+  staging:
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'staging')
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      APP_ENV: staging
+      # This job's env is the API consumer only. NEXT_PUBLIC_TURNSTILE_SITE_KEY and
+      # REVIEW_API_URL belong to the web tier and live in Vercel; copying them here
+      # would be the blanket-sync this design rejects.
+      # ONE NAME, TWO VALUES. This job declares `environment: staging`, so
+      # `secrets.DATABASE_URL` resolves to staging's value. The production job below
+      # declares `environment: production` and reads the same names. There is no
+      # STAGING_DATABASE_URL and no PROD_DATABASE_URL: a suffixed name doubles the
+      # contract and is the thing this design exists to avoid.
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      GUEST_COOKIE_SECRET: ${{ secrets.GUEST_COOKIE_SECRET }}
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      LLM_PRIMARY_MODEL: ${{ vars.LLM_PRIMARY_MODEL }}
+      LLM_FALLBACK_MODEL: ${{ vars.LLM_FALLBACK_MODEL }}
+      EMBEDDING_API_KEY: ${{ secrets.EMBEDDING_API_KEY }}
+      TURNSTILE_SECRET: ${{ secrets.TURNSTILE_SECRET }}
+      NEON_AUTH_JWKS_URL: ${{ vars.NEON_AUTH_JWKS_URL }}
+      # The auth-issuer group is oneOf: either member satisfies the contract, and
+      # staging stores NEON_AUTH_BASE_URL (NEON_AUTH_ISSUER unset). Mapping only
+      # ISSUER made the job's readiness gate fail on a group whose partner value
+      # existed in the environment but never reached the job. Map both.
+      NEON_AUTH_ISSUER: ${{ vars.NEON_AUTH_ISSUER }}
+      NEON_AUTH_BASE_URL: ${{ vars.NEON_AUTH_BASE_URL }}
+      GUEST_PUBLIC_URL: ${{ vars.GUEST_PUBLIC_URL }}
+      EMAIL_FROM: ${{ vars.EMAIL_FROM }}
+      EMAIL_API_KEY: ${{ secrets.EMAIL_API_KEY }}
+      EMAIL_ESCALATION_FALLBACK: ${{ vars.EMAIL_ESCALATION_FALLBACK }}
+      CONSOLE_BASE_URL: ${{ vars.CONSOLE_BASE_URL }}
+      # Ids are not secrets — they sit in dashboard URLs. Only the token is.
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+
+      - name: readiness gate (before anything is touched)
+        run: npm run check:readiness -- --env staging --consumer api
+
+      # The cross-environment matrix (`check:env`) needs BOTH database URLs, and a
+      # job bound to one GitHub Environment can only see its own secrets — which is
+      # the point. Separation is proven where both environments are observable: the
+      # smoke step below compares each deployment's hashed cluster fingerprint. Run
+      # `npm run check:env` locally with all three URLs before the first deploy.
+
+      - name: where each secret must live
+        # Not continue-on-error: this is the ONLY gate that audits the web-tier
+        # values (store: vercel) — readiness runs --consumer api and downgrades
+        # them to warnings, so without a fatal check here a missing
+        # NEXT_PUBLIC_TURNSTILE_SITE_KEY ships to production. It runs before
+        # migrate, so a gap stops the deploy before anything is touched.
+        # --allow-unknown keeps the honest half: a store this job cannot read is
+        # reported unknown rather than failing the deploy over a permission.
+        env:
+          # So `gh` can list the stores from CI. A permission the token lacks still
+          # degrades that store to "unknown" — reported, never a fake green.
+          GH_TOKEN: ${{ github.token }}
+        run: npm run check:secrets -- --env staging --allow-unknown
+
+      - name: migrate BEFORE deploying
+        run: npm run db:migrate
+
+      - name: deploy the Vercel surface to the staging target
+        run: |
+          URL="$(npx -y vercel@latest deploy --yes --token "$VERCEL_TOKEN")"
+          echo "STAGING_DEPLOY_URL=$URL" >> "$GITHUB_ENV"
+          echo "deployed: $URL" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: pin the staging domain to this deployment
+        # The staging domain is NOT a production domain (it used to be — which is
+        # how it served a stale production build and 500ed, see #153). It serves
+        # whatever deployment it is aliased to, and this step re-pins it after
+        # every deploy: before smoke, so that probing API_URL (the staging
+        # domain) proves THIS deployment answers, not the previous one. A failed
+        # alias must fail the job (curl -f): otherwise smoke would probe the old
+        # deployment and could pass while the new one is unreachable.
+        # Raw API, not `vercel alias set`: the CLI resolves aliases against
+        # team-REGISTERED domains only, and bretu.dev is external DNS verified
+        # per-domain — the CLI fails with "You don't have access to the domain".
+        # The aliases endpoint takes the deployment URL directly.
+        # The web domain gets its own alias line when the web deploy step lands (#153) —
+        # it can never alias to an API deployment.
+        run: |
+          DEPLOY="${STAGING_DEPLOY_URL#https://}"
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $VERCEL_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"alias":"api.concierge-staging.bretu.dev"}' \
+            "https://api.vercel.com/v2/deployments/$DEPLOY/aliases?teamId=$VERCEL_ORG_ID"
+          echo "pinned api.concierge-staging.bretu.dev → $DEPLOY" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: smoke
+        run: |
+          if [ -z "${API_URL}" ]; then
+            echo "::warning::the API_URL variable is not set on the staging environment — the smoke step was SKIPPED, which is not a pass."
+            echo "### Smoke skipped" >> "$GITHUB_STEP_SUMMARY"
+            echo "No \`API_URL\` variable is set on this GitHub Environment, so nothing could be probed." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          npm run smoke -- --target "staging=${API_URL}"
+        env:
+          # Same name in every environment; the job's `environment:` decides the value.
+          API_URL: ${{ vars.API_URL }}
+
+  production:
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'workflow_dispatch' &&
+       github.event.inputs.environment == 'production' &&
+       github.event.inputs.confirm == 'deploy-production')
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      APP_ENV: prod
+      # Identical names to the staging job. `environment: production` above is the
+      # only thing that differs, and it is what makes these resolve to production's
+      # values. Never `PROD_LLM_API_KEY`: see the manifest's header comment.
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      GUEST_COOKIE_SECRET: ${{ secrets.GUEST_COOKIE_SECRET }}
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      LLM_PRIMARY_MODEL: ${{ vars.LLM_PRIMARY_MODEL }}
+      LLM_FALLBACK_MODEL: ${{ vars.LLM_FALLBACK_MODEL }}
+      EMBEDDING_API_KEY: ${{ secrets.EMBEDDING_API_KEY }}
+      TURNSTILE_SECRET: ${{ secrets.TURNSTILE_SECRET }}
+      NEON_AUTH_JWKS_URL: ${{ vars.NEON_AUTH_JWKS_URL }}
+      # oneOf group: both members mapped, in both jobs (see staging above).
+      NEON_AUTH_ISSUER: ${{ vars.NEON_AUTH_ISSUER }}
+      NEON_AUTH_BASE_URL: ${{ vars.NEON_AUTH_BASE_URL }}
+      GUEST_PUBLIC_URL: ${{ vars.GUEST_PUBLIC_URL }}
+      EMAIL_FROM: ${{ vars.EMAIL_FROM }}
+      EMAIL_API_KEY: ${{ secrets.EMAIL_API_KEY }}
+      EMAIL_ESCALATION_FALLBACK: ${{ vars.EMAIL_ESCALATION_FALLBACK }}
+      CONSOLE_BASE_URL: ${{ vars.CONSOLE_BASE_URL }}
+      # Ids are not secrets — they sit in dashboard URLs. Only the token is.
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+
+      - name: readiness gate (before anything is touched)
+        run: npm run check:readiness -- --env prod --consumer api
+
+      # The cross-environment matrix (`check:env`) needs BOTH database URLs, and a
+      # job bound to one GitHub Environment can only see its own secrets — which is
+      # the point. Separation is proven where both environments are observable: the
+      # smoke step below compares each deployment's hashed cluster fingerprint. Run
+      # `npm run check:env` locally with all three URLs before the first deploy.
+
+      - name: where each secret must live
+        # Fatal, before migrate — see the staging job's comment above.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: npm run check:secrets -- --env prod --allow-unknown
+
+      - name: migrate BEFORE deploying
+        run: npm run db:migrate
+
+      - name: deploy the Vercel surface to production
+        run: |
+          URL="$(npx -y vercel@latest deploy --prod --yes --token "$VERCEL_TOKEN")"
+          echo "PROD_DEPLOY_URL=$URL" >> "$GITHUB_ENV"
+          echo "deployed: $URL" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: smoke
+        run: |
+          if [ -z "${API_URL}" ]; then
+            echo "::warning::the API_URL variable is not set on the production environment — the smoke step was SKIPPED, which is not a pass."
+            echo "### Smoke skipped" >> "$GITHUB_STEP_SUMMARY"
+            echo "No \`API_URL\` variable is set on this GitHub Environment, so nothing could be probed." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          npm run smoke -- --target "prod=${API_URL}"
+        env:
+          API_URL: ${{ vars.API_URL }}

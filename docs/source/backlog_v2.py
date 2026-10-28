@@ -23,6 +23,7 @@ SPRINTS = [
  ("W00-18","Founder","Compliance","Privacy notice + DPA to Mexican counsel","LFPDPPP 2025: enumerated purposes, processor obligations explicit.",0.25,"P0","—","Sent; turnaround expected"),
  ("W00-19","Eng","Analytics","Event taxonomy written","18 events including staff_message_sent, each carrying tenant and conversation context.",0.5,"P0","—","18 events merged as a typed module; contract test passes; no dashboard before this exists"),
  ("W00-20","Both","Foundation","G0 review","Gate sign-off with both founders.",0.25,"P0","W00-03, W00-08, W00-10","Every W00 row ticked; unsigned ADRs block S01"),
+ ("W00-21","Eng","Foundation","Environment contract: core contract + per-stage sub-contracts","Split the manifest into CORE (what each variable is) and STAGES (what each environment requires); audit every gate for false, absent and conflicting names; coverage test binds code reads and workflow refs to the contract.",0.25,"P0","W00-13","No workflow or loader gates a name the contract does not declare; prod stage requires exactly what staging requires"),
 ]),
 ("S01","W1","Schema and tenancy","The data model everything else sits on","—",
  "Migration clean from empty · RLS on every tenant table · isolation suite green on every endpoint built",[

@@ -13,12 +13,12 @@ functions** via `neon init` + `neon deploy` (`neon.ts` is the policy of record).
 - **Proof:** `npm run smoke:neon` → `PASS postgres v18.6 · pg_trgm + vector available · neon_auth schema present`, `PASS auth · JWKS keys 1`, `PASS storage · put→get identical → delete`, `PASS functions · HTTP 200 "Hello from Neon Functions"`.
 - **App server:** `npm start` (pino JSON logs, tenant-context logger reused) serves `/healthz/{,postgres,auth,storage,function}` — all HTTP 200 with `ok` statuses; unknown paths 404.
 - **Env:** `.env.local` (gitignored) holds 10 Neon variables; `.env.example` documents them.
-- **Branch policy in neon.ts:** new non-default branches auto-expire (7d TTL) — staging/preview branches are therefore disposable by design; W00-13's "staging ≠ prod" closes via two branches with distinct credentials, checked by `npm run check:env`.
+- **Branch policy in neon.ts:** new non-default branches auto-expire (7d TTL) — staging/preview branches are therefore disposable by design. **Correction (W00-13, 2026-10-26): two branches of one Neon project are NOT two databases for the purposes of this AC.** They share the parent's cluster (they are copy-on-write forks of it), which is exactly the shared-infrastructure case the gate exists to refuse, and a 7-day TTL is not an environment. Staging and prod are two separate Neon projects, each verified by its own `cluster` fingerprint — see the W00-13 section below.
 
 ## Neon staging branch + two-environment gate (beyond-board infra) — wired and verified
 
 - `neon checkout staging --create` → branch `br-red-recipe-b42k56zk` (7d-Expiring policy applies); `neon deploy` provisioned its own bucket/function/auth and pulled 10 vars into `.env.staging` (gitignored, alongside prod's `.env.local`; neither file's values may ever be printed or committed).
-- `npm run check:env` now passes on real cloud values:
+- `npm run check:env` now passes on the real cloud values (both `.env` files):
   `staging -> ep-wispy-math-b4ir6xpv-pooler...` · `prod -> ep-solitary-hill-b49xrkad-pooler...` (distinct hosts ⇒ no shared DB possible).
 - Same `smoke-neon.ts` run against `.env.staging`: all four services PASS on staging too.
 - *Note:* staging env values are quote-wrapped by the CLI; `node --env-file` strips them, but hand-rolled PowerShell parsing must `.Trim('"')`.
@@ -107,30 +107,105 @@ $ npm test            # 3 passed (3)
 
 ## W00-13 — Three environments: local, staging, prod (0.75d)
 
-**AC (verbatim):** Staging and prod point at different databases.
+**AC (verbatim):** Three separate databases; no shared DB; CI proves staging and prod differ.
 
-**Status: NOT DONE — staging/prod cloud DBs pending (Phase B). Guard verified locally.**
+**Status: 🚧 ENGINEERING DONE (2026-10-26) — the AC's literal claim still needs two cloud databases, which only the owner can create.** Everything that can be built and proven without a cloud account is built and proven below. What is missing is not code: it is a Neon (or equivalent) project for staging and one for prod, and the secrets that hold their URLs.
 
-- [x] `src/config/env.ts` — `loadConfig` refuses to boot without `APP_ENV ∈ {local, staging, prod}` and a Postgres `DATABASE_URL`.
-- [x] `resolveDeploymentEnvironments` — the gate as a pure function: staging ≠ prod, and neither may reuse the local DB. Fail-fast, not a lint warning.
-- [x] `scripts/check-env.ts` (`npm run check:env`) — runs the gate with real URLs (Phase B) and exits non-zero on violation; masks secrets in output.
-- [x] `compose.yml` — local Postgres 17 **with pgvector** (D2/D3: embeddings populated from day one), host port 54329, named volume, healthcheck. Local only — staging/prod are cloud instances by definition.
-- [x] `.env.example` — template naming all three contexts; real env files gitignored.
-- [ ] **YOU (Phase B):** create two managed Postgres instances (Neon recommended — serverless, branching; or Supabase), separate regions/projects.
-- [ ] **YOU (Phase B):** run `LOCAL_DATABASE_URL=... STAGING_DATABASE_URL=... PROD_DATABASE_URL=... npm run check:env` → must print `OK — no shared databases`.
-- [ ] **Evidence (AC test):** the success run of `check:env` against the real staging/prod URLs. Also exercised locally with placeholder URLs (below) and 12 unit tests refusing every bad matrix.
+**Decision (owner, 2026-10-26):** scope = pipelines + environment contract; **fail fast outside local**; and the four operational requirements the owner named — a readiness script driven by a local `.env`, a secrets-where-they-are-needed check, smoke tests runnable against multiple environments, and migrations before deployment.
 
-**Evidence (local):**
+### What now exists
+
+| Piece | File | What it decides |
+|---|---|---|
+| The contract | `src/config/manifest.ts` | every variable's environments, secrecy, and home; 31 entries |
+| Readiness | `src/config/preflight.ts`, `scripts/check-readiness.ts` | is this environment complete, in one pass, secrets masked |
+| `.env` reader | `src/config/dotenv.ts` | reads `.env.<env>` without a dependency; malformed lines are errors |
+| Secret audit | `src/config/secrets-audit.ts`, `scripts/check-secrets.ts` | is each value in the store the pipeline reads |
+| Boot gate | `src/config/env.ts::resolveBootMode`, `src/server.ts` | staging/prod refuse to start half-configured |
+| Cluster identity | `src/server.ts` `/healthz/postgres` → `cluster` | Hashed `system_identifier`; proves two environments are not one database |
+| Smoke | `scripts/smoke.ts` | the same checks against one or many environments |
+| Pipeline | `.github/workflows/deploy.yml` | readiness → matrix → **migrate** → deploy → smoke |
+| CI gate | `.github/workflows/ci.yml` `env-check` | the gate is exercised on every PR, in both directions |
+
+### The bug that only a real boot found
+
+`checkReadiness` with a consumer filter emptied the error list and pushed back only the findings that belonged to the *other* consumer — so a strict staging process with a single `DATABASE_URL` booted happily, serving 503s. The unit tests passed: they asserted against the unfiltered report. Starting the server with `APP_ENV=staging` is what caught it, and `src/config/preflight.test.ts` now pins both directions (the API's errors stay fatal for `api`, the Next.js errors do not).
+
+That is the argument for the boot gate existing at all: the readiness report and the process that boots must be the same code path, or the check is a second opinion nobody consults.
+
+### Evidence (local, verified)
+
 ```text
-$ npm run check:env            # no URLs set → fails fast: "STAGING_DATABASE_URL missing or not Postgres"
-$ STAGING_DATABASE_URL=postgres://demo@staging.example.com/db `
-  PROD_DATABASE_URL=postgres://demo@prod.example.com/db npm run check:env
-OK — no shared databases:
-  staging -> postgres://staging.example.com/db
-  prod    -> postgres://prod.example.com/db
+$ APP_ENV=staging DATABASE_URL=postgres://… PORT=8898 node src/server.ts
+boot refused: APP_ENV=staging requires a complete configuration before it serves a guest
+  13 configuration errors:
+  ✗ NEON_AUTH_JWKS_URL: required in staging and absent — staff tokens cannot be verified …
+  ✗ GUEST_COOKIE_SECRET: … (exit 1, no listener)
+
+$ APP_ENV=local … node src/server.ts
+{"env":"local","config":"resolved","boot":"tolerant",…,"msg":"health server listening"}
+$ curl /healthz            → {"status":"ok","env":"local","boot":"tolerant"}
+$ curl /healthz/postgres   → {"database":"concierge_local","cluster":"3a04008a6800d732"}
+
+$ npm run check:readiness -- --env staging --file .env.staging   # complete file
+verdict: READY (0 errors, 0 warnings)                            exit 0
+$ npm run check:readiness -- --env staging --file .env.staging.bad
+verdict: NOT READY (11 errors) — every gap in one pass, no secret printed   exit 1
+
+$ npm run smoke -- --target local=http://127.0.0.1:8899
+PASS healthz · PASS env-matches-target · PASS postgres             exit 0
+
+$ npm run check:env -- --staging .env.staging --prod .env.production   # shared URL
+check:env FAILED: staging and prod must NOT share a database (W00-13 exit criterion)
+$ npm run check:env -- --staging .env.staging --prod .env.production --local .env
+OK — no shared databases                                           exit 0
 ```
 
-Note: Docker Desktop was not running; `compose up -d` verification pending — retry before S01 (the local DB is not needed for the W00-13 AC itself).
+### What is NOT done, precisely
+
+- **The two cloud databases do not exist.** Until they do, the AC's first clause ("three separate databases") is unproven. This is why the item is 🚧 and not ✅.
+- **`src/server.ts` has no host.** The deploy workflow migrates the environment's database and deploys the Vercel surface (`api/**`), and says so in its own comments; it does not serve the product. Picking that host is an infrastructure decision for the owner.
+- **The smoke step is skipped until each environment has an `API_URL` variable** — one name, two values. It skips visibly, with a warning and a job-summary line, never silently green.
+- **`SENTRY_DSN` is documented but not enforced** (W00-14 has no reporter yet).
+
+### `secrets:sync` — and the naming correction that came with it
+
+Owner's direction (2026-10-26): *"we should use environments to store environment specific variables … instead of setting a single name and have them saved in environments the better."*
+
+That caught a real mistake in the first version of this work: `deploy.yml` read `PROD_GUEST_COOKIE_SECRET`, `PROD_LLM_API_KEY`, `PROD_EMAIL_API_KEY` — the exact anti-pattern. **Corrected**: every name is now identical in both jobs (`GUEST_COOKIE_SECRET`, `LLM_API_KEY`, …) and the job's `environment:` binding is the only thing that selects the value. `PROD_*` and `STAGING_*` no longer appear anywhere in the workflow.
+
+Consequence worth knowing: a job bound to one GitHub Environment **cannot read the other environment's secrets**, so the cross-environment `check:env` cannot run inside a deploy job. That is not a regression — it is the guarantee the user asked for. Separation is proven instead by `smoke --target staging=… --target prod=…`, which compares the hashed cluster fingerprints of the two running deployments (stronger evidence than comparing two strings from one file), and `check:env` remains the operator's pre-deploy tool, reading the three local files (`--staging .env.staging --prod .env.production --local .env`).
+
+`npm run secrets:sync -- --env-file=.env.staging --env=staging` reads one file and writes to the store each variable's manifest entry names:
+
+- GitHub Environment secrets/variables (`gh secret set --env`, `gh variable set --env`)
+- repo-level secrets for the three `VERCEL_*` deployment credentials
+- Vercel project variables on the target (`preview` for staging, `production` for prod)
+
+**What "only if changed" honestly means.** GitHub variables are read back and compared by value. **GitHub secrets are write-only** — the API returns names, never values — so a present secret is reported `skip-present`, explicitly *not* `skip-equal`, and rotating a key requires `--force`. Vercel returns plain variables and withholds sensitive ones; same rule per variable. A store that cannot be read produces `blocked`, never a silent skip: this environment could not reach GitHub or Vercel, and the dry run said so rather than printing a clean sheet.
+
+The script refuses to push `.env.staging` into the `production` environment when the file's `APP_ENV` disagrees with `--env`, and never prints a value — `--json` carries names and actions only.
+
+### What the owner runs to close the AC
+
+Getting every value in the two files — a link and the exact clicks per provider — is
+[`docs/env-setup.md`](env-setup.md). The short version, once the files are written:
+
+```powershell
+# 1. two Neon projects: "concierge-staging" and "concierge-prod" (separate projects,
+#    not two branches of one — a branch shares the parent's cluster)
+# 2. put every value where the pipeline reads it, one file per environment
+#    (this creates the GitHub Environments and fills repo-level Vercel creds)
+npm run secrets:sync -- --env-file=.env.staging --env=staging --dry-run
+npm run secrets:sync -- --env-file=.env.staging --env=staging
+npm run secrets:sync -- --env-file=.env.production --env=prod
+# 3. the AC test — refuses if they are the same database
+npm run check:env -- --staging .env.staging --prod .env.production --local .env
+# 4. prove it from the running services once a host exists
+npm run smoke -- --target staging=<url> --target prod=<url>   # compares `cluster`
+```
+
+`docs/environments.md` is the full operator guide: the contract, the four commands, the store matrix, and what the deploy workflow does in order.
 
 ## W00-14 — Error tracking + structured logging (0.50d)
 
@@ -892,7 +967,7 @@ regression gate: pass (baseline data/golden/eval-baseline.json)
 - *The 2% cap cannot be expressed on 20 questions.* One row is worth 5%. `thresholds.ts::MIN_QUESTIONS_FOR_GATE = 50` exists so the report says "below the 50 the 2% cap needs" instead of pretending 0/20 is a passing rate; `armed` is part of the verdict.
 - *A fake provider, and it is the right choice for CI.* `createGroundedProvider()` reads the prompt the pipeline actually built (same articles, same ids, same schema), and answers by quoting the sentence that shares the most content words with the question. It is deterministic, keyless, free, and network-free, so a red check on a PR is always something the author can fix. It is **not** a model-quality claim: it is the best case reachable from that retrieval, so a low score here is a retrieval or guardrail finding.
 - *The fake says `no_answer` when no article addresses the question* — quoting an unrelated sentence because it is the only one available is the exact behaviour the guardrail exists to stop, and a fake that faked it would be measuring itself.
-- *Live model quality is the nightly canary, in its own workflow.* `.github/workflows/eval.yml` has a `canary` job that only runs on `schedule`/`workflow_dispatch` with `GEMINI_API_KEY`. A vendor outage must not be able to block a pull request for a reason the author cannot fix, and an LLM key must not exist in PR CI at all. The PR job has no key.
+- *Live model quality is the nightly canary, in its own workflow.* `.github/workflows/eval.yml` has a `canary` job that only runs on `schedule`/`workflow_dispatch`, bound to the `staging` GitHub Environment so it reads the SAME `LLM_API_KEY` and pinned model ids the deployed API boots with. (It originally gated on a `GEMINI_API_KEY` repo secret that no loader ever read — the name was removed when W00-13's coverage test made code reads and contract names check each other.) A vendor outage must not be able to block a pull request for a reason the author cannot fix, and an LLM key must not exist in PR CI at all. The PR job has no key.
 - *A provider outage always exits 2, enforced or not.* "0% false answers" measured while the model was unreachable is a lie with a nice table.
 - *`set -o pipefail` in the workflow.* Without it `npm run eval | tee report.md` swallows the gate's exit code and the job is green on a failure.
 
@@ -904,7 +979,7 @@ $ npm run eval    # four scores + 12 named misses + retrieval diagnostic; regres
 $ npm run typecheck && npm run lint && npm run web:build   # clean
 ```
 
-**Not done, by design or by dependency:** G2 as a *pass* (needs G1: golden v2 and 25 current articles — the number stays red until then, and S05-02 AC-3 stays unmeasurable until it does); the nightly canary's first observed run (needs `GEMINI_API_KEY` as a repo secret — operator work, like S06-01's staging deploy); `--enforce` in CI (deliberately off until the corpus can pass it — switching it on today would make every PR red for a reason no author can fix, which is how a gate gets deleted).
+**Not done, by design or by dependency:** G2 as a *pass* (needs G1: golden v2 and 25 current articles — the number stays red until then, and S05-02 AC-3 stays unmeasurable until it does); the nightly canary's first observed run (the job now reads staging's own `LLM_API_KEY` via `environment: staging` — no separate key to create; it needs the first observed green run); `--enforce` in CI (deliberately off until the corpus can pass it — switching it on today would make every PR red for a reason no author can fix, which is how a gate gets deleted).
 
 ## S07-02 - AI disclosure + 'talk to a person' (0.50d)
 

@@ -211,3 +211,13 @@ The owner authorized two bounded packages: **S04-02-A (pure chunker)** and
 **S10-01-A (event writer only)**. Approval becomes effective when the documentation
 PR carrying [the exact scope](approvals/parallel-work.md) merges. Full parent
 stories #71 and #94 remain draft; no other item is approved by this decision.
+
+---
+
+## S06A — approved ASAP interstitial epic (2026-10-29)
+
+Owner authorized this work to start ASAP. It is placed between S06 and S07 in the master backlog and is tracked as [Epic #166](https://github.com/jtanori/ai-guest-concierge-1/issues/166), with stories [#167](https://github.com/jtanori/ai-guest-concierge-1/issues/167), [#168](https://github.com/jtanori/ai-guest-concierge-1/issues/168), [#169](https://github.com/jtanori/ai-guest-concierge-1/issues/169), [#170](https://github.com/jtanori/ai-guest-concierge-1/issues/170), [#171](https://github.com/jtanori/ai-guest-concierge-1/issues/171), [#172](https://github.com/jtanori/ai-guest-concierge-1/issues/172), and [#173](https://github.com/jtanori/ai-guest-concierge-1/issues/173). Milestone title `S06A - API, deployment and eval reliability` exists, but the connected GitHub integration could not attach it to issues. All issue bodies explicitly carry the milestone and labels to amend later.
+
+**14.50 engineering days, added to—not hidden inside—the original 70-day plan.** The insertion invalidates the W14 launch forecast until staffing/parallelism is recalculated. The current owner-reported canary has 60% correct-or-escalated and 61.5% needless escalation; the 0/20 false-answer figure is below the 50-question gate minimum and is not a G2 pass. Its retrieval diagnostic is known to conflate pre-retrieval outcomes with empty retrieval. The verified assertions, resolution steps and staging gates are in [`S06A charter`](items/S06A-api-deployment-eval-reliability.md), [`runbook audit`](../runbook.md), and the [deployment/API proposal](../architecture/deployment-and-api-proposal.md).
+
+The epic is the immediate next work, not a claim that its seven stories are already implemented. Begin #167 (stage-level eval evidence) and #171 (API inventory/runtime spike) in parallel; defer production cutover until native Vercel Git deployment and CI/secret boundaries are demonstrated in staging.

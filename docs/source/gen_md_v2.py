@@ -10,17 +10,17 @@ L=[]
 A=L.append
 A("# Master Sprint Backlog v2")
 A("")
-A(f"**Single source of truth for the build** · {n_lean+len(WA)+len(DEFERRED)} items · 14 sprints · 21 October 2026")
+A(f"**Single source of truth for the build** · {n_lean+len(WA)+len(DEFERRED)} items · {len(SPRINTS)} planned work blocks (includes ASAP S06A) · 21 October 2026")
 A("")
 A("| | |")
 A("|---|---|")
-A(f"| **Lean pilot path** | **{lean:.2f} dev-days** across 14 sprints |")
-A(f"| **WhatsApp track** | {wa_d:.2f} dev-days, built W14–16 after the pilot |")
+A(f"| **Planned engineering path** | **{lean:.2f} dev-days** across {len(SPRINTS)} work blocks, including ASAP S06A |")
+A(f"| **WhatsApp track** | {wa_d:.2f} dev-days; original W14–16 timing is subject to pilot reforecast |")
 A(f"| **Deferred to MVP-1.5** | {df_d:.2f} dev-days |")
 A(f"| **Total backlog** | **{total:.2f} dev-days** / {n_lean+len(WA)+len(DEFERRED)} items |")
-A("| **Capacity** | 14 sprints × 5 productive days = 70 days |")
-A(f"| **Unallocated** | **{70-lean:.2f} days** — W13 carries 3 days of carry-forward room |")
-A("| **Pilot live** | Monday **W14** · readout **W17** · WhatsApp **W18** |")
+A("| **Original capacity** | 14 planned sprints × 5 productive days = 70 days |")
+A(f"| **Net over/under original capacity** | **{lean-70:+.2f} days**; S06A is an inserted 14.50-day ASAP block, not funded by the original sprint estimates |")
+A("| **Original pilot date** | W14 is an obsolete forecast until S06A is sequenced and staffing/parallelism is decided |")
 A("")
 A("---")
 A("")
@@ -32,19 +32,19 @@ A("1. **Fourteen ID collisions.** `S0-02` meant *\"Repo + CI + 3 environments\"*
 A("2. **S13 was empty.** The launch sprint had no work items — staff training, content corrections and the GM go/no-go were described in prose but never costed. They are now three items totalling 2.0 days.")
 A("3. **No acceptance criteria.** \"Definition of done\" entries were vague. Every item now has a **testable** acceptance criterion: *\"Pool hours answered by lookup, not generation\"* rather than *\"facts table works\"*.")
 A("")
-A(f"The day count rose from 67.75 to **{lean:.2f}** as a direct result — the missing launch work is now visible rather than assumed to be free.")
+A(f"The original plan is 70.00 engineering days. The inserted ASAP S06A adds 14.50 days, so the revised engineering demand is **{lean:.2f} days**; downstream dates must be re-forecast, not hidden in existing slack.")
 A("")
 A("---")
 A("")
 A("## Sprint ladder")
 A("")
-A("| Sprint | Week | Name | Items | Days | Cum. weeks | Slack | Gate |")
+A("| Sprint | Week | Name | Items | Days | Cum. weeks | Delta vs 5d | Gate |")
 A("|---|---|---|---|---|---|---|---|")
 for d in LAD:
     A(f"| **{d['sid']}** | {d['wk']} | {d['name']} | {d['n']} | {d['days']:.2f} | {d['cw']:.2f} | {d['delta']:+.2f} | {d['gate']} |")
 A(f"| | | **Total** | **{n_lean}** | **{lean:.2f}** | **{lean/5:.2f}** | **{70-lean:+.2f}** | |")
 A("")
-A(f"> Work completes at **{lean/5:.2f} weeks**. W14 is launch; W13 carries the launch work and roughly three days of carry-forward room.")
+A(f"> The inserted S06A adds **14.50 engineering days** (2.90 five-day weeks) before S07. The original W14 launch date is no longer a valid forecast; the release date must be recalculated after staffing/parallelism is agreed.")
 A("")
 A("---")
 A("")
@@ -53,8 +53,11 @@ A("")
 for d in LAD:
     A(f"### {d['sid']} · {d['wk']} — {d['name']}")
     A("")
-    A(f"**Goal:** {d['goal']}  ")
-    A(f"**Days:** {d['days']:.2f} · **Gate:** {d['gate']}  ")
+    if d["sid"] == "S06A":
+        A(f"**Goal:** {d['goal']} · **Days:** {d['days']:.2f} · **Gate:** {d['gate']}")
+    else:
+        A(f"**Goal:** {d['goal']}  ")
+        A(f"**Days:** {d['days']:.2f} · **Gate:** {d['gate']}  ")
     A(f"**Exit:** {d['exit']}")
     A("")
     A("| ID | Track | Item | Days | Depends | Acceptance criteria |")
@@ -74,11 +77,11 @@ for d in LAD:
     tot=eng+fnd
     st="Fits" if tot<=5.0 else f"**Over by {tot-5.0:.2f}**"
     A(f"| {d['sid']} | {eng:.2f} | {fnd:.2f} | {tot:.2f} | {st} |")
-A(f"| **Total** | | | **{lean:.2f}** | 70 available |")
+A(f"| **Total demand** | | | **{lean:.2f}** | **{max(0, lean-70):.2f} over original 70-day capacity** |")
 A("")
 w00=next(d for d in LAD if d["sid"]=="W00")
 w00_eng=sum(i[5] for i in w00["its"] if i[1] in ("Eng","Both")); w00_fnd=sum(i[5] for i in w00["its"] if i[1]=="Founder")
-A(f"**W00 is the structural problem.** {w00['days']:.1f} days of work in a 5-day week — {w00_eng:.1f} engineering and {w00_fnd:.1f} founder/GTM. It fits only if two people work in parallel. **Solo, it runs to mid-W1**, which pushes every downstream date by three days.")
+A(f"**Capacity note.** W00 remains an 8.25-day mixed founder/engineering block. S06A is an additional 14.50 engineering days and is deliberately visible rather than silently absorbed into W13 slack; it consumes approximately 2.90 engineer-weeks before the later launch date is replanned.")
 A("")
 A("---")
 A("")
@@ -94,6 +97,7 @@ CP=[("Hotel supplies approved content","W00–S03","Retrieval cannot be tuned ag
 ("AI contract and guardrails","S05","Guest chat has nothing to send until it exists"),
 ("Eval harness","S06","Without it G2 is an opinion"),
 ("Guest chat","S06","The pilot surface"),
+("Eval/API/deployment stabilization","S06A","G2 evidence, full API contract and repeatable deploys are release blockers"),
 ("Inbox","S08","Requests with nobody to receive them are broken promises"),
 ("Notifications","S09","The reason a request gets seen"),
 ("Restore drill and runbook","S12","G3 cannot pass without it")]
@@ -107,11 +111,11 @@ A("| Gate | Name | Sprint | Week | Pass criteria | If it fails |")
 A("|---|---|---|---|---|---|")
 G=[("G0","Decisions and approvals","W00","W0","14 ADRs signed · verification submitted · content owner named · fixture seeded","Do not start S01"),
 ("G1","Content ready","S03","W3","25 articles · 40 facts · zero contradictions · golden set frozen","Delay the pilot, not the build"),
-("G2","AI quality","S05","W5","False-answer ≤2% · escalation ≥95% · recall ≥90%","**Hard stop**"),
+("G2","AI quality","S06A","After remediation","False-answer ≤2% on ≥50 reviewed cases · correct-or-escalated ≥95% · correct escalation ≥90% · needless escalation ≤20% · retrieval recall ≥90%","**Hard stop**"),
 ("G3","Pilot-ready","S12","W12","Isolation green · restore drilled · 3 staff unaided","Restricted launch only"),
-("—","Pilot live","S13","W14","Trained · content corrected · GM go/no-go","Postpone a week"),
-("G4","Pilot readout","—","W17","Containment ≥55% · accuracy ≥95% · ack ≤10 min","Do not scale sales"),
-("G5","WhatsApp live","WA","W18","Approved · consent tested · clean shadow run","Stay web-only"),
+("—","Pilot live (original target; reforecast)","S13","After S06A","Trained · content corrected · GM go/no-go","Do not commit to W14 until staffing/parallelism is re-estimated"),
+("G4","Pilot readout","—","Reforecast","Containment ≥55% · accuracy ≥95% · ack ≤10 min","Do not scale sales"),
+("G5","WhatsApp live","WA","Reforecast","Approved · consent tested · clean shadow run","Stay web-only"),
 ("G6","Group pilot","—","W19+","2–3 properties · inheritance exercised","No PMS-dependent group")]
 for g in G: A("| "+" | ".join(g)+" |")
 A("")
@@ -141,6 +145,6 @@ for n,it,d,when in [("—","Automated PDF and website extraction",0,"After five 
 A("")
 A("---")
 A("")
-A(f"*Totals reconcile: {lean:.2f} + {wa_d:.2f} + {df_d:.2f} = **{total:.2f} dev-days**.*")
+A(f"*Totals reconcile: planned engineering {lean:.2f} + WhatsApp {wa_d:.2f} + deferred {df_d:.2f} = **{total:.2f} dev-days**. S06A contributes 14.50 days beyond the original 70-day pilot capacity.*")
 open("07-master-backlog.md","w",encoding="utf-8").write("\n".join(L))
 print(f"md written · {len(L)} lines")

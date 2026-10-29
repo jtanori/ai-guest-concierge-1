@@ -315,13 +315,14 @@ describe("demo seed (db)", () => {
       users: 4,
       memberships: 4,
       knowledge_sources: 1,
-      knowledge_articles: 7,
-      article_versions: 7,
-      property_facts: 5,
+      knowledge_articles: FIXTURE_ARTICLES.length,
+      article_versions: FIXTURE_ARTICLES.length,
+      property_facts: FIXTURE_FACTS.length,
       knowledge_gaps: 1,
-      // S04-02: the demo's published versions are chunked, so a fresh database
-      // satisfies AC-1 without an embedding API key.
-      article_chunks: 26,
+      article_chunks: FIXTURE_ARTICLES.reduce(
+        (sum, a) => sum + (a.body === null ? 0 : chunkBody(a.body).length),
+        0,
+      ),
     });
   });
 });

@@ -183,7 +183,10 @@ jobs:
             echo "::error::deploy-web is true but VERCEL_WEB_PROJECT_ID is not set on this GitHub Environment."
             exit 1
           fi
-          cd web
+          # From the repo ROOT, not web/: the app imports ../src (guest links,
+          # i18n catalog), and the CLI uploads the directory it runs in. The
+          # project's rootDirectory=web makes the BUILD run in web/ while the
+          # upload still carries src/, so those relative imports resolve.
           URL="$(VERCEL_ORG_ID="$VERCEL_ORG_ID" VERCEL_PROJECT_ID="$VERCEL_WEB_PROJECT_ID" \
             npx -y vercel@latest deploy --yes --token "$VERCEL_TOKEN")"
           echo "STAGING_WEB_DEPLOY_URL=$URL" >> "$GITHUB_ENV"

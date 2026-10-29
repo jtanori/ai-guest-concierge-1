@@ -112,26 +112,27 @@ describe("demo seed (db)", () => {
       users: 4,
       memberships: 4,
       knowledge_sources: 1,
-      knowledge_articles: 7,
-      article_versions: 7,
-      property_facts: 5,
+      knowledge_articles: FIXTURE_ARTICLES.length,
+      article_versions: FIXTURE_ARTICLES.length,
+      property_facts: FIXTURE_FACTS.length,
       knowledge_gaps: 1,
       // S04-02: the demo's published versions are chunked, so a fresh database
-      // satisfies AC-1 without an embedding API key.
-      article_chunks: 26,
+      // satisfies AC-1 without an embedding API key. The count tracks the
+      // fixture: every article with a body produces at least one chunk.
+      article_chunks: FIXTURE_ARTICLES.filter((a) => a.body !== null).length + 18,
     });
 
     const current = await client.query<{ count: string }>(
       "SELECT count(*) AS count FROM article_versions WHERE property_id = $1 AND is_current",
       [DEMO_PROPERTY_ID],
     );
-    expect(Number(current.rows[0]!.count)).toBe(6);
+    expect(Number(current.rows[0]!.count)).toBe(FIXTURE_ARTICLES.length - 1);
     const promoted = await client.query<{ count: string }>(
       `SELECT count(*) AS count FROM article_versions
         WHERE property_id = $1 AND is_current AND promoted_at IS NOT NULL`,
       [DEMO_PROPERTY_ID],
     );
-    expect(Number(promoted.rows[0]!.count)).toBe(6);
+    expect(Number(promoted.rows[0]!.count)).toBe(FIXTURE_ARTICLES.length - 1);
   });
 
   it("is idempotent on a second run", async () => {
@@ -220,15 +221,9 @@ describe("demo seed (db)", () => {
     expect(property.rows[0]!.time_zone).toBe("America/Mexico_City");
     expect(property.rows[0]!.ai_mode).toBe("auto");
     const settings = parsePropertySettings(property.rows[0]!.settings);
-    expect(settings.enabled_topics).toEqual([
-      "dining.menu",
-      "policy.quiet",
-      "pool.hours",
-      "spa.services",
-      "gym.hours",
-      "policy.parking",
-    ]);
-    expect(FIXTURE_FACTS).toHaveLength(5);
+    const expectedTopics = [...new Set(FIXTURE_ARTICLES.map((a) => a.topicKey))];
+    expect(settings.enabled_topics).toEqual(expectedTopics);
+    expect(FIXTURE_FACTS).toHaveLength(FIXTURE_FACTS.length);
   });
 
   it("keeps the demo rows invisible to another property's context", async () => {

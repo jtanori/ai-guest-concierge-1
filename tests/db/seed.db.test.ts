@@ -3,6 +3,7 @@ import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { migrateDatabase } from "../../src/db/migrate.ts";
 import { FIXTURE_ARTICLES, FIXTURE_FACTS } from "../../src/fixtures/fixture-hotel.ts";
+import { chunkBody } from "../../src/knowledge/chunk.ts";
 import {
   DEMO_GAP_ID,
   DEMO_ORG_ID,
@@ -117,9 +118,12 @@ describe("demo seed (db)", () => {
       property_facts: FIXTURE_FACTS.length,
       knowledge_gaps: 1,
       // S04-02: the demo's published versions are chunked, so a fresh database
-      // satisfies AC-1 without an embedding API key. The count tracks the
-      // fixture: every article with a body produces at least one chunk.
-      article_chunks: FIXTURE_ARTICLES.filter((a) => a.body !== null).length + 18,
+      // satisfies AC-1 without an embedding API key. Computed from the fixture
+      // so a corpus change does not break the count.
+      article_chunks: FIXTURE_ARTICLES.reduce(
+        (sum, a) => sum + (a.body === null ? 0 : chunkBody(a.body).length),
+        0,
+      ),
     });
 
     const current = await client.query<{ count: string }>(

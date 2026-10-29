@@ -303,7 +303,8 @@ jobs:
             echo "::error::deploy-web is true but VERCEL_WEB_PROJECT_ID is not set on this GitHub Environment."
             exit 1
           fi
-          cd web
+          # Repo ROOT, not web/: same as staging — the app imports ../src, so
+          # the upload must carry it while rootDirectory=web runs the build.
           URL="$(VERCEL_ORG_ID="$VERCEL_ORG_ID" VERCEL_PROJECT_ID="$VERCEL_WEB_PROJECT_ID" \
             npx -y vercel@latest deploy --prod --yes --token "$VERCEL_TOKEN")"
           echo "PROD_WEB_DEPLOY_URL=$URL" >> "$GITHUB_ENV"

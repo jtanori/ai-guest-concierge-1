@@ -29,16 +29,16 @@ def hdr(ws,row,labels,color=NAVY):
 ws=wb.active; ws.title="README"; ws.sheet_properties.tabColor=NAVY
 ws.column_dimensions["A"].width=3; ws.column_dimensions["B"].width=32; ws.column_dimensions["C"].width=94
 ws["B2"]="Master Sprint Backlog v2"; ws["B2"].font=Font(name="Calibri",size=18,bold=True,color=NAVY)
-ws["B3"]=f"Single source of truth for the build · {n_lean+len(WA)+len(DEFERRED)} items · 14 sprints · 21 Oct 2026"
+ws["B3"]=f"Single source of truth for the build · {n_lean+len(WA)+len(DEFERRED)} items · 15 work blocks including ASAP S06A · 21 Oct 2026"
 ws["B3"].font=Font(name="Calibri",size=10,italic=True,color=GREY)
 rows=[("",""),
 ("The numbers",""),
-("Lean pilot path",f"{lean:.2f} dev-days across 14 sprints (W00, S01–S13). Pilot live Monday of W14."),
+("Planned engineering path",f"{lean:.2f} dev-days across original 14 sprints plus ASAP S06A. Original W14 pilot forecast must be revised."),
 ("WhatsApp track",f"{wa_d:.2f} dev-days, built W14–16 after the pilot. Tracked separately so it cannot creep in."),
 ("Deferred to MVP-1.5",f"{df_d:.2f} dev-days."),
 ("Total backlog",f"{total:.2f} dev-days across {n_lean+len(WA)+len(DEFERRED)} items."),
-("Capacity","14 sprints x 5 productive days = 70 days."),
-("Slack",f"{70-lean:.2f} days unallocated. W13 carries {dict((l['sid'],l['days']) for l in LAD)['S13']:.2f} days of launch work, leaving ~3 days of carry-forward room in that week."),
+("Original capacity","14 sprints x 5 productive days = 70 days."),
+("Net change",f"{lean-70:+.2f} days vs original 70-day plan; S06A adds 14.50 engineering days and is not absorbed by W13 slack."),
 ("",""),
 ("What changed in v2",""),
 ("One ID scheme","IDs are now <sprint>-<nn>, so the ID tells you the sprint. v1 had 14 ID collisions with the Week 0 kickoff pack — S0-02 meant two different things in two documents."),
@@ -47,7 +47,7 @@ rows=[("",""),
 ("Week 0 reconciled","The 20 Week 0 tasks now match the kickoff pack exactly, one-to-one."),
 ("",""),
 ("How to read it",""),
-("02 · Sprint ladder","14 sprints: goal, items, days, cumulative weeks, gate, exit criterion."),
+("02 · Sprint ladder","15 work blocks: goal, items, days, cumulative weeks, gate, exit criterion."),
  ("03 · Master backlog",f"All {n_lean+len(WA)+len(DEFERRED)} items with sprint, track, estimate, dependency and acceptance criteria. The working board."),
 ("04 · Capacity","Demand vs capacity per sprint, split by owner."),
 ("05 · Gates","Gates mapped to the sprint that closes them."),
@@ -69,8 +69,8 @@ for k,v in rows:
 # Ladder
 ws=wb.create_sheet("02 · Sprint ladder"); ws.sheet_properties.tabColor=TEAL
 for i,w in enumerate([8,7,26,44,6,10,11,11,10,12,52],start=1): ws.column_dimensions[get_column_letter(i)].width=w
-ws["A1"]="Sprint ladder — 14 sprints to pilot"; ws["A1"].font=Font(name="Calibri",size=14,bold=True,color=NAVY)
-ws["A2"]="Cumulative weeks is the true elapsed position. Work completes at %.2f weeks; W14 is launch."%(lean/5)
+ws["A1"]="Sprint ladder — original plan plus ASAP S06A"; ws["A1"].font=Font(name="Calibri",size=14,bold=True,color=NAVY)
+ws["A2"]="Cumulative effort is shown; ASAP S06A invalidates the original W14 launch forecast until resequenced."
 ws["A2"].font=SM
 hdr(ws,4,["Sprint","Week","Name","Goal","Items","Dev-days","Cum. days","Cum. weeks","Slack","Gate","Exit criterion"])
 r=5
@@ -83,15 +83,15 @@ for d in LAD:
     if d["gate"]!="—":
         ws.cell(row=r,column=10).fill=PatternFill("solid",fgColor=AMBER); ws.cell(row=r,column=10).font=B
     ws.row_dimensions[r].height=44; r+=1
-ws.cell(row=r,column=3,value="LEAN PILOT PATH").font=B
+ws.cell(row=r,column=3,value="PLANNED ENGINEERING PATH").font=B
 ws.cell(row=r,column=5,value=n_lean).font=B
 c=ws.cell(row=r,column=6,value=lean); c.font=B; c.number_format='0.00'
 ws.cell(row=r,column=8,value=round(lean/5,2)).font=B
 ws.cell(row=r,column=9,value=round(70-lean,2)).font=B
 for cc in range(1,12):
-    ws.cell(row=r,column=cc).fill=PatternFill("solid",fgColor=GREEN); ws.cell(row=r,column=cc).border=BD
+    ws.cell(row=r,column=cc).fill=PatternFill("solid",fgColor=RED if lean>70 else GREEN); ws.cell(row=r,column=cc).border=BD
 ws.cell(row=r+2,column=3,value="Pilot live").font=B
-ws.cell(row=r+2,column=4,value="Monday W14").font=N
+ws.cell(row=r+2,column=4,value="Forecast after S06A").font=N
 ws.cell(row=r+3,column=3,value="Pilot readout").font=B
 ws.cell(row=r+3,column=4,value="W17 (G4)").font=N
 ws.cell(row=r+4,column=3,value="WhatsApp live").font=B
@@ -139,7 +139,7 @@ for d in LAD:
     st="Fits" if tot<=5.0 else "Over by %.2f"%(tot-5.0)
     note=""
     if d["sid"]=="W00": note=f"{d['days']:.1f} days in a 5-day week. Fits only with founder and engineer in parallel; solo it runs to mid-W1."
-    elif d["sid"]=="S13": note="Launch work plus ~3 days of carry-forward room."
+    elif d["sid"]=="S13": note="Original launch date invalid after 14.50-day S06A; reforecast with owner."
     elif tot>5.0: note="Spills into the following week."
     vals=[d["sid"],d["wk"],d["name"],eng,fnd,tot,st,note]
     for i,v in enumerate(vals,start=1):
@@ -149,9 +149,9 @@ for d in LAD:
     ws.row_dimensions[r].height=32; r+=1
 ws.cell(row=r+1,column=3,value="Total demand").font=B; ws.cell(row=r+1,column=6,value=lean).font=B
 ws.cell(row=r+1,column=6).number_format='0.00'
-ws.cell(row=r+2,column=3,value="Capacity (14 × 5)").font=N; ws.cell(row=r+2,column=6,value=70).font=N
-ws.cell(row=r+3,column=3,value="Unallocated").font=B
-c=ws.cell(row=r+3,column=6,value=round(70-lean,2)); c.font=B; c.fill=PatternFill("solid",fgColor=AMBER)
+ws.cell(row=r+2,column=3,value="Original capacity (14 × 5)").font=N; ws.cell(row=r+2,column=6,value=70).font=N
+ws.cell(row=r+3,column=3,value="Over capacity" if lean>70 else "Unallocated").font=B
+c=ws.cell(row=r+3,column=6,value=round(lean-70,2) if lean>70 else round(70-lean,2)); c.font=B; c.fill=PatternFill("solid",fgColor=RED if lean>70 else AMBER)
 ws.freeze_panes="A5"
 
 # Gates
@@ -163,9 +163,9 @@ G=[("G0","Decisions and approvals","W00","W0","14 ADRs signed · verification su
 ("G1","Content ready","S03","W3","25 approved articles · 40 verified facts · zero unresolved contradictions · golden set v2 frozen","Delay the pilot, not the build"),
 ("G2","AI quality","S05","W5","False-answer ≤2% · correct-or-escalation ≥95% · recall ≥90% · p95 ≤3.5s","Hard stop. Fix retrieval and content, not prompts"),
 ("G3","Pilot-ready","S12","W12","Isolation green · restore drilled · 3 staff unaided · outage fallback verified","Restricted launch only"),
-("—","Pilot live","S13","W14","Trained · content corrected · GM go/no-go recorded","Postpone a week; do not launch untrained"),
-("G4","Pilot readout","—","W17","Containment ≥55% · accuracy ≥95% · ack median ≤10 min · gap age ≤7 days","Do not scale sales"),
-("G5","WhatsApp live","WA","W18","Approved · consent tested · 7-day clean shadow run","Stay web-only"),
+("—","Pilot live (original target; reforecast)","S13","After S06A","Trained · content corrected · GM go/no-go recorded","Do not commit to W14 until staffing/parallelism is re-estimated"),
+("G4","Pilot readout","—","Reforecast","Containment ≥55% · accuracy ≥95% · ack median ≤10 min · gap age ≤7 days","Do not scale sales"),
+("G5","WhatsApp live","WA","Reforecast","Approved · consent tested · 7-day clean shadow run","Stay web-only"),
 ("G6","Group pilot","—","W19+","2–3 properties · inheritance exercised · group reporting live · questionnaire answered","No PMS-dependent group")]
 r=4
 for g in G:
@@ -178,7 +178,7 @@ for g in G:
 ws=wb.create_sheet("06 · Critical path"); ws.sheet_properties.tabColor="8EA9DB"
 for i,w in enumerate([6,32,12,62],start=1): ws.column_dimensions[get_column_letter(i)].width=w
 ws["A1"]="Critical path"; ws["A1"].font=Font(name="Calibri",size=14,bold=True,color=NAVY)
-ws["A2"]="Each step blocks the next. Any slip here moves W14 one-for-one."; ws["A2"].font=SM
+ws["A2"]="Each step blocks the next. S06A is inserted before S07; recalculate launch after sequencing."; ws["A2"].font=SM
 hdr(ws,4,["#","Step","Sprint","Why it blocks"])
 CP=[("Hotel supplies approved content","W00–S03","Retrieval cannot be tuned against content that has not arrived. Engineering cannot absorb this."),
 ("Schema and RLS","S01","Every later table, policy and test depends on the tenancy model."),
@@ -197,7 +197,7 @@ for i,(s,sp,w) in enumerate(CP,1):
         c=ws.cell(row=r,column=j,value=v); c.font=B if j==1 else N; c.alignment=WRAP; c.border=BD
     ws.row_dimensions[r].height=32; r+=1
 ws.cell(row=r+1,column=2,value="Not on the critical path").font=B
-ws.cell(row=r+1,column=3,value="Analytics (S10), reliability (S11), accessibility and load (S12) — each can slip a week without moving W14.").font=N
+ws.cell(row=r+1,column=3,value="Original W14 date is unconfirmed after S06A; reforecast before using dates for commitments.").font=N
 ws.merge_cells(start_row=r+1,start_column=3,end_row=r+1,end_column=4)
 
 # WhatsApp
@@ -236,5 +236,5 @@ for extra in [("—","Knowledge","Automated PDF and website extraction","The rab
         if i==5: c.number_format='0.00'
     ws.row_dimensions[r].height=34; r+=1
 
-wb.save("07-master-backlog.xlsx")
+wb.save("docs/07-master-backlog.xlsx")
 print(f"saved · {n_lean+len(WA)+len(DEFERRED)} items · lean {lean:.2f} · total {total:.2f}")

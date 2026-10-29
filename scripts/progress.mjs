@@ -52,7 +52,7 @@ const COL = { id: 1, sprint: 2, track: 3, epic: 4, item: 5, description: 6, days
  */
 const BLOCKS = [
   { name: "Foundation (W00)", sprints: ["W00"] },
-  { name: "Answer surface (S01–S07)", sprints: ["S01", "S02", "S03", "S04", "S05", "S06", "S07"] },
+  { name: "Answer surface + ASAP stabilization (S01–S07)", sprints: ["S01", "S02", "S03", "S04", "S05", "S06", "S06A", "S07"] },
   { name: "Staff + ops (S08–S10)", sprints: ["S08", "S09", "S10"] },
   { name: "Hardening + launch (S11–S13)", sprints: ["S11", "S12", "S13"] },
   { name: "WhatsApp track", sprints: ["WA"] },

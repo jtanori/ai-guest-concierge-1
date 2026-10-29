@@ -981,6 +981,39 @@ $ npm run typecheck && npm run lint && npm run web:build   # clean
 
 **Not done, by design or by dependency:** G2 as a *pass* (needs G1: golden v2 and 25 current articles — the number stays red until then, and S05-02 AC-3 stays unmeasurable until it does); the nightly canary's first observed run (the job now reads staging's own `LLM_API_KEY` via `environment: staging` — no separate key to create; it needs the first observed green run); `--enforce` in CI (deliberately off until the corpus can pass it — switching it on today would make every PR red for a reason no author can fix, which is how a gate gets deleted).
 
+## S06A — Canary audit: current report and assertions (2026-10-29)
+
+**This is a later live canary than the historical S06-03 baseline above.** The owner reports GitHub run [40837948865](https://github.com/jtanori/ai-guest-concierge-1/actions/runs/40837948865), after PR #163 expanded the corpus. This environment did not rerun the live provider; the figures below are recorded as owner-provided evidence pending independent reproduction.
+
+| Metric | Reported result | Threshold | Assessment |
+|---|---:|---:|---|
+| False answer | 0/20 = 0.0% | ≤2% | **Unarmed sample**: 20 < `MIN_QUESTIONS_FOR_GATE=50`; do not call this a G2 pass |
+| Correct escalation | 7/7 = 100% | ≥90% | Pass on this sample |
+| Correct-or-escalated | 12/20 = 60.0% | ≥95% | Fail; 8/20 are neither correctly answered nor correctly escalated |
+| Needless escalation | 8/13 = 61.5% | ≤20% | Fail; 8 of the 13 answer-expected cases are refused/escalated |
+| Retrieval-only target recall@8 | 11/13 = 84.6% | ≥90% | Fail on the separate retrieval-only probe; two reported misses are listed below |
+
+The arithmetic reconciles: 7 expected escalations were handled correctly; 5 of 13 answer-expected cases were answered correctly; 7 + 5 = 12 correct-or-escalated; the remaining 8 answer-expected rows are needless escalations/no-answers. Zero false answers in 20 rows is not evidence that the ≤2% gate passed: one error is 5% of this sample. At 50 rows one error is exactly 2%; two errors are 4%. Fifty is the minimum granularity encoded by the evaluator, not a statistical-confidence guarantee.
+
+### Assertion audit
+
+1. **Diagnostic defect — confirmed by static code inspection.** `scripts/eval.ts::observedFrom()` reports `topics: []` for every `escalate` and `no_answer`, and `src/eval/harness.ts::scoreEval()` uses `row.topics` to build the retrieval diagnostic. That field therefore means “topics present in an answer outcome,” not “retrieval ran and returned zero topics.” A pre-retrieval sensitive/policy escalation and a genuine empty retrieval are conflated in the report. Fix stage provenance before using per-row “retrieved nothing” as a causal statement.
+2. **Pre-retrieval overmatch — plausible and testable.** `src/ai/answer.ts` runs `classifySensitive()` before verified facts and retrieval. `src/ai/sensitive.ts` includes “how much” under the booking-intent rule. This can capture factual service-price questions; each cited example must be reproduced with the matching rule ID before changing it. Keep booking/availability, refunds, explicit human requests, allergies, accessibility and other safety escalations protected.
+3. **Cross-language retrieval — plausible; separate probe reports two misses.** The reported retrieval-only probe misses `pool.hours` for “¿A qué hora cierra la alberca?” and `parking.info` for “¿Tienen estacionamiento?” (11/13 recall). Trace exact current article languages and candidate ranking before deciding between approved bilingual content and measured query normalization/expansion. Preserve the actual source/version in citations.
+4. **Structured facts — evaluator path confirmed not wired.** The `AnswerMessageInput` can carry `structured`/`topicKey`, but `scripts/eval.ts::judge()` passes `topicKey: null`, no structured question, and intentionally does not trust golden `target_topic`. The production guest path has no documented intent classifier. “Answered from property_facts” in golden notes is an expected future route, not evidence that current eval uses it. Add a conservative internal classifier and test the real guest path; do not inject gold labels into runtime.
+5. **Pet/model-refusal and extra-bed/policy causes — not yet independently attributed.** The report says pet handling produced `no_answer`/`sensitive_topic` and extra bed encountered policy/contract behavior. Since current diagnostics lose stage provenance on these outcomes, do not label their exact root cause until the new diagnostic traces the actual pipeline stage and reason.
+
+### Resolution sequence — S06A (approved ASAP)
+
+- **#167 / S06A-01 first:** add per-question stage/provenance diagnostics; distinguish retrieval-not-run, retrieval-empty, fact hit, model refusal after retrieval, guardrail, and provider outage. Keep outputs safe for GitHub artifacts (no guest text, prompts, credentials, or raw article bodies).
+- **#168 / S06A-02:** add regression cases for price-vs-booking intent, pets, extra beds, human requests, refunds and safety. Narrow false positives without weakening hard safety escalation.
+- **#169 / S06A-03:** implement conservative intent/slot classification and wire verified fact lookup into the actual guest and eval path. Unknown/ambiguous or missing facts fall back safely; golden targets and browser inputs are never classification authority.
+- **#170 / S06A-04:** fix the two named bilingual retrieval misses with approved current content or measured query handling; meet ≥90% recall on reviewed retrieval-run cases without weakening RLS/version/citation rules.
+- **#171 / S06A-05 and #172 / S06A-06:** independently inventory and contract the full API, measure runtime fit, then prove native Git deployments for both Vercel projects with real required-check and secret-isolation tests before retiring CLI deploys or aliases.
+- **#173 / S06A-07:** grow the reviewed golden set to ≥50 real, non-duplicated cases with language/topic/outcome strata; preserve v1 and do not silently replace baselines. Report sample size and denominators; `unarmed` must never be displayed as `pass`.
+
+**Status:** Epic #166, milestone `S06A - API, deployment and eval reliability`; estimated 14.50 additional engineering days inserted between S06 and S07. The original W14 launch forecast is not valid until staffing/parallelism is re-estimated. The master backlog and approved local charter are the detailed execution plan.
+
 ## S07-02 - AI disclosure + 'talk to a person' (0.50d)
 
 **AC (verbatim):** A human is reachable in one tap from any state.

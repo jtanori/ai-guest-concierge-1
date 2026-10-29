@@ -1,16 +1,16 @@
 # Master Sprint Backlog v2
 
-**Single source of truth for the build** · 81 items · 14 sprints · 21 October 2026
+**Single source of truth for the build** · 88 items · 15 planned work blocks (includes ASAP S06A) · 21 October 2026
 
 | | |
 |---|---|
-| **Lean pilot path** | **70.00 dev-days** across 14 sprints |
-| **WhatsApp track** | 7.75 dev-days, built W14–16 after the pilot |
+| **Planned engineering path** | **84.50 dev-days** across 15 work blocks, including ASAP S06A |
+| **WhatsApp track** | 7.75 dev-days; original W14–16 timing is subject to pilot reforecast |
 | **Deferred to MVP-1.5** | 1.50 dev-days |
-| **Total backlog** | **79.25 dev-days** / 81 items |
-| **Capacity** | 14 sprints × 5 productive days = 70 days |
-| **Unallocated** | **0.00 days** — W13 carries 3 days of carry-forward room |
-| **Pilot live** | Monday **W14** · readout **W17** · WhatsApp **W18** |
+| **Total backlog** | **93.75 dev-days** / 88 items |
+| **Original capacity** | 14 planned sprints × 5 productive days = 70 days |
+| **Net over/under original capacity** | **+14.50 days**; S06A is an inserted 14.50-day ASAP block, not funded by the original sprint estimates |
+| **Original pilot date** | W14 is an obsolete forecast until S06A is sequenced and staffing/parallelism is decided |
 
 ---
 
@@ -22,13 +22,13 @@ v1 had a backlog, but it was not safe to build from. Three defects:
 2. **S13 was empty.** The launch sprint had no work items — staff training, content corrections and the GM go/no-go were described in prose but never costed. They are now three items totalling 2.0 days.
 3. **No acceptance criteria.** "Definition of done" entries were vague. Every item now has a **testable** acceptance criterion: *"Pool hours answered by lookup, not generation"* rather than *"facts table works"*.
 
-The day count rose from 67.75 to **70.00** as a direct result — the missing launch work is now visible rather than assumed to be free.
+The original plan is 70.00 engineering days. The inserted ASAP S06A adds 14.50 days, so the revised engineering demand is **84.50 days**; downstream dates must be re-forecast, not hidden in existing slack.
 
 ---
 
 ## Sprint ladder
 
-| Sprint | Week | Name | Items | Days | Cum. weeks | Slack | Gate |
+| Sprint | Week | Name | Items | Days | Cum. weeks | Delta vs 5d | Gate |
 |---|---|---|---|---|---|---|---|
 | **W00** | W0 | Foundation lock | 21 | 8.25 | 1.65 | -3.25 | G0 |
 | **S01** | W1 | Schema and tenancy | 3 | 5.75 | 2.80 | -0.75 | — |
@@ -37,16 +37,17 @@ The day count rose from 67.75 to **70.00** as a direct result — the missing la
 | **S04** | W4 | Retrieval and review | 3 | 5.00 | 5.90 | +0.00 | — |
 | **S05** | W5 | AI core and evaluation | 3 | 5.50 | 7.00 | -0.50 | G2 |
 | **S06** | W6 | Guest chat and evaluation | 3 | 5.00 | 8.00 | +0.00 | — |
-| **S07** | W7 | Chat hardening | 6 | 4.00 | 8.80 | +1.00 | — |
-| **S08** | W8 | Staff inbox | 4 | 5.50 | 9.90 | -0.50 | — |
-| **S09** | W9 | Requests and notifications | 5 | 4.50 | 10.80 | +0.50 | — |
-| **S10** | W10 | Analytics | 3 | 4.50 | 11.70 | +0.50 | — |
-| **S11** | W11 | Reliability | 5 | 5.00 | 12.70 | +0.00 | — |
-| **S12** | W12 | Pilot readiness | 4 | 4.50 | 13.60 | +0.50 | G3 |
-| **S13** | W13 | Launch | 3 | 2.00 | 14.00 | +3.00 | — |
-| | | **Total** | **71** | **70.00** | **14.00** | **+0.00** | |
+| **S06A** | ASAP | API, deployment and eval reliability | 7 | 14.50 | 10.90 | -9.50 | G2 remediation |
+| **S07** | W7 | Chat hardening | 6 | 4.00 | 11.70 | +1.00 | — |
+| **S08** | W8 | Staff inbox | 4 | 5.50 | 12.80 | -0.50 | — |
+| **S09** | W9 | Requests and notifications | 5 | 4.50 | 13.70 | +0.50 | — |
+| **S10** | W10 | Analytics | 3 | 4.50 | 14.60 | +0.50 | — |
+| **S11** | W11 | Reliability | 5 | 5.00 | 15.60 | +0.00 | — |
+| **S12** | W12 | Pilot readiness | 4 | 4.50 | 16.50 | +0.50 | G3 |
+| **S13** | W13 | Launch | 3 | 2.00 | 16.90 | +3.00 | — |
+| | | **Total** | **78** | **84.50** | **16.90** | **-14.50** | |
 
-> Work completes at **14.00 weeks**. W14 is launch; W13 carries the launch work and roughly three days of carry-forward room.
+> The inserted S06A adds **14.50 engineering days** (2.90 five-day weeks) before S07. The original W14 launch date is no longer a valid forecast; the release date must be recalculated after staffing/parallelism is agreed.
 
 ---
 
@@ -156,6 +157,21 @@ The day count rose from 67.75 to **70.00** as a direct result — the missing la
 | `S06-02` | Eng | Conversation state machine | 1.50 | S06-01 | Illegal transitions impossible at the database level |
 | `S06-03` | Eng | Evaluation harness + CI job | 1.50 | S05-02 | G2 passes on the fixture property; runs on every prompt change |
 
+### S06A · ASAP — API, deployment and eval reliability
+
+**Goal:** Make release and answer-quality evidence trustworthy · **Days:** 14.50 · **Gate:** G2 remediation
+**Exit:** Full API surface has a documented contract and reachable deployment · deploys follow native Vercel Git integration with enforced CI · live canary diagnostics identify real retrieval/fact/guardrail cause · G2 measured on a sufficiently large, representative set
+
+| ID | Track | Item | Days | Depends | Acceptance criteria |
+|---|---|---|---|---|---|
+| `S06A-01` | Eng | Eval attribution and retrieval diagnostics | 1.50 | S06-03 | For every golden row, report pipeline stage, outcome/reason, target-topic retrieval hit and safe retrieved-topic diagnostics; synthetic tests reproduce each bucket and no failure is reported as retrieval-empty unless retrieval was actually empty |
+| `S06A-02` | Eng | Sensitive and policy classifier calibration | 1.50 | S06A-01 | Regression tests cover price questions for known services, booking/transacting requests, extra-bed policy, pet policy, explicit handoff, refunds, allergy and accessibility; no escalation rule is weakened without safety tests |
+| `S06A-03` | Eng | Guest intent classification and structured-fact routing | 2.50 | S06A-02 | Property fact questions in English and Spanish reach verified fact lookup using inferred topic/fact keys; wrong/absent fact falls back safely; tests prove no caller-supplied tenant/topic label bypasses policy |
+| `S06A-04` | Eng | Cross-language knowledge and retrieval quality | 2.00 | S06A-01 | Bilingual paraphrase retrieval suite meets ≥90% target-topic recall on frozen cases; exact-language and cross-language cases, noise, no-match and tenant isolation are covered; only approved content is cited |
+| `S06A-05` | Eng | API contract and runtime decision | 2.50 | S06A-01 | Every route used by web is mapped to handler, auth/tenant policy, schema, response and deployment adapter; contract validation and HTTP integration tests pass; runtime decision cites measured duration, DB pooling and worker constraints |
+| `S06A-06` | Eng | Native Vercel Git deploys for API and web | 3.00 | S06A-05 | API and web preview from same commit; protected staging has stable Vercel branch/domain binding; production deploys from agreed branch; deliberately failing required CI check blocks promotion; no alias-pinning step or GitHub Vercel token needed for routine deploy |
+| `S06A-07` | Eng | Representative golden set and gate arming | 1.50 | S06A-01, S06A-02, S06A-03, S06A-04 | At least 50 reviewed questions include target language/topic, expected behaviour and source rationale; ≤2% false-answer gate is armed with explicit denominator; no-answer/fact/guardrail/outage strata are reported; current 20-case result remains visible as historical baseline |
+
 ### S07 · W7 — Chat hardening
 
 **Goal:** Abuse, outages and provider failure  
@@ -262,6 +278,7 @@ The day count rose from 67.75 to **70.00** as a direct result — the missing la
 | S04 | 5.00 | 0.00 | 5.00 | Fits |
 | S05 | 5.50 | 0.00 | 5.50 | **Over by 0.50** |
 | S06 | 5.00 | 0.00 | 5.00 | Fits |
+| S06A | 14.50 | 0.00 | 14.50 | **Over by 9.50** |
 | S07 | 4.00 | 0.00 | 4.00 | Fits |
 | S08 | 5.50 | 0.00 | 5.50 | **Over by 0.50** |
 | S09 | 4.50 | 0.00 | 4.50 | Fits |
@@ -269,9 +286,9 @@ The day count rose from 67.75 to **70.00** as a direct result — the missing la
 | S11 | 5.00 | 0.00 | 5.00 | Fits |
 | S12 | 4.50 | 0.00 | 4.50 | Fits |
 | S13 | 0.50 | 1.50 | 2.00 | Fits |
-| **Total** | | | **70.00** | 70 available |
+| **Total demand** | | | **84.50** | **14.50 over original 70-day capacity** |
 
-**W00 is the structural problem.** 8.2 days of work in a 5-day week — 4.5 engineering and 3.8 founder/GTM. It fits only if two people work in parallel. **Solo, it runs to mid-W1**, which pushes every downstream date by three days.
+**Capacity note.** W00 remains an 8.25-day mixed founder/engineering block. S06A is an additional 14.50 engineering days and is deliberately visible rather than silently absorbed into W13 slack; it consumes approximately 2.90 engineer-weeks before the later launch date is replanned.
 
 ---
 
@@ -287,9 +304,10 @@ The day count rose from 67.75 to **70.00** as a direct result — the missing la
 | 6 | AI contract and guardrails | S05 | Guest chat has nothing to send until it exists |
 | 7 | Eval harness | S06 | Without it G2 is an opinion |
 | 8 | Guest chat | S06 | The pilot surface |
-| 9 | Inbox | S08 | Requests with nobody to receive them are broken promises |
-| 10 | Notifications | S09 | The reason a request gets seen |
-| 11 | Restore drill and runbook | S12 | G3 cannot pass without it |
+| 9 | Eval/API/deployment stabilization | S06A | G2 evidence, full API contract and repeatable deploys are release blockers |
+| 10 | Inbox | S08 | Requests with nobody to receive them are broken promises |
+| 11 | Notifications | S09 | The reason a request gets seen |
+| 12 | Restore drill and runbook | S12 | G3 cannot pass without it |
 
 ---
 
@@ -299,11 +317,11 @@ The day count rose from 67.75 to **70.00** as a direct result — the missing la
 |---|---|---|---|---|---|
 | G0 | Decisions and approvals | W00 | W0 | 14 ADRs signed · verification submitted · content owner named · fixture seeded | Do not start S01 |
 | G1 | Content ready | S03 | W3 | 25 articles · 40 facts · zero contradictions · golden set frozen | Delay the pilot, not the build |
-| G2 | AI quality | S05 | W5 | False-answer ≤2% · escalation ≥95% · recall ≥90% | **Hard stop** |
+| G2 | AI quality | S06A | After remediation | False-answer ≤2% on ≥50 reviewed cases · correct-or-escalated ≥95% · correct escalation ≥90% · needless escalation ≤20% · retrieval recall ≥90% | **Hard stop** |
 | G3 | Pilot-ready | S12 | W12 | Isolation green · restore drilled · 3 staff unaided | Restricted launch only |
-| — | Pilot live | S13 | W14 | Trained · content corrected · GM go/no-go | Postpone a week |
-| G4 | Pilot readout | — | W17 | Containment ≥55% · accuracy ≥95% · ack ≤10 min | Do not scale sales |
-| G5 | WhatsApp live | WA | W18 | Approved · consent tested · clean shadow run | Stay web-only |
+| — | Pilot live (original target; reforecast) | S13 | After S06A | Trained · content corrected · GM go/no-go | Do not commit to W14 until staffing/parallelism is re-estimated |
+| G4 | Pilot readout | — | Reforecast | Containment ≥55% · accuracy ≥95% · ack ≤10 min | Do not scale sales |
+| G5 | WhatsApp live | WA | Reforecast | Approved · consent tested · clean shadow run | Stay web-only |
 | G6 | Group pilot | — | W19+ | 2–3 properties · inheritance exercised | No PMS-dependent group |
 
 ---
@@ -338,4 +356,4 @@ The day count rose from 67.75 to **70.00** as a direct result — the missing la
 
 ---
 
-*Totals reconcile: 70.00 + 7.75 + 1.50 = **79.25 dev-days**.*
+*Totals reconcile: planned engineering 84.50 + WhatsApp 7.75 + deferred 1.50 = **93.75 dev-days**. S06A contributes 14.50 days beyond the original 70-day pilot capacity.*

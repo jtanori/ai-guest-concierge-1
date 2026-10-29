@@ -47,6 +47,18 @@ const VERSION = {
   spaEs: "1f0a2a3b-0005-4c01-a1a1-000000000005",
   marketing: "1f0a2a3b-0006-4c01-a1a1-000000000006",
   noticeboard: "1f0a2a3b-0007-4c01-a1a1-000000000007",
+  // S06-03 canary corpus expansion — topics the golden set asks about but the
+  // original seven adversarial articles did not cover. Each is a clean,
+  // retrievable article so retrieval can find an answer instead of returning
+  // low_retrieval.
+  petsPolicy: "1f0a2a3b-0008-4c01-a1a1-000000000008",
+  diningHours: "1f0a2a3b-0009-4c01-a1a1-000000000009",
+  wifiInfo: "1f0a2a3b-000a-4c01-a1a1-00000000000a",
+  checkinHours: "1f0a2a3b-000b-4c01-a1a1-00000000000b",
+  checkinPolicy: "1f0a2a3b-000c-4c01-a1a1-00000000000c",
+  transportAirport: "1f0a2a3b-000d-4c01-a1a1-00000000000d",
+  roomAmenities: "1f0a2a3b-000e-4c01-a1a1-00000000000e",
+  parkingInfo: "1f0a2a3b-000f-4c01-a1a1-00000000000f",
 } as const;
 
 export const FIXTURE_PROPERTY = {
@@ -189,6 +201,120 @@ export const FIXTURE_ARTICLES: FixtureArticleVersion[] = [
     body: null,
     sourceNote: "Caso 6 — el único contenido es una foto de un tablero de avisos (sin texto extraíble)",
   },
+  // ── S06-03 canary corpus expansion ──────────────────────────────────────────
+  // These cover the golden set's answer-expected topics that the original seven
+  // adversarial articles left with no retrievable source. Clean, single-topic
+  // articles so retrieval can find an answer instead of returning low_retrieval.
+  {
+    articleVersionId: VERSION.petsPolicy,
+    articleId: "art-pets-policy",
+    topicKey: "policy.pets",
+    language: "en",
+    isCurrent: true,
+    title: "Pet policy",
+    body:
+      "Pets are welcome at Hotel Casa Mesa. We allow dogs and cats up to 15 kg in designated pet-friendly rooms. " +
+      "There is a one-time pet fee of $500 MXN per stay. Pets must be leashed in common areas and are not allowed " +
+      "in the pool or spa. Please let reception know in advance if you are travelling with a pet so we can prepare " +
+      "the right room.",
+    sourceNote: "S06-03 — pet policy for golden set topic policy.pets",
+  },
+  {
+    articleVersionId: VERSION.diningHours,
+    articleId: "art-dining-hours",
+    topicKey: "dining.hours",
+    language: "en",
+    isCurrent: true,
+    title: "Restaurant and breakfast hours",
+    body:
+      "Breakfast is served daily from 7:00 to 11:00 AM in the main dining room. " +
+      "The restaurant is open for lunch from 12:00 to 4:00 PM and for dinner from 6:00 to 10:30 PM. " +
+      "Room service is available 24 hours. Breakfast includes a hot buffet, fresh fruit, pastries, and made-to-order eggs.",
+    sourceNote: "S06-03 — dining hours for golden set topic dining.hours",
+  },
+  {
+    articleVersionId: VERSION.wifiInfo,
+    articleId: "art-wifi-info",
+    topicKey: "wifi.info",
+    language: "en",
+    isCurrent: true,
+    title: "Wi-Fi and internet access",
+    body:
+      "Free high-speed Wi-Fi is available in all rooms, the lobby, and all public areas. " +
+      "The network name is CASA-MESA-GUEST and the password is provided at check-in. " +
+      "There is no charge for Wi-Fi; it is included with every stay. " +
+      "A wired ethernet connection is also available in the business centre.",
+    sourceNote: "S06-03 — wifi info for golden set topic wifi.info",
+  },
+  {
+    articleVersionId: VERSION.checkinHours,
+    articleId: "art-checkin-hours",
+    topicKey: "checkin.hours",
+    language: "es",
+    isCurrent: true,
+    title: "Horarios de check-in y check-out",
+    body:
+      "El check-in comienza a las 15:00 (3:00 PM) y el check-out es a las 12:00 (mediodía). " +
+      "Si llegas antes de las 15:00, podemos guardar tu equipaje en recepción sin costo. " +
+      "El check-in tardío después de las 22:00 está permitido; por favor avísanos con anticipación.",
+    sourceNote: "S06-03 — check-in hours for golden set topic checkin.hours",
+  },
+  {
+    articleVersionId: VERSION.checkinPolicy,
+    articleId: "art-checkin-policy",
+    topicKey: "checkin.policy",
+    language: "en",
+    isCurrent: true,
+    title: "Early check-in policy",
+    body:
+      "Early check-in before 15:00 is subject to availability and cannot be guaranteed. " +
+      "If a room is ready, we are happy to allow early check-in at no extra charge. " +
+      "If no room is available, we will store your luggage and you are welcome to use the pool and common areas. " +
+      "To request early check-in, contact reception the day before your arrival or on the morning of check-in.",
+    sourceNote: "S06-03 — early check-in policy for golden set topic checkin.policy",
+  },
+  {
+    articleVersionId: VERSION.transportAirport,
+    articleId: "art-transport-airport",
+    topicKey: "transport.airport",
+    language: "en",
+    isCurrent: true,
+    title: "Airport transfers",
+    body:
+      "The hotel offers a private airport transfer service. The cost is $800 MXN each way for up to 3 passengers " +
+      "in a sedan, or $1,200 MXN each way for up to 6 passengers in a van. " +
+      "The transfer takes approximately 35 minutes from the international airport. " +
+      "To book a transfer, contact reception at least 24 hours before your arrival with your flight number and arrival time.",
+    sourceNote: "S06-03 — airport transfer for golden set topic transport.airport",
+  },
+  {
+    articleVersionId: VERSION.roomAmenities,
+    articleId: "art-room-amenities",
+    topicKey: "room.amenities",
+    language: "es",
+    isCurrent: true,
+    title: "Camas extra y amenidades de habitación",
+    body:
+      "Podemos agregar una cama extra (cuna o cama plegable) por $350 MXN por noche, sujeta a disponibilidad. " +
+      "Las habitaciones incluyen aire acondicionado, caja de seguridad, minibar y baño privado con amenities. " +
+      "Cada habitación tiene capacidad máxima de 3 adultos o 2 adultos y 2 niños. " +
+      "Por favor solicita la cama extra al momento de reservar o al menos 48 horas antes de tu llegada.",
+    sourceNote: "S06-03 — extra bed policy for golden set topic room.amenities",
+  },
+  {
+    articleVersionId: VERSION.parkingInfo,
+    articleId: "art-parking-info",
+    topicKey: "parking.info",
+    language: "en",
+    isCurrent: true,
+    title: "Parking information",
+    body:
+      "Yes, the hotel has a secure underground parking garage. Parking costs $150 MXN per night for hotel guests. " +
+      "The garage is open 24 hours and is monitored by cameras. " +
+      "There is no charge for parking if you are dining at the restaurant. " +
+      "The garage clearance is 2.1 metres; oversized vehicles should contact reception in advance.",
+    sourceNote: "S06-03 — parking info for golden set topic parking.info",
+  },
 ];
 
 export const FIXTURE_FACTS: FixtureFact[] = [
@@ -256,6 +382,85 @@ export const FIXTURE_FACTS: FixtureFact[] = [
     sourceArticleVersionId: VERSION.marketing,
     verified: false,
     sourceNote: "Caso 5 — el dato útil enterrado en el párrafo 11 del artículo de marketing",
+  },
+  // ── S06-03 canary corpus expansion — structured facts for the golden set ────
+  {
+    factId: "fact-dining-breakfast",
+    propertyId: "demo",
+    topicKey: "dining.hours",
+    factKey: "breakfast_hours",
+    unit: "hours",
+    value: "7:00-11:00 AM",
+    language: "en",
+    effectiveFrom: "2026-01-01",
+    sourceArticleVersionId: VERSION.diningHours,
+    verified: false,
+    sourceNote: "S06-03 — breakfast hours for golden set",
+  },
+  {
+    factId: "fact-parking-rate",
+    propertyId: "demo",
+    topicKey: "parking.info",
+    factKey: "nightly_rate",
+    unit: "currency-amount",
+    value: "$150 MXN per night",
+    language: "en",
+    effectiveFrom: "2026-01-01",
+    sourceArticleVersionId: VERSION.parkingInfo,
+    verified: false,
+    sourceNote: "S06-03 — parking rate for golden set",
+  },
+  {
+    factId: "fact-transport-airport-sedan",
+    propertyId: "demo",
+    topicKey: "transport.airport",
+    factKey: "sedan_price",
+    unit: "currency-amount",
+    value: "$800 MXN each way",
+    language: "en",
+    effectiveFrom: "2026-01-01",
+    sourceArticleVersionId: VERSION.transportAirport,
+    verified: false,
+    sourceNote: "S06-03 — airport transfer sedan price for golden set",
+  },
+  {
+    factId: "fact-room-extra-bed",
+    propertyId: "demo",
+    topicKey: "room.amenities",
+    factKey: "extra_bed_rate",
+    unit: "currency-amount",
+    value: "$350 MXN per night",
+    language: "es",
+    effectiveFrom: "2026-01-01",
+    sourceArticleVersionId: VERSION.roomAmenities,
+    verified: false,
+    sourceNote: "S06-03 — extra bed rate for golden set",
+  },
+  {
+    factId: "fact-checkin-time",
+    propertyId: "demo",
+    topicKey: "checkin.hours",
+    factKey: "checkin_time",
+    unit: "time-of-day",
+    value: "15:00",
+    language: "es",
+    effectiveFrom: "2026-01-01",
+    sourceArticleVersionId: VERSION.checkinHours,
+    verified: false,
+    sourceNote: "S06-03 — check-in time for golden set",
+  },
+  {
+    factId: "fact-wifi-cost",
+    propertyId: "demo",
+    topicKey: "wifi.info",
+    factKey: "cost",
+    unit: "text",
+    value: "free",
+    language: "en",
+    effectiveFrom: "2026-01-01",
+    sourceArticleVersionId: VERSION.wifiInfo,
+    verified: false,
+    sourceNote: "S06-03 — wifi is free for golden set",
   },
 ];
 

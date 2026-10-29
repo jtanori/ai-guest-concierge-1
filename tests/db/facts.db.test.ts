@@ -309,7 +309,7 @@ describe("property facts (db)", () => {
         ORDER BY fact_key, fact_value`,
       [DEMO_PROPERTY_ID],
     );
-    expect(rows.rows).toHaveLength(5);
+    expect(rows.rows).toHaveLength(FIXTURE_FACTS.length);
     for (const row of rows.rows) {
       expect(row.unit, row.fact_key).not.toBe("");
       expect(row.effective_from, row.fact_key).toBe("2026-01-01");
@@ -880,17 +880,17 @@ describe("property facts (db)", () => {
 
     for (const attempt of [1, 2]) {
       const summary = await seedDemoInTx(client);
-      expect(summary.property_facts, `seed ${attempt}`).toBe(5);
+      expect(summary.property_facts, `seed ${attempt}`).toBe(FIXTURE_FACTS.length);
       expect((await factRow(websiteId)).verified, `seed ${attempt}`).toBe(true);
       expect(await factRow(websiteId), `seed ${attempt}`).toEqual(stamped);
     }
 
-    // the seed is a no-op for facts: 5 rows, and no verdict was re-stamped
+    // the seed is a no-op for facts: same rows, and no verdict was re-stamped
     const count = await client.query<{ count: string }>(
       "SELECT count(*) AS count FROM property_facts WHERE property_id = $1",
       [DEMO_PROPERTY_ID],
     );
-    expect(Number(count.rows[0]!.count)).toBe(5);
+    expect(Number(count.rows[0]!.count)).toBe(FIXTURE_FACTS.length);
     expect(await auditCount(DEMO_PROPERTY_ID, "fact.verified")).toBe(audited);
   });
 

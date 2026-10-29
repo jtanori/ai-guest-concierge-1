@@ -404,7 +404,14 @@ export const CORE: readonly CoreVariable[] = [
     consumer: "ci",
     secret: false,
     store: "github-repo",
-    why: "identifies the Vercel project; identical across environments",
+    why: "identifies the API Vercel project; identical across environments",
+  },
+  {
+    name: "VERCEL_WEB_PROJECT_ID",
+    consumer: "ci",
+    secret: false,
+    store: "github-repo",
+    why: "identifies the web tier's Vercel project; web-consumer vercel-store variables route here, not to the API project",
   },
   // ── platform plumbing: read by src/server.ts, declared so the contract (and the
   // coverage test) can see them. None is required by any stage yet: no environment

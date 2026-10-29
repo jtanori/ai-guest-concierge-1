@@ -57,6 +57,15 @@ export interface RemoteState {
     /** Name → value when Vercel returned one, `null` when present but unreadable. */
     entries: Map<string, string | null>;
   } | null;
+  /**
+   * The web tier's Vercel project state. Web-consumer variables with
+   * `store: "vercel"` route here instead of the API project. `null` when the
+   * web project could not be read (no `VERCEL_WEB_PROJECT_ID`, no token).
+   */
+  vercelWeb: {
+    target: string;
+    entries: Map<string, string | null>;
+  } | null;
 }
 
 /**
@@ -116,10 +125,30 @@ function targetFor(variable: VariableSpec, env: EnvName): string {
     case "github-repo":
       return "repo";
     case "vercel":
-      return `vercel:${env === "prod" ? "production" : "preview"}`;
+      // Web-consumer vercel variables belong on the web project, not the API project.
+      return variable.consumer === "web"
+        ? `vercel-web:${env === "prod" ? "production" : "preview"}`
+        : `vercel:${env === "prod" ? "production" : "preview"}`;
     default:
       return "runtime";
   }
+}
+
+/** Which Vercel project state a variable reads from: API or web. */
+function vercelStateFor(
+  variable: VariableSpec,
+  remote: RemoteState,
+): { present: boolean; value: string | null | undefined } | "unreadable" {
+  if (variable.consumer === "web") {
+    if (remote.vercelWeb === null) return "unreadable";
+    const entry = remote.vercelWeb.entries.get(variable.name);
+    if (entry === undefined) return { present: false, value: undefined };
+    return { present: true, value: entry };
+  }
+  if (remote.vercel === null) return "unreadable";
+  const entry = remote.vercel.entries.get(variable.name);
+  if (entry === undefined) return { present: false, value: undefined };
+  return { present: true, value: entry };
 }
 
 /** The remote value, when the store can return one; `undefined` when it cannot. */
@@ -144,11 +173,7 @@ function remoteValue(
   }
 
   if (store === "vercel") {
-    if (remote.vercel === null) return "unreadable";
-    const entry = remote.vercel.entries.get(variable.name);
-    if (entry === undefined) return { present: false, value: undefined };
-    // `null` = present but Vercel would not return it (a sensitive value).
-    return { present: true, value: entry };
+    return vercelStateFor(variable, remote);
   }
 
   return { present: false, value: undefined };

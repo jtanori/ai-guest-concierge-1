@@ -51,6 +51,7 @@ import {
   toRunDecision,
   type AiOutput,
   type AiReasonCode,
+  type AiRunReasonCode,
 } from "./contract.ts";
 import {
   AI_OUTPUT_JSON_SCHEMA,
@@ -79,6 +80,73 @@ export interface AnswerMessageInput {
   embedding?: number[];
 }
 
+/**
+ * S06A-01 — the stages a question crosses, in pipeline order.
+ *
+ * The eval diagnostic needs to say *where* a run ended, not just that it did.
+ * "Retrieved nothing" means three different things — a guardrail stopped the
+ * run before retrieval, retrieval ran and returned nothing, and a fact answered
+ * before retrieval was ever asked — and only the second is a content gap. A
+ * stage list is what makes those distinguishable.
+ */
+export const ANSWER_STAGES = [
+  "policy",
+  "sensitive",
+  "facts",
+  "retrieval",
+  "contradiction",
+  "generate",
+  "contract",
+  "guardrail",
+] as const;
+export type AnswerStage = (typeof ANSWER_STAGES)[number];
+
+export type AnswerStageStatus =
+  /** The stage ran and did not stop the run. */
+  | "ok"
+  /** Not applicable to this question (no structured input, for example). */
+  | "skip"
+  /** The run ends here. */
+  | "stop"
+  /** The instrument failed here (a provider outage). */
+  | "error";
+
+/**
+ * One stage boundary, for the eval observer only.
+ *
+ * Deliberately narrow: stage, status, reason/detail codes from OUR vocabulary,
+ * and topic/article-version identifiers plus counts. Never the guest's text,
+ * never a prompt, never an article body, never a model's words — this object
+ * is serialised straight into a GitHub Actions artifact.
+ */
+export interface AnswerStageEvent {
+  stage: AnswerStage;
+  status: AnswerStageStatus;
+  /** `provider_unavailable` or an Appendix B code; null when there is none. */
+  reasonCode?: AiRunReasonCode | null;
+  /** Machine-readable cause from our own vocabulary, e.g. `sensitive:allergens`. */
+  detail?: string | null;
+  topicKey?: string | null;
+  factKey?: string | null;
+  /** Candidate topics retrieval returned (identifiers only, no bodies). */
+  topics?: readonly string[];
+  /** Candidate article versions, so a citation in the report can be joined. */
+  articleVersionIds?: readonly string[];
+  /** Candidate count (retrieval) or violation count (contract). */
+  count?: number;
+  modelId?: string;
+  usedFallback?: boolean;
+}
+
+/**
+ * Eval-only observer: called once per stage boundary, in order.
+ *
+ * Not global state — the observer belongs to the caller's stack frame, and the
+ * production guest path (`src/guest/service.ts`) never passes one, so nothing
+ * about guest-visible output, persistence or tenant behaviour changes.
+ */
+export type AnswerStageObserver = (event: AnswerStageEvent) => void;
+
 export interface AnswerDeps {
   ai: ResilientAi;
   /** Overrides `PROMPT_VERSION` only for eval runs that pin a prompt. */
@@ -89,6 +157,8 @@ export interface AnswerDeps {
   conversationSpendUsd?: number;
   /** Guardrail confidence floor; 0 (default) leaves it off until calibrated. */
   minConfidence?: number;
+  /** S06A-01: stage provenance for the evaluator. Absent in production. */
+  onStage?: AnswerStageObserver;
 }
 
 export type AnswerOutcome =
@@ -286,7 +356,14 @@ export async function answerMessage(
       ? {}
       : { conversationSpendUsd: deps.conversationSpendUsd }),
   });
+  const onStage = deps.onStage;
   if (!gate.allow) {
+    onStage?.({
+      stage: "policy",
+      status: "stop",
+      reasonCode: gate.reasonCode,
+      detail: gate.detail,
+    });
     await emitEvent(client, context, "ai_escalated", eventBase, {
       reason_code: gate.reasonCode,
       detail: gate.detail,
@@ -299,12 +376,19 @@ export async function answerMessage(
       guestMessage: requestAcknowledged(input.language),
     };
   }
+  onStage?.({ stage: "policy", status: "ok", detail: gate.detail });
 
   // ---- 1b. sensitive topics and intents (S05-02 AC-2) ------------------
   // Before retrieval, before facts and before any model call: the point of a
   // guardrail is that it costs nothing and cannot be argued with.
   const sensitive = classifySensitive(text, input.language);
   if (sensitive !== null) {
+    onStage?.({
+      stage: "sensitive",
+      status: "stop",
+      reasonCode: sensitive.reasonCode,
+      detail: `sensitive:${sensitive.ruleId}`,
+    });
     await emitEvent(client, context, "ai_escalated", eventBase, {
       reason_code: sensitive.reasonCode,
       detail: `sensitive:${sensitive.ruleId}`,
@@ -317,11 +401,19 @@ export async function answerMessage(
       guestMessage: requestAcknowledged(input.language),
     };
   }
+  onStage?.({ stage: "sensitive", status: "ok" });
 
   // ---- 2. verified facts (S03-03) beat prose ---------------------------
   if (input.structured !== undefined) {
     const fact = await lookupFact(client, context, input.structured);
     if (fact !== null) {
+      onStage?.({
+        stage: "facts",
+        status: "ok",
+        detail: "hit",
+        topicKey: input.structured.topicKey,
+        factKey: input.structured.factKey,
+      });
       // No `ai_runs` row on purpose: no model was called, and a row here would
       // make "answers per model" numbers meaningless. The event still records
       // that an answer was sent, and from where.
@@ -337,6 +429,15 @@ export async function answerMessage(
         factKey: input.structured.factKey,
       };
     }
+    onStage?.({
+      stage: "facts",
+      status: "ok",
+      detail: "miss",
+      topicKey: input.structured.topicKey,
+      factKey: input.structured.factKey,
+    });
+  } else {
+    onStage?.({ stage: "facts", status: "skip", detail: "no_structured_input" });
   }
 
   // ---- 3. retrieval ----------------------------------------------------
@@ -345,6 +446,16 @@ export async function answerMessage(
     ...(input.embedding === undefined ? {} : { embedding: input.embedding }),
   });
   const hits = source.kind === "articles" ? source.hits : [];
+  // Emitted even when `hits` is empty: retrieval RAN and found nothing, which is
+  // a content gap. A run that never reached this stage is a different finding
+  // and is recorded by the absence of this event.
+  onStage?.({
+    stage: "retrieval",
+    status: "ok",
+    count: hits.length,
+    topics: [...new Set(hits.map((hit) => hit.topicKey))],
+    articleVersionIds: hits.map((hit) => hit.articleVersionId),
+  });
 
   // ---- 3b. unresolved contradictions (S05-02 / S03-03) -----------------
   // If the sources disagree with a VERIFIED value, answering means picking a
@@ -360,6 +471,13 @@ export async function answerMessage(
       entry.entries.some((item) => item.verified),
   );
   if (contested !== undefined) {
+    onStage?.({
+      stage: "contradiction",
+      status: "stop",
+      reasonCode: "contradiction",
+      detail: `contradiction:${contested.topicKey}.${contested.factKey}`,
+      topicKey: contested.topicKey,
+    });
     await emitEvent(client, context, "ai_escalated", eventBase, {
       reason_code: "contradiction",
       detail: `contradiction:${contested.topicKey}.${contested.factKey}`,
@@ -416,6 +534,9 @@ export async function answerMessage(
       // S07-05: the outage leaves evidence, not just a message. The caller
       // (S07-03) then captures the request and sends the catalogue "a person
       // will reply" string; this function never invents copy.
+      // The trace records the stage and the reason code only: the adapter's
+      // message text is not stage evidence and this object reaches an artifact.
+      onStage?.({ stage: "generate", status: "error", reasonCode: "provider_unavailable" });
       const aiRunId = await recordOutage(
         client,
         context,
@@ -431,6 +552,12 @@ export async function answerMessage(
     }
     throw error;
   }
+  onStage?.({
+    stage: "generate",
+    status: "ok",
+    modelId: generated.modelId,
+    usedFallback: generated.usedFallback,
+  });
 
   // ---- 4b. S07-04 AC-2: charge the call that just happened ---------------
   // Before parsing, because the money is spent whether or not the output is
@@ -479,6 +606,15 @@ export async function answerMessage(
     });
   } catch (error) {
     if (!(error instanceof AiContractError)) throw error;
+    // The trace carries the count, not the strings: contract violations quote
+    // the model's own output back, and that is model text in an artifact.
+    onStage?.({
+      stage: "contract",
+      status: "stop",
+      reasonCode: "policy_block",
+      detail: "contract_violation",
+      count: error.violations.length,
+    });
     // S07-06 AC-3: a model answered and the answer was not the contract. This is
     // the failure that costs the guest an answer while every transport-level
     // signal looks healthy, so it gets a counter, not just a column.
@@ -516,11 +652,25 @@ export async function answerMessage(
     };
   }
 
+  // The parse held. Emitted so the trace can tell "the contract passed" from
+  // "the contract was never reached" — the same reason retrieval is recorded
+  // even when it comes back empty.
+  onStage?.({ stage: "contract", status: "ok" });
+
   // ---- 5b. the guardrail gate (S05-02 AC-1) ---------------------------
   const guarded = verifyAnswer(output, hits, {
     ...(deps.minConfidence === undefined ? {} : { minConfidence: deps.minConfidence }),
   });
   if (!guarded.ok) {
+    // `guarded.detail` is ours ("quote_not_in_cited_version", "banned_content:…");
+    // `guarded.violations` quotes model text and stays out of the trace.
+    onStage?.({
+      stage: "guardrail",
+      status: "stop",
+      reasonCode: guarded.reasonCode,
+      detail: guarded.detail,
+      count: guarded.violations.length,
+    });
     const { aiRunId, createdAtIso: runAt } = await recordAiRun(client, context, {
       ...baseRun,
       decision: "escalate",
@@ -542,6 +692,7 @@ export async function answerMessage(
       guestMessage: requestAcknowledged(input.language),
     };
   }
+  onStage?.({ stage: "guardrail", status: "ok" });
 
   // ---- 6. persist + emit ----------------------------------------------
   const { aiRunId, createdAtIso: runAt } = await recordAiRun(client, context, {

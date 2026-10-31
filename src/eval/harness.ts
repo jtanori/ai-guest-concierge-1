@@ -27,6 +27,7 @@
  * false answers" because it could not reach a model is lying.
  */
 import type { GoldenQuestion } from "../golden/validate.ts";
+import type { AnswerStageEvent } from "../ai/answer.ts";
 import { MIN_QUESTIONS_FOR_GATE, THRESHOLDS, type Thresholds } from "./thresholds.ts";
 
 export const OBSERVED_DECISIONS = ["answer", "escalate", "no_answer", "unavailable"] as const;
@@ -44,6 +45,12 @@ export interface JudgedQuestion {
   topics?: readonly string[];
   /** Topic keys the *answer* used, i.e. what it cited. Scoring, not diagnostics. */
   answerTopics?: readonly string[];
+  /**
+   * S06A-01: stage provenance from the pipeline's eval-only observer. When it is
+   * present it — not `topics` — is what says whether retrieval ran. Absent on
+   * hand-built fixtures, which then fall back to `topics !== undefined`.
+   */
+  stages?: readonly AnswerStageEvent[];
 }
 
 export const BUCKETS = [
@@ -73,16 +80,36 @@ export interface EvalScores {
   needlessEscalation: number;
 }
 
+/**
+ * Target-topic recall, with the denominator it was computed over.
+ *
+ * Four states that the old diagnostic collapsed into one, because they mean
+ * four different things:
+ *
+ *   matched        — retrieval ran and returned the target topic.
+ *   misses         — retrieval ran and did NOT return it: a real content gap,
+ *                    the only bucket "retrieved nothing" is allowed to imply.
+ *   notRunByStage  — retrieval never ran; keyed by the stage that ended the
+ *                    run (a guardrail, a policy block, a verified fact). Not a
+ *                    retrieval miss: nothing was retrieved *to* miss.
+ *   outage         — the instrument failed; `EvalResult.counts.outage` and the
+ *                    gate already carry that, separately from all of the above.
+ */
 export interface RetrievalDiagnostic {
-  /** Answer-expected rows, i.e. the ones with a `target_topic` to check. */
+  /** Answer-expected rows with a `target_topic`: the coverage denominator. */
   checked: number;
+  /** Of those, the rows where article retrieval actually executed. */
+  retrievalRun: number;
   matched: number;
-  /** matched / checked, 0 when nothing was checkable. */
+  /** matched / retrievalRun — recall over the rows where retrieval ran. */
   rate: number;
+  /** Rows where retrieval did not run, by the stage that ended the pipeline. */
+  notRunByStage: Record<string, number>;
   misses: Array<{
     question: string;
     language: string;
     targetTopic: string | null;
+    /** What retrieval returned; empty here means retrieval really was empty. */
     retrieved: readonly string[];
   }>;
 }
@@ -135,6 +162,38 @@ export function classifyJudgement(
   return observed === "answer" ? "false_answer" : "correct_escalation";
 }
 
+/**
+ * Did article retrieval execute for this row?
+ *
+ * Stage provenance is authoritative when the pipeline produced it. The
+ * `topics !== undefined` fallback exists only for hand-built fixtures that
+ * predate the observer, and preserves their old meaning: an explicit topic list
+ * (including an empty one) came from retrieval.
+ */
+function retrievalRan(row: JudgedQuestion): boolean {
+  if (row.stages !== undefined) return row.stages.some((event) => event.stage === "retrieval");
+  return row.topics !== undefined;
+}
+
+/** The candidate topics retrieval returned, from the trace when there is one. */
+function candidateTopics(row: JudgedQuestion): readonly string[] {
+  if (row.stages !== undefined) {
+    return row.stages.find((event) => event.stage === "retrieval")?.topics ?? [];
+  }
+  return row.topics ?? [];
+}
+
+/**
+ * The stage the run ended on: the last one it crossed. For a pre-retrieval
+ * escalation that is the guardrail that stopped it; for a verified fact it is
+ * `facts`, which is the stage that produced the answer.
+ */
+function endedAt(row: JudgedQuestion): string | null {
+  const stages = row.stages;
+  if (stages === undefined || stages.length === 0) return null;
+  return stages[stages.length - 1]!.stage;
+}
+
 export function scoreEval(judged: readonly JudgedQuestion[]): EvalResult {
   const outcomes: JudgedOutcome[] = judged.map((row) => {
     const bucket = classifyJudgement(row.question.expected, row.observed, {
@@ -177,11 +236,23 @@ export function scoreEval(judged: readonly JudgedQuestion[]): EvalResult {
 
   const checkable = outcomes.filter((row) => row.expected === "answer");
   const retrievalMisses: RetrievalDiagnostic["misses"] = [];
+  const notRunByStage: Record<string, number> = {};
   let matched = 0;
+  let retrievalRun = 0;
+  let checked = 0;
   for (const row of checkable) {
     const target = row.question.targetTopic;
     if (target === null) continue; // the validator forbids it; be forgiving anyway
-    const retrieved = row.topics ?? [];
+    checked += 1;
+    if (!retrievalRan(row)) {
+      // A run that stopped before retrieval is attributed to the stage that
+      // stopped it, and is never a recall miss: there was nothing to miss.
+      const stage = endedAt(row) ?? "unknown";
+      notRunByStage[stage] = (notRunByStage[stage] ?? 0) + 1;
+      continue;
+    }
+    retrievalRun += 1;
+    const retrieved = candidateTopics(row);
     if (retrieved.includes(target)) matched += 1;
     else
       retrievalMisses.push({
@@ -192,12 +263,16 @@ export function scoreEval(judged: readonly JudgedQuestion[]): EvalResult {
       });
   }
   const retrieval: RetrievalDiagnostic = {
-    checked: checkable.filter((row) => row.question.targetTopic !== null).length,
+    checked,
+    retrievalRun,
     matched,
-    rate: 1,
+    // Recall over rows where retrieval ran. When nothing ran the value is
+    // undefined, not 100%: zero is the only reading that cannot masquerade as
+    // a pass, and `notRunByStage` says why instead of leaving a bare number.
+    rate: retrievalRun > 0 ? matched / retrievalRun : checked === 0 ? 1 : 0,
+    notRunByStage,
     misses: retrievalMisses,
   };
-  retrieval.rate = divide(retrieval.matched, retrieval.checked, 1);
 
   return {
     total,

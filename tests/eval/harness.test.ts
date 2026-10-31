@@ -17,6 +17,7 @@ import {
   type JudgedQuestion,
   type ObservedDecision,
 } from "../../src/eval/harness.ts";
+import type { AnswerStageEvent } from "../../src/ai/answer.ts";
 import { FALSE_ANSWER_MAX, MIN_QUESTIONS_FOR_GATE } from "../../src/eval/thresholds.ts";
 import type { ExpectedBehaviour, GoldenQuestion } from "../../src/golden/validate.ts";
 
@@ -261,5 +262,248 @@ describe("eval harness — the regression gate", () => {
   it("fails a quietly shrunken golden set", () => {
     const breaches = compareToBaseline(scoreEval(run(54, 0, 27, 9)), baseline);
     expect(breaches[0]).toMatchObject({ metric: "question_count", relation: "equal" });
+  });
+});
+
+/**
+ * S06A-01 — the four things "retrieved nothing" used to mean, pinned apart.
+ *
+ * Each case exists because the old diagnostic collapsed them into one empty
+ * list, and every one of them was being read as a content gap: a guardrail that
+ * stopped the run before retrieval, a retrieval that really came back empty, a
+ * model that declined after a healthy retrieval, and a verified fact that
+ * answered before retrieval was asked.
+ */
+describe("eval harness — stage provenance", () => {
+  /** The stages a healthy run crosses, up to the point under test. */
+  const healthy = (
+    retrieval: AnswerStageEvent,
+    ...tail: AnswerStageEvent[]
+  ): AnswerStageEvent[] => [
+    { stage: "policy", status: "ok", detail: "allowed" },
+    { stage: "sensitive", status: "ok" },
+    { stage: "facts", status: "skip", detail: "no_structured_input" },
+    retrieval,
+    ...tail,
+  ];
+
+  it("does not count a pre-retrieval guardrail as a retrieval miss", () => {
+    for (const [reasonCode, detail] of [
+      ["sensitive_topic", "sensitive:allergens"],
+      ["booking_intent", "sensitive:booking_intent"],
+    ] as const) {
+      const result = scoreEval([
+        {
+          question: question("answer", "wifi.info"),
+          observed: "escalate",
+          reasonCode,
+          detail,
+          stages: [
+            { stage: "policy", status: "ok", detail: "allowed" },
+            { stage: "sensitive", status: "stop", reasonCode, detail },
+          ],
+        },
+      ]);
+      expect(result.retrieval.checked).toBe(1);
+      expect(result.retrieval.retrievalRun).toBe(0);
+      expect(result.retrieval.matched).toBe(0);
+      // The whole point: nothing was retrieved, so there is nothing to miss.
+      expect(result.retrieval.misses).toHaveLength(0);
+      expect(result.retrieval.notRunByStage).toEqual({ sensitive: 1 });
+      // ... and the refusal still costs the answer it should.
+      expect(result.scores.needlessEscalation).toBe(1);
+    }
+  });
+
+  it("attributes a policy block to the stage that ended the run", () => {
+    const result = scoreEval([
+      {
+        question: question("answer", "pool.hours"),
+        observed: "escalate",
+        reasonCode: "policy_block",
+        detail: "mode_draft",
+        stages: [{ stage: "policy", status: "stop", reasonCode: "policy_block", detail: "mode_draft" }],
+      },
+    ]);
+    expect(result.retrieval.retrievalRun).toBe(0);
+    expect(result.retrieval.misses).toHaveLength(0);
+    expect(result.retrieval.notRunByStage).toEqual({ policy: 1 });
+  });
+
+  it("counts a true empty retrieval as a recall miss", () => {
+    const result = scoreEval([
+      {
+        question: question("answer", "pets.policy"),
+        observed: "no_answer",
+        reasonCode: "low_retrieval",
+        stages: healthy({
+          stage: "retrieval",
+          status: "ok",
+          count: 0,
+          topics: [],
+          articleVersionIds: [],
+        }),
+      },
+    ]);
+    expect(result.retrieval.retrievalRun).toBe(1);
+    expect(result.retrieval.matched).toBe(0);
+    expect(result.retrieval.misses).toHaveLength(1);
+    // An empty candidate list here means retrieval really was empty.
+    expect(result.retrieval.misses[0]!.retrieved).toEqual([]);
+    expect(result.retrieval.notRunByStage).toEqual({});
+    expect(result.retrieval.rate).toBe(0);
+  });
+
+  it("reports candidate topics for a model no_answer after nonempty retrieval", () => {
+    const stages = healthy(
+      {
+        stage: "retrieval",
+        status: "ok",
+        count: 2,
+        topics: ["policy.quiet", "dining.menu"],
+        articleVersionIds: ["11111111-1111-4111-8111-111111111111"],
+      },
+      { stage: "generate", status: "ok", modelId: "gemini-test", usedFallback: false },
+      { stage: "contract", status: "ok" },
+      { stage: "guardrail", status: "stop", reasonCode: "low_retrieval", detail: "not_an_answer" },
+    );
+    const result = scoreEval([
+      { question: question("answer", "checkin.hours"), observed: "no_answer", reasonCode: "low_retrieval", stages },
+      // The pipeline's own shape for a refusal: verifyAnswer refuses anything
+      // that is not an answer, so a model `no_answer` reaches the harness as an
+      // escalation with the same stage evidence behind it.
+      { question: question("answer", "checkin.hours"), observed: "escalate", reasonCode: "low_retrieval", stages },
+    ]);
+    expect(result.retrieval.retrievalRun).toBe(2);
+    expect(result.retrieval.misses).toHaveLength(2);
+    expect(result.retrieval.misses[0]!.retrieved).toEqual(["policy.quiet", "dining.menu"]);
+    expect(result.retrieval.misses[1]!.retrieved).toEqual(["policy.quiet", "dining.menu"]);
+    expect(result.retrieval.notRunByStage).toEqual({});
+  });
+
+  it("keeps a verified fact out of the article-retrieval denominator", () => {
+    const result = scoreEval([
+      {
+        question: question("answer", "pool.hours"),
+        observed: "answer",
+        reasonCode: null,
+        answerTopics: ["pool.hours"],
+        stages: [
+          { stage: "policy", status: "ok", detail: "allowed" },
+          { stage: "sensitive", status: "ok" },
+          {
+            stage: "facts",
+            status: "ok",
+            detail: "hit",
+            topicKey: "pool.hours",
+            factKey: "closing_time",
+          },
+        ],
+      },
+    ]);
+    // The fact answered: correct, and not an article-retrieval observation.
+    expect(result.counts.correct_answer).toBe(1);
+    expect(result.retrieval.checked).toBe(1);
+    expect(result.retrieval.retrievalRun).toBe(0);
+    expect(result.retrieval.matched).toBe(0);
+    expect(result.retrieval.misses).toHaveLength(0);
+    expect(result.retrieval.notRunByStage).toEqual({ facts: 1 });
+  });
+
+  it("counts a retrieval hit as a hit", () => {
+    const result = scoreEval([
+      {
+        question: question("answer", "pool.hours"),
+        observed: "answer",
+        reasonCode: null,
+        answerTopics: ["pool.hours"],
+        stages: healthy({
+          stage: "retrieval",
+          status: "ok",
+          count: 1,
+          topics: ["pool.hours"],
+          articleVersionIds: ["22222222-2222-4222-8222-222222222222"],
+        }),
+      },
+    ]);
+    expect(result.retrieval).toMatchObject({ checked: 1, retrievalRun: 1, matched: 1, rate: 1 });
+    expect(result.retrieval.misses).toHaveLength(0);
+    expect(result.retrieval.notRunByStage).toEqual({});
+  });
+
+  it("keeps a provider outage in its own bucket, with retrieval still attributed", () => {
+    const result = scoreEval([
+      {
+        question: question("answer", "pool.hours"),
+        observed: "unavailable",
+        reasonCode: null,
+        stages: healthy(
+          {
+            stage: "retrieval",
+            status: "ok",
+            count: 1,
+            topics: ["pool.hours"],
+            articleVersionIds: ["33333333-3333-4333-8333-333333333333"],
+          },
+          { stage: "generate", status: "error", reasonCode: "provider_unavailable" },
+        ),
+      },
+    ]);
+    expect(result.counts.outage).toBe(1);
+    expect(evaluateGate(result).breaches[0]).toMatchObject({ metric: "outage" });
+    // Retrieval ran and found the target before the instrument failed; the
+    // outage is the gate's problem, not a recall miss.
+    expect(result.retrieval).toMatchObject({ retrievalRun: 1, matched: 1 });
+    expect(result.retrieval.misses).toHaveLength(0);
+    expect(result.retrieval.notRunByStage).toEqual({});
+  });
+
+  it("computes the same headline scores with and without stage provenance", () => {
+    const base = (extra: Partial<JudgedQuestion> = {}): JudgedQuestion => ({
+      question: question("answer", "pool.hours"),
+      observed: "answer",
+      reasonCode: null,
+      topics: ["pool.hours"],
+      answerTopics: ["pool.hours"],
+      ...extra,
+    });
+    const without = scoreEval([base()]);
+    const withStages = scoreEval([
+      base({
+        stages: [
+          { stage: "policy", status: "ok", detail: "allowed" },
+          { stage: "sensitive", status: "ok" },
+          { stage: "facts", status: "skip", detail: "no_structured_input" },
+          { stage: "retrieval", status: "ok", count: 1, topics: ["pool.hours"] },
+          { stage: "guardrail", status: "ok" },
+        ],
+      }),
+    ]);
+    expect(withStages.scores).toEqual(without.scores);
+    expect(withStages.counts).toEqual(without.counts);
+    expect(withStages.retrieval).toMatchObject({
+      checked: without.retrieval.checked,
+      retrievalRun: without.retrieval.retrievalRun,
+      matched: without.retrieval.matched,
+      rate: without.retrieval.rate,
+    });
+  });
+
+  it("still reads an explicit topic list as retrieval evidence on old fixtures", () => {
+    // Rows built before the observer carry `topics` alone; an explicit list
+    // (empty or not) came from retrieval, which is what it meant then.
+    const ran = scoreEval([
+      { question: question("answer", "wifi.info"), observed: "escalate", reasonCode: "low_retrieval", topics: [] },
+    ]);
+    expect(ran.retrieval.retrievalRun).toBe(1);
+    expect(ran.retrieval.misses).toHaveLength(1);
+    expect(ran.retrieval.notRunByStage).toEqual({});
+
+    const neverBuilt = scoreEval([
+      { question: question("answer", "wifi.info"), observed: "escalate", reasonCode: "policy_block" },
+    ]);
+    expect(neverBuilt.retrieval.retrievalRun).toBe(0);
+    expect(neverBuilt.retrieval.misses).toHaveLength(0);
+    expect(neverBuilt.retrieval.notRunByStage).toEqual({ unknown: 1 });
   });
 });

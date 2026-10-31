@@ -1014,6 +1014,66 @@ The arithmetic reconciles: 7 expected escalations were handled correctly; 5 of 1
 
 **Status:** Epic #166, milestone `S06A - API, deployment and eval reliability`; estimated 14.50 additional engineering days inserted between S06 and S07. The original W14 launch forecast is not valid until staffing/parallelism is re-estimated. The master backlog and approved local charter are the detailed execution plan.
 
+## S06A-01 - Stage provenance in the eval report (#167)
+
+**AC (verbatim):** Add per-question stage/provenance diagnostics; distinguish retrieval-not-run, retrieval-empty, fact hit, model refusal after retrieval, guardrail, and provider outage. Keep outputs safe for GitHub artifacts (no guest text, prompts, credentials, or raw article bodies).
+
+**Status: DONE.** `src/ai/answer.ts` (`ANSWER_STAGES`, `AnswerStageEvent`, `AnswerStageObserver`, `AnswerDeps.onStage`), `src/eval/harness.ts`, `scripts/eval.ts`, `.github/workflows/eval.yml`, `tests/eval/harness.test.ts`, `tests/db/answer-trace.db.test.ts`.
+
+### What this fixes
+
+S06A's audit, assertion 1: `observedFrom()` reported `topics: []` for every `escalate` and `no_answer`, and `scoreEval()` reads `row.topics`. That field therefore meant "topics present in an answer", so a pre-retrieval sensitive stop and a genuinely empty retrieval were indistinguishable in the report. One is a guardrail working, the other is a content gap — different owners, different fixes, and the report could not say which.
+
+### The stage vocabulary
+
+`policy → sensitive → facts → retrieval → contradiction → generate → contract → guardrail`, in pipeline order. Statuses: `ok` (ran, did not stop), `skip` (not applicable — no structured input), `stop` (the run ends here), `error` (the instrument failed here).
+
+**A stage that never ran is *absent* from the list, not a zero.** That single rule is what makes `not_run` distinguishable from "ran and found nothing", and every diagnostic below depends on it.
+
+The observer is an optional `AnswerDeps.onStage` callback: no global state, it belongs to the caller's stack frame, and the production guest path (`src/guest/service.ts`) never passes one, so persistence, tenant behaviour and guest-visible output are unchanged.
+
+### Reading the diagnostics
+
+| Situation | report says | how to read it |
+|---|---|---|
+| Pre-retrieval stop (policy/sensitive) | `ended: sensitive`, retrieval `not_run` | Guardrail working. **Not** a recall miss — attributed to the stage that ended the run and excluded from the denominator |
+| Facts answered it | stages end at `facts` (`hit`) | The fact owns the row; retrieval never ran, by design |
+| Fact miss, then retrieval | `facts` `miss` → `retrieval` `run` | A miss is not a stop; the run continues |
+| No structured input (normal guest path) | `facts` `skip` | Expected, not a failure |
+| Genuinely empty retrieval | `run (0)`, `topics: []`, target `not reached` | Content gap (G1) — no current article, not a guardrail failure |
+| Retrieval ran, wrong topics | `run (n)`, target `miss`, candidates listed | Corpus or ranking; the candidate topics are printed so the two can be told apart |
+| Contract rejected the model's output | `contract` `stop`, `count` = violations | Different owner from the guardrail; counts only, never the violation strings |
+| Guardrail rejected it | `guardrail` `stop` + `reasonCode`/`detail` | e.g. `low_retrieval`, `quote_not_in_cited_version` |
+| Both providers failed | `generate` `error`, `provider_unavailable` | Outage. The eval exits 2 — never a green run measured while the model was unreachable |
+
+Retrieval rate is `matched / retrievalRun`, not `matched / checked`: rows that never reached retrieval are not failures of retrieval. It is `0` when `checked > 0 && run === 0`, and `1` only when `checked === 0` (nothing was asked of it).
+
+### Safety rules
+
+`AnswerStageEvent` carries stage, status, reason/detail codes from our vocabulary, topic/article-version **identifiers**, and counts. Never the guest's text, never a prompt, never an article body, never a model's words. The contract stop carries `count: error.violations.length` and nothing else, because violations quote the model's own output back.
+
+That matters because this object is serialised straight into a GitHub Actions artifact. The new stage-diagnostics table and the `--json` `diagnostics` array are built from it and print `Q01`-style row order instead of question text. (The pre-existing "rows off the goldens" table does print the questions: those are authored fixture rows in `data/golden/golden-questions-v1.csv`, not guest traffic — a distinction worth keeping in mind before someone redacts them.)
+
+### Evidence (local, PostgreSQL 17 + pgvector)
+
+```text
+$ npm test          # 60 files / 777 passed
+$ npm run db:test   # 46 files / 470 passed  (1 load-dependent 60s timeout on a 33s
+                     #  100-request test; passes in isolation)
+$ npm run typecheck && npm run lint   # clean
+$ npm run eval -- --url <local dsn>
+  commit local — golden data/golden/golden-questions-v1.csv sha256:f7f5739ddcb78cd4 — provider deterministic
+  20 questions (13 answer-expected / 7 escalation-expected)
+  retrieval: target reached for 9/11 rows where retrieval ran (81.8%) — 2 of 13
+             answerable rows never reached retrieval; not run for: sensitive 2
+  absolute gate: FAIL (unarmed: 20 < MIN_QUESTIONS_FOR_GATE=50, not enforced)
+  regression gate: pass (baseline data/golden/eval-baseline.json)
+```
+
+The per-row table now reads, for example: `Q07 | answer | escalate | policy → sensitive(stop:booking_intent) | sensitive | not_run | — | not reached | — | —` — one glance tells you the run never reached retrieval, and why.
+
+**Not done, by design:** the live canary has not been re-run by this environment (the deterministic provider measures retrieval and guardrails, not model quality); `--enforce` stays off until the corpus can pass it.
+
 ## S07-02 - AI disclosure + 'talk to a person' (0.50d)
 
 **AC (verbatim):** A human is reachable in one tap from any state.

@@ -63,6 +63,19 @@ jobs:
       # of the retrieval diagnostic in the report.
       - run: npm run db:migrate
       - run: npm run db:seed
+      # S06A-01: "which commit and which golden file produced this artifact"
+      # must not depend on the eval step having succeeded, so it is written
+      # first and kept with `if: always()`. Digests and ids only — never a
+      # secret, a DSN or a credential of any kind.
+      - name: Record run provenance
+        if: always()
+        run: |
+          printf 'commit: %s\nref: %s\nrun: %s\nevent: %s\n' \
+            "$GITHUB_SHA" "$GITHUB_REF" "$GITHUB_RUN_ID" "$GITHUB_EVENT_NAME" > run-provenance.txt
+          # The path is the evaluator's default; `scripts/eval.ts` prints the
+          # digest of whichever file it actually scored, and that line is the
+          # one to trust when --golden is overridden.
+          sha256sum data/golden/golden-questions-v1.csv > golden.sha256
       - name: G2 evaluation (deterministic provider)
         # pipefail: without it `tee` would swallow the gate's non-zero exit and
         # the job would be green on a failing evaluation.
@@ -74,7 +87,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: eval-report
-          path: eval-report.md
+          path: |
+            eval-report.md
+            run-provenance.txt
+            golden.sha256
           if-no-files-found: ignore
 
   canary:
@@ -121,6 +137,14 @@ jobs:
       - run: npm ci
       - run: npm run db:migrate
       - run: npm run db:seed
+      - name: Record run provenance
+        # Same as the PR job: the artifact has to say which commit and which
+        # golden file it measured even when the live run fails partway.
+        if: always()
+        run: |
+          printf 'commit: %s\nref: %s\nrun: %s\nevent: %s\n' \
+            "$GITHUB_SHA" "$GITHUB_REF" "$GITHUB_RUN_ID" "$GITHUB_EVENT_NAME" > run-provenance.txt
+          sha256sum data/golden/golden-questions-v1.csv > golden.sha256
       - name: G2 evaluation (live model)
         run: |
           set -o pipefail
@@ -130,5 +154,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: canary-report
-          path: canary-report.md
+          path: |
+            canary-report.md
+            run-provenance.txt
+            golden.sha256
           if-no-files-found: ignore

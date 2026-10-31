@@ -1072,7 +1072,9 @@ $ npm run eval -- --url <local dsn>
 
 The per-row table now reads, for example: `Q07 | answer | escalate | policy → sensitive(stop:booking_intent) | sensitive | not_run | — | not reached | — | —` — one glance tells you the run never reached retrieval, and why.
 
-**Not done, by design:** the live canary has not been re-run by this environment (the deterministic provider measures retrieval and guardrails, not model quality); `--enforce` stays off until the corpus can pass it.
+**Live canary, re-run with the new diagnostics:** [run 41153421988](https://github.com/jtanori/ai-guest-concierge-1/actions/runs/41153421988) on `main` at `9c172eeda8dc`, golden sha256 `f7f5739ddcb78cd4`, provider live. false answer 0.0% (0/20, pass), correct escalation 100% (7/7, pass), correct-or-escalated 70.0% (FAIL), needless escalation 46.2% (6/13, FAIL); regression gate pass, absolute gate FAIL and unarmed. The 6 remaining rows now attribute cleanly: **2 pre-retrieval sensitive overmatch** (Q07 airport-transfer price, Q12 spa prices — `sensitive(stop:booking_intent)`, retrieval `not_run`, owner S06A-02), **2 retrieval ran and missed the target** (Q01 pool hours ES, Q06 parking ES — owner S06A-04), and **2 retrieval hit but the model declined** (Q08 extra bed, Q13 pool heated in winter — `guardrail(stop:…)`, detail `not_an_answer`). That last pair is what assertion 5 declined to attribute; it is now measured. One run, 20 rows: not a trend, and 8 of the 11 retrieval-run rows were answered by the fallback model, which is worth noting before reading model quality off it.
+
+**Not done, by design:** `--enforce` stays off until the corpus can pass it.
 
 ## S07-02 - AI disclosure + 'talk to a person' (0.50d)
 

@@ -30,8 +30,16 @@ import { CORE, STAGES, VARIABLES } from "./manifest.ts";
  */
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
-/** Names supplied by a hosting platform, read by nothing here - not contract material. */
-const PLATFORM_NAMES = new Set<string>([]);
+/**
+ * Names supplied by a hosting platform, read by nothing here - not contract material.
+ *
+ * `GITHUB_SHA` - injected by Actions into every job, read by `scripts/eval.ts`
+ * only to stamp the run provenance with the commit it scored. It is not a value
+ * anyone configures per environment, and declaring it in `CORE` would be a lie
+ * the `secrets:`/`vars:` direction of this test could not even express: no
+ * workflow references it, because the runner supplies it.
+ */
+const PLATFORM_NAMES = new Set<string>(["GITHUB_SHA"]);
 
 function walk(dir: string): string[] {
   const out: string[] = [];

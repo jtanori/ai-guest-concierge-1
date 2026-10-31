@@ -34,9 +34,10 @@
  * Exit codes: 0 clean, 1 a gate breached, 2 the instrument failed (provider
  * outage or a row the pipeline could not evaluate). Never 0 on a broken run.
  */
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import pg from "pg";
-import { answerMessage } from "../src/ai/answer.ts";
+import { answerMessage, type AnswerStageEvent } from "../src/ai/answer.ts";
 import { buildAi } from "../src/guest/runtime.ts";
 import { withResilience } from "../src/ai/provider.ts";
 import { createGroundedProvider } from "../src/eval/fake-provider.ts";
@@ -120,48 +121,74 @@ async function ensureConversation(client: pg.Client): Promise<string> {
   });
 }
 
-function observedFrom(outcome: Awaited<ReturnType<typeof answerMessage>>): {
+/**
+ * The safe half of an outcome, plus its stage provenance.
+ *
+ * `topics` now means what it always should have: the topics *retrieval*
+ * returned. It is read from the trace, so an escalation stopped before
+ * retrieval carries `[]` because retrieval never ran — and `stages` is what
+ * says so, instead of the reader having to infer it from an empty list.
+ */
+function observedFrom(
+  outcome: Awaited<ReturnType<typeof answerMessage>>,
+  stages: readonly AnswerStageEvent[],
+): {
   observed: ObservedDecision;
   reasonCode: string | null;
   detail: string;
   topics: string[];
   answerTopics: string[];
+  stages: readonly AnswerStageEvent[];
 } {
+  const retrieval = stages.find((event) => event.stage === "retrieval");
+  const topics = retrieval?.topics === undefined ? [] : [...retrieval.topics];
   switch (outcome.kind) {
     case "answer":
       return {
         observed: "answer",
         reasonCode: outcome.output.reasonCode,
         detail: `${outcome.output.citations.length} citation(s), guard passed`,
-        topics: [...new Set(outcome.hits.map((hit) => hit.topicKey))],
+        topics,
         answerTopics: [...new Set(outcome.output.topicKeysUsed)],
+        stages,
       };
     case "fact":
       return {
         observed: "answer",
         reasonCode: null,
         detail: `verified fact ${outcome.topicKey}.${outcome.factKey}`,
-        topics: [outcome.topicKey],
+        // The fact topic is the ANSWER's topic, not a retrieval candidate.
+        topics,
         answerTopics: [outcome.topicKey],
+        stages,
       };
     case "escalate":
       return {
         observed: "escalate",
         reasonCode: outcome.reasonCode,
         detail: outcome.detail,
-        topics: [],
+        topics,
         answerTopics: [],
+        stages,
       };
     case "no_answer":
       return {
         observed: "no_answer",
         reasonCode: outcome.reasonCode,
         detail: outcome.reasonCode,
-        topics: [],
+        topics,
         answerTopics: [],
+        stages,
       };
     case "unavailable":
-      return { observed: "unavailable", reasonCode: null, detail: outcome.detail, topics: [], answerTopics: [] };
+      return {
+        observed: "unavailable",
+        reasonCode: null,
+        detail: outcome.detail,
+        topics,
+        answerTopics: [],
+        stages,
+      };
   }
 }
 
@@ -171,6 +198,10 @@ async function judge(
   question: GoldenQuestion,
   ai: ReturnType<typeof withResilience>,
 ): Promise<JudgedQuestion> {
+  // S06A-01: one observer per question, on the caller's stack — no global
+  // state, and nothing is written anywhere. The events are already restricted
+  // to stage codes, topic/version ids and counts, so they are safe to print.
+  const stages: AnswerStageEvent[] = [];
   const outcome = await withTenant(client, tenant, async (tx) => {
     // The production request path runs as `concierge_app`, with RLS enforcing
     // the tenant. A harness that ran as the owner would measure a pipeline no
@@ -193,16 +224,52 @@ async function judge(
         // `targetTopic` is still used, as the retrieval diagnostic.
         topicKey: null,
       },
-      { ai },
+      { ai, onStage: (event) => { stages.push(event); } },
     );
   });
-  return { question, ...observedFrom(outcome) };
+  return { question, ...observedFrom(outcome, stages) };
 }
 
-function printTable(result: ReturnType<typeof scoreEval>, goldenPath: string, armed: boolean): void {
+/** Stage list as the report prints it: `sensitive(stop:booking_intent)`. */
+function stageLabel(event: AnswerStageEvent): string {
+  switch (event.status) {
+    case "ok":
+      return event.stage === "facts" && event.detail != null
+        ? `${event.stage}(${event.detail})`
+        : event.stage;
+    case "skip":
+      return `${event.stage}(skip)`;
+    case "stop":
+      return `${event.stage}(stop:${event.reasonCode ?? event.detail ?? "?"})`;
+    case "error":
+      return `${event.stage}(error:${event.reasonCode ?? "?"})`;
+  }
+}
+
+/**
+ * What a reader needs to reproduce a number: the commit it came from and the
+ * exact golden file it scored. No secrets — this line goes into the artifact.
+ */
+function provenanceLine(goldenPath: string, live: boolean): string {
+  const digest = createHash("sha256").update(readFileSync(goldenPath)).digest("hex").slice(0, 16);
+  const commit = (process.env["GITHUB_SHA"] ?? "local").slice(0, 12);
+  return (
+    `commit ${commit} · golden ${goldenPath} sha256:${digest} · ` +
+    `provider ${live ? "live" : "deterministic"}`
+  );
+}
+
+function printTable(
+  result: ReturnType<typeof scoreEval>,
+  goldenPath: string,
+  armed: boolean,
+  provenance: string,
+): void {
   const { scores, counts, total, answerExpected, escalationExpected } = result;
   console.log("");
   console.log(`## G2 evaluation — ${goldenPath}`);
+  console.log("");
+  console.log(provenance);
   console.log("");
   console.log(
     `${total} questions (${answerExpected} answer-expected / ${escalationExpected} escalation-expected)` +
@@ -247,14 +314,24 @@ function printTable(result: ReturnType<typeof scoreEval>, goldenPath: string, ar
   }
 
   const retrieval = result.retrieval;
+  const neverRan = retrieval.checked - retrieval.retrievalRun;
   console.log(
-    `### retrieval: the target topic reached the model for ${retrieval.matched}/${retrieval.checked} answerable questions (${formatPercent(retrieval.rate)})`,
+    `### retrieval: the target topic reached the model for ${retrieval.matched}/${retrieval.retrievalRun} rows where retrieval actually ran (${formatPercent(retrieval.rate)})` +
+      ` — ${neverRan} of ${retrieval.checked} answerable rows never reached retrieval`,
   );
   console.log("");
+  const notRun = Object.entries(retrieval.notRunByStage).sort((a, b) => b[1] - a[1]);
+  if (notRun.length > 0) {
+    console.log(
+      `Retrieval did not run for: ${notRun.map(([stage, n]) => `${stage} ${n}`).join(", ")}. ` +
+        "Those rows are attributed to the stage that ended them and are NOT recall misses.",
+    );
+    console.log("");
+  }
   if (retrieval.misses.length > 0) {
     console.log(
-      "A target topic that never appears here means the property has no current article on it " +
-        "— a content gap (G1), not a guardrail failure.",
+      "Each miss below had retrieval run and come back without the target topic: " +
+        "the property has no current article on it — a content gap (G1), not a guardrail failure.",
     );
     console.log("");
     for (const miss of retrieval.misses.slice(0, 15)) {
@@ -264,6 +341,48 @@ function printTable(result: ReturnType<typeof scoreEval>, goldenPath: string, ar
     }
     console.log("");
   }
+
+  console.log("### stage diagnostics");
+  console.log("");
+  console.log(
+    "Stage codes, reason codes, topic/version ids and counts only — no guest text, prompts or article bodies. `Q01` is the row order of the golden CSV.",
+  );
+  console.log("");
+  console.log(
+    "| # | expected | observed | stages | ended | retrieval | candidates | target | provider | article versions |",
+  );
+  console.log("|---|---|---|---|---|---|---|---|---|---|");
+  const cell = (value: string): string => value.replaceAll("|", "\\|");
+  for (const [index, row] of result.outcomes.entries()) {
+    const stages = row.stages ?? [];
+    const retrievalEvent = stages.find((event) => event.stage === "retrieval");
+    const generateEvent = stages.find((event) => event.stage === "generate");
+    const target = row.question.targetTopic;
+    const targetCell =
+      target === null
+        ? "—"
+        : retrievalEvent === undefined
+          ? "not reached"
+          : (retrievalEvent.topics ?? []).includes(target)
+            ? "hit"
+            : "miss";
+    const provider =
+      generateEvent === undefined
+        ? "—"
+        : generateEvent.status === "error"
+          ? "outage"
+          : `${generateEvent.modelId ?? "?"}${generateEvent.usedFallback === true ? " (fallback)" : ""}`;
+    console.log(
+      `| Q${String(index + 1).padStart(2, "0")} | ${row.expected} | ${row.observed} | ` +
+        `${cell(stages.map(stageLabel).join(" › ") || "—")} | ` +
+        `${stages[stages.length - 1]?.stage ?? "—"} | ` +
+        `${retrievalEvent === undefined ? "not_run" : `run (${retrievalEvent.count ?? 0})`} | ` +
+        `${cell((retrievalEvent?.topics ?? []).join(", ") || "—")} | ${targetCell} | ` +
+        `${cell(provider)} | ` +
+        `${cell((retrievalEvent?.articleVersionIds ?? []).join(", ") || "—")} |`,
+    );
+  }
+  console.log("");
 }
 
 async function main(): Promise<number> {
@@ -315,18 +434,37 @@ async function main(): Promise<number> {
     }
     const result = scoreEval(judged);
     const gate = evaluateGate(result);
+    const provenance = provenanceLine(args.golden, args.live);
 
     if (args.json) {
       console.log(
         JSON.stringify(
           {
             golden: args.golden,
+            goldenSha256: createHash("sha256")
+              .update(readFileSync(args.golden))
+              .digest("hex"),
+            commit: process.env["GITHUB_SHA"] ?? "local",
             live: args.live,
             total: result.total,
             counts: result.counts,
             scores: result.scores,
             retrieval: result.retrieval,
             gate,
+            // Stage provenance per row: stage codes, reason codes, topic and
+            // version ids, counts. Deliberately no question text — the golden
+            // CSV is the join, and the artifact must not carry user text.
+            diagnostics: result.outcomes.map((row, index) => ({
+              index: index + 1,
+              expected: row.expected,
+              observed: row.observed,
+              bucket: row.bucket,
+              reasonCode: row.reasonCode,
+              detail: row.detail ?? null,
+              stages: row.stages ?? [],
+              retrievalRun: (row.stages ?? []).some((event) => event.stage === "retrieval"),
+              targetTopic: row.question.targetTopic,
+            })),
             misses: result.misses.map((miss) => ({
               bucket: miss.bucket,
               language: miss.question.language,
@@ -341,7 +479,7 @@ async function main(): Promise<number> {
         ),
       );
     } else {
-      printTable(result, args.golden, gate.armed);
+      printTable(result, args.golden, gate.armed, provenance);
       console.log(`absolute gate: ${gate.pass ? "pass" : "FAIL"} — ${gate.note}`);
       for (const breach of gate.breaches) {
         console.log(

@@ -6,15 +6,17 @@ on:
     branches: [main]
 
 # W00-12 — "A PR produces a preview URL and a green check."
-# lint/typecheck/test run immediately. preview deploys the PR to the linked
-# Vercel project (repo secret VERCEL_TOKEN; repo variables VERCEL_ORG_ID /
-# VERCEL_PROJECT_ID — the contract's type, see manifest.ts) and probes the
-# deployed endpoint — the proof is a green check AND a
-# reachable URL printed in the log. The deployed surface is the CI probe in
-# api/health.ts (npm run build bundles api/** into the Build Output API via
-# scripts/build-vercel.ts; --prebuilt ships it without a remote rebuild — the
-# zero-config root-entrypoint pipeline dead-ends on our noEmit tsconfig)
-# until S01 ships real routes.
+# lint/typecheck/test run immediately. preview does NOT deploy: Vercel's Git
+# integration builds the PR branch on push and owns that deployment. This job
+# waits for that native preview deployment to reach READY, then probes
+# /api/health.ts over HTTPS — the proof is a green check AND a reachable URL
+# printed in the log. Running a second `vercel deploy` here would create a
+# competing deployment for the same commit (two builders, one commit, and a
+# preview URL that does not belong to the commit under review). The token is
+# read-only here: it looks the native deployment up, it does not create one.
+# The deployed surface is the CI probe in api/health.ts (npm run build bundles
+# api/** into the Build Output API via scripts/build-vercel.ts) until S01 ships
+# real routes.
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -212,12 +214,16 @@ jobs:
       - run: npm run build
         working-directory: web
 
-  # Vercel preview — the AC closes here: every PR gets a unique deployment
-  # URL (not an alias) from the linked jtanori project, then /api/health.ts is
-  # probed over HTTPS; the job fails unless the probe is HTTP 200.
+  # Native Vercel preview — the AC closes here: Vercel's Git integration builds
+  # the PR branch on push and owns that deployment. This job waits for it to be
+  # READY, then probes /api/health.ts over HTTPS; the job fails unless the probe
+  # is HTTP 200. It never creates a deployment: a second `vercel deploy` for the
+  # same commit would race the native build and hand out a URL that does not
+  # belong to the commit under review.
+  #
   # Fork PRs are skipped: the pull_request token carries no repo secrets
-  # (GitHub withholds VERCEL_TOKEN), so a fork run could never deploy — that
-  # limitation is documented in the W00-12 runbook note. `preview` is
+  # (GitHub withholds VERCEL_TOKEN), and gitForkProtection is on, so a fork run
+  # has neither a token nor a native deployment to read. `preview` is
   # deliberately NOT in branch protection's required contexts so a skipped
   # fork preview cannot dead-end a merge; it remains the welcome gate for
   # internal PRs.
@@ -232,29 +238,66 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      # --prebuilt ships .vercel/output from THIS workspace (the remote build
-      # is skipped, which is the point — see deploy.yml), so the preview job
-      # must install and build like every other producer of that output.
+      # Builds the same Build Output Vercel's Git build produces, so a broken
+      # bundler fails here rather than as a dead preview URL. No --prebuilt ship:
+      # nothing in this job uploads anything.
       - run: npm ci
       - run: npm run build
-      - name: Deploy PR preview to Vercel
-        id: deploy
+
+      - name: Wait for Vercel's native preview of this commit
+        id: native
         env:
-          # The contract declares the ids non-secret (they sit in dashboard URLs)
-          # and `secrets:sync` writes them as repo VARIABLES. `secrets.` here made
-          # ci.yml contradict the manifest while deploy.yml agreed with it — and
-          # `deploy-workflow.test.ts` only guarded deploy.yml, so nothing failed.
-          # Only the token is a secret.
+          # Read-only lookup. The contract declares the ids non-secret (they sit
+          # in dashboard URLs) and `secrets:sync` writes them as repo VARIABLES.
+          # Only the token is a secret, and it is never echoed.
           VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          URL="$(npx -y vercel@latest deploy --prebuilt --yes --token "$VERCEL_TOKEN")"
-          echo "url=$URL" >> "$GITHUB_OUTPUT"
-          echo "PREVIEW URL: $URL"
+          set -euo pipefail
+          if [ -z "${VERCEL_TOKEN:-}" ] || [ -z "${VERCEL_PROJECT_ID:-}" ]; then
+            echo "::error::VERCEL_TOKEN / VERCEL_PROJECT_ID unavailable — cannot read the native preview."
+            exit 1
+          fi
+          # Vercel creates the preview asynchronously on push. Give it a bounded
+          # window; a preview that never appears must FAIL, not silently pass,
+          # or a missing deployment would look like a healthy one.
+          URL=""
+          for attempt in $(seq 1 45); do
+            RESP="$(curl -fsS -H "Authorization: Bearer $VERCEL_TOKEN" \
+              "https://api.vercel.com/v6/deployments?projectId=$VERCEL_PROJECT_ID&teamId=$VERCEL_ORG_ID&limit=40")" || true
+            if [ -n "$RESP" ]; then
+              URL="$(printf '%s' "$RESP" | jq -r --arg sha "$HEAD_SHA" \
+                '[.deployments[] | select((.meta.githubCommitSha // "") | startswith($sha))][0].url // empty')"
+              STATE="$(printf '%s' "$RESP" | jq -r --arg sha "$HEAD_SHA" \
+                '[.deployments[] | select((.meta.githubCommitSha // "") | startswith($sha))][0].readyState // empty')"
+              if [ "$STATE" = "READY" ]; then
+                echo "native preview READY after ${attempt} attempt(s)"
+                break
+              fi
+              if [ "$STATE" = "ERROR" ] || [ "$STATE" = "CANCELED" ]; then
+                echo "::error::Vercel's native preview for $HEAD_SHA ended in $STATE."
+                exit 1
+              fi
+              echo "attempt $attempt: preview state=${STATE:-none} — waiting"
+            else
+              echo "attempt $attempt: deployments not readable yet — waiting"
+            fi
+            URL=""
+            sleep 10
+          done
+          if [ -z "$URL" ]; then
+            echo "::error::No READY native preview for $HEAD_SHA within the window."
+            echo "Vercel's Git integration owns PR previews; this job only reads them back."
+            exit 1
+          fi
+          echo "url=https://$URL" >> "$GITHUB_OUTPUT"
+          echo "native preview: https://$URL" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Probe preview /api/health.ts
         run: |
-          URL="${{ steps.deploy.outputs.url }}"
+          URL="${{ steps.native.outputs.url }}"
           CODE="$(curl -s -o /dev/null -w '%{http_code}' "$URL/api/health.ts")"
           echo "preview /api/health.ts -> HTTP $CODE"
           test "$CODE" = "200"

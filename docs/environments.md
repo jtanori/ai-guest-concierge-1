@@ -74,6 +74,15 @@ where one copied file is an outage.
 | Vercel env **preview** | `REVIEW_API_URL`, `NEXT_PUBLIC_TURNSTILE_SITE_KEY` (staging values) | the Next.js tier |
 | Vercel env **production** | the same keys, production values | the Next.js tier |
 
+> **Reconciliation gap (open):** the contract puts 26 names in `github-environment`, but
+> a Vercel Function reads its runtime values from **Vercel**, not from GitHub. The API
+> project already holds the 24 API-consumer names — so the Function works today — but
+> `check:secrets` audits those names against **GitHub only**, so deleting one from
+> Vercel would leave every check green while the Function fails at runtime. The two
+> halves must be reconciled: either the contract declares a second store for API
+> runtime values, or `check:secrets` audits both. Until then, GitHub being green does
+> not prove the Function can boot.
+
 **There is no `PROD_LLM_API_KEY`.** The name is `LLM_API_KEY` in both environments,
 and a job's `environment: production` is the only thing that makes it resolve to
 production's value. Suffixed names double the contract: every new variable would need

@@ -255,6 +255,21 @@ Docs: <https://vercel.com/docs/accounts/access-tokens> ·
 The org and project ids are **not secrets** — they appear in dashboard URLs — so they
 are placed as GitHub *variables*, not secrets. Only the token is a secret.
 
+**Native Git deployment does not need `VERCEL_TOKEN`.** Vercel's Git integration
+builds `main` as Production, a PR branch as a Preview, and `staging` as the staging
+domain without any credential in this repository. The token is retained only for the
+things Actions still does by hand:
+
+| Still reads it | Why it stays |
+|---|---|
+| `ci.yml` `preview` job | looks the **native** preview up by commit SHA to probe it (read-only; it creates nothing) |
+| `npm run check:secrets` | audits Vercel's environment variables against the contract |
+| `npm run secrets:sync` | writes contract values into Vercel's env scopes |
+| `deploy.yml` web-tier steps | the web project is deployed by CLI until its own Git path is proven |
+
+If none of those remain, the token can be deleted from the repository secrets — that is
+the state the S06A charter calls "no Vercel token needed for routine deploy".
+
 ---
 
 ## 9. Rarely touched

@@ -32,6 +32,37 @@
 # Both jobs bind to a GitHub Environment (`staging`, `production`). Protection rules
 # live there — required reviewers, wait timers, branch restrictions — which is what
 # makes the production gate a review rather than a hope.
+#
+# ## The migration/deployment race — OPEN, do not remove this path yet
+#
+# Vercel's Git integration is connected and owns builds for this project: `main`
+# becomes Production, a PR branch becomes a Preview, and `staging` serves the
+# staging domain (verified — every deployment carries a `git-` branch alias and
+# `githubDeployment`, and PR previews appear with no Actions run at all).
+#
+# That means a push to `main` starts a Vercel build IMMEDIATELY, while this
+# workflow is still running readiness and `db:migrate`. Observed: the production
+# deployment for `d9167de` was created at 01:20:48, the same second this workflow
+# started — Vercel did not wait for any check. New code can therefore meet an
+# old schema, which is the exact failure the ordering above exists to prevent.
+#
+# `productionDeploymentsFastLane` is on and no deployment-check configuration was
+# found on the project, so nothing verified here holds Vercel's promotion or the
+# domain assignment until the checks below pass. GitHub Environment approvals gate
+# only jobs that declare that environment; they do not hold a Vercel deployment.
+#
+# Until a Vercel-side hold is configured and demonstrated with a deliberately
+# failing required check, the CLI deploy and alias steps below STAY. Removing them
+# would leave migrations running after code is already live. The safe sequence,
+# for approval before anything is deleted:
+#
+#   1. Configure Vercel to wait for the required GitHub checks before promoting
+#      (Deployment Protection / required checks on the production branch).
+#   2. Prove it: open a PR with a deliberately failing required check and show
+#      the production deployment does not go live.
+#   3. Only then remove the CLI deploy + alias steps, keeping migrate + smoke.
+#
+# See docs/architecture/deployment-and-api-proposal.md, Phase 1 and Gate A.
 
 name: deploy
 
